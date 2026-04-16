@@ -1,0 +1,9 @@
+target/
+.vesl-target/
+Cargo.lock
+**/*.rs.bk
+.vscode/
+.idea/
+*.swp
+.DS_Store
+out.jam

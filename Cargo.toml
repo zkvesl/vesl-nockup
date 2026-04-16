@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vesl-core",
+    "crates/nock-noun-rs",
+    "crates/nockchain-tip5-rs",
+    "crates/nockchain-client-rs",
+    "tools/graft-inject",
+    "test/vesl-test",
+]

@@ -1,0 +1,12 @@
+[package]
+name = "vesl-graft"
+version = "0.1.0"
+description = "Vesl graft libraries — tip5 Merkle + dispatcher for NockApps"
+authors = ["zkVesl"]
+license = "MIT"
+
+# No Hoon dependencies — vesl-graft is self-contained.
+#
+# NOTE: nockup's package manifest only installs Hoon files. Rust crates
+# and kernel wiring are handled separately — see README.md for the full
+# integration flow (cargo deps + graft-inject).

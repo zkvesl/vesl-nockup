@@ -1,0 +1,18 @@
+[package]
+name = "vesl-test"
+version = "0.1.0"
+edition = "2024"
+description = "Test harness for grafted NockApp kernels — boot, poke, assert effects"
+license = "MIT"
+
+[dependencies]
+vesl-core = { path = "../../crates/vesl-core" }
+nock-noun-rs = { path = "../../crates/nock-noun-rs" }
+nockchain-tip5-rs = { path = "../../crates/nockchain-tip5-rs" }
+
+nockapp = { git = "https://github.com/nockchain/nockchain.git", default-features = false }
+nockvm = { git = "https://github.com/nockchain/nockchain.git" }
+nockvm_macros = { git = "https://github.com/nockchain/nockchain.git" }
+
+anyhow = "1.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

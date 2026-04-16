@@ -1,0 +1,13 @@
+[package]
+name = "graft-inject"
+version = "0.1.0"
+edition = "2021"
+description = "Inject Vesl graft wiring into a nockup app.hoon kernel"
+license = "MIT"
+
+[[bin]]
+name = "graft-inject"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
