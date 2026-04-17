@@ -1,82 +1,22 @@
-//! graft-inject: auto-wire vesl graft into a nockup app.hoon kernel.
+//! graft-inject: auto-wire vesl-flavored grafts into a nockup app.hoon
+//! kernel.
 //!
-//! Finds `::  nockup:<name>` markers in the target file and inserts the
-//! corresponding block of Hoon. Idempotent: if wiring is already present,
-//! the marker is left alone and a `skipped` line is logged.
+//! Discovers graft manifests under `--lib-dir` (default `./hoon/lib/`),
+//! composes their blocks at the `::  nockup:{imports,state,cause,poke,peek}`
+//! markers, and writes the result back. Idempotent per graft per marker.
 //!
-//! Usage: graft-inject <path-to-app.hoon>
+//! See `--help` for full CLI surface.
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::Deserialize;
-use std::collections::HashSet;
-use std::env;
+use clap::Parser;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const MARKER_PREFIX: &str = "::  nockup:";
-
-// Sentinels used to detect already-injected wiring (idempotence).
-const SENTINEL_IMPORTS: &str = "*vesl-graft";
-const SENTINEL_STATE: &str = "vesl=vesl-state";
-const SENTINEL_CAUSE: &str = "vesl-cause";
-const SENTINEL_POKE: &str = "%vesl-register";
-const SENTINEL_PEEK: &str = "vesl-peek";
-
-// Injection blocks. Stored with no leading indent — re-indent at injection
-// using the marker line's captured leading whitespace.
-const BLOCK_IMPORTS: &str = "\
-/+  *vesl-graft
-/+  *vesl-merkle";
-
-const BLOCK_STATE: &str = "\
-vesl=vesl-state";
-
-const BLOCK_CAUSE: &str = "\
-vesl-cause";
-
-// Poke block includes the `::` separator between arms. The `%vesl-*` tags
-// are indented two spaces deeper than the body (matches `?-` switch layout).
-const BLOCK_POKE: &str = "\
-::
-  %vesl-register
-=/  lc=vesl-cause  [%vesl-register hull.u.act root.u.act]
-=/  hash-gate=verify-gate
-  |=  [note-id=@ data=* expected-root=@]
-  ^-  ?
-  =((hash-leaf ;;(@ data)) expected-root)
-=/  [efx=(list vesl-effect) new-vesl=vesl-state]
-  (vesl-poke vesl.state lc hash-gate)
-:_  state(vesl new-vesl)
-^-  (list effect)
-efx
-::
-  %vesl-verify
-=/  lc=vesl-cause  [%vesl-verify payload.u.act]
-=/  hash-gate=verify-gate
-  |=  [note-id=@ data=* expected-root=@]
-  ^-  ?
-  =((hash-leaf ;;(@ data)) expected-root)
-=/  [efx=(list vesl-effect) new-vesl=vesl-state]
-  (vesl-poke vesl.state lc hash-gate)
-:_  state(vesl new-vesl)
-^-  (list effect)
-efx
-::
-  %vesl-settle
-=/  lc=vesl-cause  [%vesl-settle payload.u.act]
-=/  hash-gate=verify-gate
-  |=  [note-id=@ data=* expected-root=@]
-  ^-  ?
-  =((hash-leaf ;;(@ data)) expected-root)
-=/  [efx=(list vesl-effect) new-vesl=vesl-state]
-  (vesl-poke vesl.state lc hash-gate)
-:_  state(vesl new-vesl)
-^-  (list effect)
-efx";
-
-// Peek replacement: substituted in place of a bare `~` fallthrough.
-const PEEK_REPLACEMENT: &str = "(vesl-peek vesl.state path)";
+const DEFAULT_LIB_DIR: &str = "hoon/lib";
 
 // ---------------------------------------------------------------------------
 // Manifest schema (graft.toml)
@@ -194,6 +134,15 @@ enum Marker {
 }
 
 impl Marker {
+    const ALL: [Marker; 5] = [
+        Marker::Imports,
+        Marker::State,
+        Marker::Cause,
+        Marker::Poke,
+        Marker::Peek,
+    ];
+
+    #[cfg(test)]
     fn parse(name: &str) -> Option<Self> {
         match name {
             "imports" => Some(Self::Imports),
@@ -214,64 +163,74 @@ impl Marker {
             Self::Peek => "peek",
         }
     }
-
-    fn sentinel(self) -> &'static str {
-        match self {
-            Self::Imports => SENTINEL_IMPORTS,
-            Self::State => SENTINEL_STATE,
-            Self::Cause => SENTINEL_CAUSE,
-            Self::Poke => SENTINEL_POKE,
-            Self::Peek => SENTINEL_PEEK,
-        }
-    }
-
-    fn block(self) -> Option<&'static str> {
-        match self {
-            Self::Imports => Some(BLOCK_IMPORTS),
-            Self::State => Some(BLOCK_STATE),
-            Self::Cause => Some(BLOCK_CAUSE),
-            Self::Poke => Some(BLOCK_POKE),
-            Self::Peek => None,
-        }
-    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MarkerStatus {
-    Injected,
-    Skipped,
-    Missing,
+/// Per-graft injection summary returned by `inject()`. Drives `print_report`
+/// and the `--list` machine-readable output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InjectReport {
+    /// Markers found in the source file.
+    markers_in_source: Vec<Marker>,
+    /// Markers expected but not present in source.
+    markers_missing: Vec<Marker>,
+    /// Per-graft outcome, in the same order as the input slice.
+    grafts: Vec<GraftReport>,
 }
 
-pub fn inject(
-    source: &str,
-    grafts: &[Graft],
-) -> Result<(String, Vec<(Marker, MarkerStatus)>)> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GraftReport {
+    name: String,
+    /// Markers this graft contributes a block for.
+    applicable: Vec<Marker>,
+    /// Markers this graft injected on this run.
+    injected: Vec<Marker>,
+    /// Markers where the graft's sentinel was already present (idempotent skip).
+    skipped: Vec<Marker>,
+}
+
+fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
     // Normalize CRLF -> LF for processing; we re-emit LF regardless.
     let mut lines: Vec<String> = source.replace("\r\n", "\n").lines().map(String::from).collect();
     let trailing_newline = source.ends_with('\n');
-    let mut report: Vec<(Marker, MarkerStatus)> = Vec::new();
 
-    for marker in [Marker::Imports, Marker::State, Marker::Cause, Marker::Poke, Marker::Peek] {
+    let mut markers_in_source: Vec<Marker> = Vec::new();
+    let mut markers_missing: Vec<Marker> = Vec::new();
+    let mut per_graft: HashMap<String, GraftReport> = grafts
+        .iter()
+        .map(|g| {
+            let applicable: Vec<Marker> = Marker::ALL
+                .iter()
+                .copied()
+                .filter(|m| g.block(*m).is_some())
+                .collect();
+            (
+                g.name.clone(),
+                GraftReport {
+                    name: g.name.clone(),
+                    applicable,
+                    injected: Vec::new(),
+                    skipped: Vec::new(),
+                },
+            )
+        })
+        .collect();
+
+    for marker in Marker::ALL {
         match find_marker(&lines, marker)? {
             Some(idx) => {
+                markers_in_source.push(marker);
                 let indent = leading_whitespace(&lines[idx]).to_string();
-                // Grafts that contribute a block here AND aren't already wired.
-                // Phase 4: Stage 1 ships only the vesl graft, so `pending` is
-                // either empty or a one-element slice. Phase 5 generalizes.
-                let pending: Vec<&Graft> = grafts
-                    .iter()
-                    .filter(|g| {
-                        g.block(marker)
-                            .map(|b| !already_wired_for(&lines, idx, marker, &b.sentinel))
-                            .unwrap_or(false)
-                    })
-                    .collect();
+                let mut pending: Vec<&Graft> = Vec::new();
+                for g in grafts {
+                    if let Some(block) = g.block(marker) {
+                        if already_wired_for(&lines, idx, marker, &block.sentinel) {
+                            per_graft.get_mut(&g.name).unwrap().skipped.push(marker);
+                        } else {
+                            pending.push(g);
+                        }
+                    }
+                }
                 if pending.is_empty() {
-                    // Marker is in source. Either every claiming graft is
-                    // already wired (skip), or no graft claims the marker
-                    // (also skip — nothing to do, no warning needed).
-                    report.push((marker, MarkerStatus::Skipped));
                     continue;
                 }
                 match marker {
@@ -282,19 +241,34 @@ pub fn inject(
                         emit_block(&mut lines, idx, &indent, marker, &pending);
                     }
                 }
-                report.push((marker, MarkerStatus::Injected));
+                for g in &pending {
+                    per_graft.get_mut(&g.name).unwrap().injected.push(marker);
+                }
             }
             None => {
-                report.push((marker, MarkerStatus::Missing));
+                markers_missing.push(marker);
             }
         }
     }
+
+    // Preserve graft order in the report (per_graft is a HashMap).
+    let grafts_reports: Vec<GraftReport> = grafts
+        .iter()
+        .map(|g| per_graft.remove(&g.name).expect("seeded above"))
+        .collect();
 
     let mut output = lines.join("\n");
     if trailing_newline {
         output.push('\n');
     }
-    Ok((output, report))
+    Ok((
+        output,
+        InjectReport {
+            markers_in_source,
+            markers_missing,
+            grafts: grafts_reports,
+        },
+    ))
 }
 
 /// Insert composed body lines after the marker, indented to match the
@@ -445,17 +419,90 @@ fn already_wired_for(lines: &[String], marker_idx: usize, marker: Marker, sentin
 }
 
 fn find_bare_tilde(lines: &[String], from: usize) -> Option<usize> {
-    for i in from..lines.len().min(from + 10) {
-        let trimmed = lines[i].trim();
-        if trimmed == "~" {
-            return Some(i);
+    let end = lines.len().min(from + 10);
+    lines[from..end]
+        .iter()
+        .position(|l| l.trim() == "~")
+        .map(|offset| from + offset)
+}
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "graft-inject",
+    version,
+    about = "Compose vesl-flavored grafts into a nockup app.hoon kernel",
+    long_about = None,
+)]
+struct Cli {
+    /// Target file (omit when using --list).
+    path: Option<PathBuf>,
+
+    /// Comma-separated graft names, in injection order. When omitted,
+    /// auto-discovers all *.toml manifests under --lib-dir.
+    #[arg(long, value_delimiter = ',')]
+    grafts: Vec<String>,
+
+    /// Comma-separated graft names to subtract from the discovered set.
+    /// Ignored when --grafts is given (use --grafts instead).
+    #[arg(long, value_delimiter = ',')]
+    exclude: Vec<String>,
+
+    /// Manifest discovery root.
+    #[arg(long, default_value = DEFAULT_LIB_DIR)]
+    lib_dir: PathBuf,
+
+    /// Print discovered grafts and exit. Pair with --json for machine-readable.
+    #[arg(long)]
+    list: bool,
+
+    /// JSON output mode (currently only meaningful with --list).
+    #[arg(long)]
+    json: bool,
+
+    /// Print the would-be output to stdout instead of writing to disk.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+/// Schema item for `--list --json`. Stable across the v3 plan's lifespan;
+/// version bumps append fields, never reshape existing ones. Documented
+/// in vesl/docs/graft-manifest.md (`--list --json schema`).
+#[derive(Debug, Serialize)]
+struct GraftSummary<'a> {
+    name: &'a str,
+    version: &'a str,
+    priority: i32,
+    blocks: Vec<&'static str>,
+    applicable: usize,
+    deferred: bool,
+}
+
+impl<'a> GraftSummary<'a> {
+    fn from_graft(g: &'a Graft) -> Self {
+        let blocks: Vec<&'static str> = Marker::ALL
+            .iter()
+            .filter(|m| g.block(**m).is_some())
+            .map(|m| m.label())
+            .collect();
+        let applicable = blocks.len();
+        Self {
+            name: &g.name,
+            version: &g.version,
+            priority: g.priority,
+            blocks,
+            applicable,
+            deferred: false,
         }
     }
-    None
 }
 
 fn main() -> ExitCode {
-    match run() {
+    let cli = Cli::parse();
+    match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("graft-inject: {e:#}");
@@ -464,72 +511,169 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
-        bail!("usage: graft-inject <path-to-app.hoon>");
-    }
-    let path = PathBuf::from(&args[1]);
-    let source = fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
+fn run(cli: Cli) -> Result<()> {
+    let grafts = select_grafts(&cli)?;
 
-    // Phase 4: discover grafts in the conventional ./hoon/lib/ root
-    // relative to cwd. Phase 6 adds the --lib-dir / --grafts CLI flags
-    // and richer discovery.
-    let lib_dir = PathBuf::from("hoon").join("lib");
-    let grafts = if lib_dir.is_dir() {
-        discover_grafts(&lib_dir)
-            .with_context(|| format!("discovering grafts under {}", lib_dir.display()))?
-    } else {
-        Vec::new()
-    };
-    if grafts.is_empty() {
-        bail!(
-            "no grafts discovered under {}; expected at least one *.toml manifest with a [graft] table",
-            lib_dir.display()
-        );
+    if cli.list {
+        emit_list(&grafts, cli.json);
+        return Ok(());
     }
+
+    let path = cli.path.as_ref().ok_or_else(|| {
+        anyhow!("missing target path (or use --list to enumerate discovered grafts)")
+    })?;
+    let source = fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
 
     let (output, report) = inject(&source, &grafts)
         .with_context(|| format!("injecting into {}", path.display()))?;
 
-    if output != source {
-        fs::write(&path, output)
-            .with_context(|| format!("writing {}", path.display()))?;
+    if cli.dry_run {
+        print!("{output}");
+    } else if output != source {
+        fs::write(path, &output).with_context(|| format!("writing {}", path.display()))?;
     }
 
-    print_report(&path, &report)?;
+    print_report(path, &report);
+    if report.markers_in_source.is_empty() {
+        bail!(
+            "no nockup markers found in {}; nothing to wire",
+            path.display()
+        );
+    }
     Ok(())
 }
 
-fn print_report(path: &PathBuf, report: &[(Marker, MarkerStatus)]) -> Result<()> {
-    let mut injected = Vec::new();
-    let mut skipped = Vec::new();
-    let mut missing = Vec::new();
-    for (m, s) in report {
-        match s {
-            MarkerStatus::Injected => injected.push(m.label()),
-            MarkerStatus::Skipped => skipped.push(m.label()),
-            MarkerStatus::Missing => missing.push(m.label()),
+/// Resolve the effective graft set per CLI flags. `--grafts` is explicit
+/// (must name discovered grafts; unknown names hard-error). Otherwise
+/// discover all manifests under `--lib-dir` and subtract `--exclude`.
+fn select_grafts(cli: &Cli) -> Result<Vec<Graft>> {
+    if !cli.lib_dir.is_dir() {
+        bail!(
+            "lib-dir {} does not exist or is not a directory",
+            cli.lib_dir.display()
+        );
+    }
+    let mut discovered = discover_grafts(&cli.lib_dir)
+        .with_context(|| format!("discovering grafts under {}", cli.lib_dir.display()))?;
+    if discovered.is_empty() {
+        bail!(
+            "no grafts discovered under {}; expected at least one *.toml with a [graft] table",
+            cli.lib_dir.display()
+        );
+    }
+
+    if !cli.grafts.is_empty() {
+        let known: HashSet<&str> = discovered.iter().map(|g| g.name.as_str()).collect();
+        let mut selected: Vec<Graft> = Vec::new();
+        for name in &cli.grafts {
+            if !known.contains(name.as_str()) {
+                bail!(
+                    "unknown graft `{name}` (discovered: {})",
+                    discovered
+                        .iter()
+                        .map(|g| g.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            // Keep CLI ordering for the explicit form.
+            let g = discovered
+                .iter()
+                .find(|g| g.name == *name)
+                .expect("checked above")
+                .clone();
+            selected.push(g);
+        }
+        return Ok(selected);
+    }
+
+    if !cli.exclude.is_empty() {
+        let exclude: HashSet<&str> = cli.exclude.iter().map(String::as_str).collect();
+        discovered.retain(|g| !exclude.contains(g.name.as_str()));
+        if discovered.is_empty() {
+            eprintln!("graft-inject: warning — all discovered grafts were excluded");
         }
     }
-    println!("graft-inject: {}", path.display());
-    if !injected.is_empty() {
-        println!("  injected: {} ({}/5)", injected.join(", "), injected.len());
+    Ok(discovered)
+}
+
+fn emit_list(grafts: &[Graft], json: bool) {
+    if json {
+        let summaries: Vec<GraftSummary> = grafts.iter().map(GraftSummary::from_graft).collect();
+        let s = serde_json::to_string_pretty(&summaries)
+            .expect("GraftSummary always serializes");
+        println!("{s}");
+        return;
     }
-    if !skipped.is_empty() {
-        println!("  skipped (already wired): {}", skipped.join(", "));
+    if grafts.is_empty() {
+        println!("(no grafts discovered)");
+        return;
     }
-    if !missing.is_empty() {
-        eprintln!("  warning — markers not found: {}", missing.join(", "));
+    for g in grafts {
+        let summary = GraftSummary::from_graft(g);
+        println!(
+            "  {:<16} {:<8} priority={:<3} ({})",
+            summary.name,
+            summary.version,
+            summary.priority,
+            summary.blocks.join(", ")
+        );
     }
-    if injected.is_empty() && skipped.is_empty() && missing.len() == 5 {
-        return Err(anyhow!(
-            "no nockup markers found in {}; nothing to wire",
-            path.display()
-        ));
+}
+
+/// Print the per-graft injection report to stderr. stderr (not stdout)
+/// so `--dry-run` users can pipe the rendered file out cleanly.
+fn print_report(path: &Path, report: &InjectReport) {
+    eprintln!("graft-inject: {}", path.display());
+    let mut had_output = false;
+    for g in &report.grafts {
+        if g.applicable.is_empty() {
+            continue;
+        }
+        had_output = true;
+        let injected_labels: Vec<&str> =
+            g.injected.iter().map(|m| m.label()).collect();
+        let skipped_labels: Vec<&str> =
+            g.skipped.iter().map(|m| m.label()).collect();
+        let mut summary = format!(
+            "  {:<16} injected {}/{}",
+            g.name,
+            g.injected.len(),
+            g.applicable.len()
+        );
+        if !injected_labels.is_empty() {
+            summary.push_str(&format!(" ({})", injected_labels.join(", ")));
+        }
+        if !skipped_labels.is_empty() {
+            summary.push_str(&format!("; skipped {}", skipped_labels.join(", ")));
+        }
+        eprintln!("{summary}");
     }
-    Ok(())
+    if !had_output {
+        eprintln!("  (no grafts contributed)");
+    }
+    let present_labels: Vec<&str> = report
+        .markers_in_source
+        .iter()
+        .map(|m| m.label())
+        .collect();
+    let missing_labels: Vec<&str> = report
+        .markers_missing
+        .iter()
+        .map(|m| m.label())
+        .collect();
+    eprintln!(
+        "  markers present: {} ({})",
+        present_labels.len(),
+        present_labels.join(", ")
+    );
+    if !missing_labels.is_empty() {
+        eprintln!(
+            "  warning — markers not found: {}",
+            missing_labels.join(", ")
+        );
+    }
 }
 
 #[cfg(test)]
@@ -631,6 +775,23 @@ mod tests {
         }
     }
 
+    fn vesl_graft_manifest_path() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("hoon")
+            .join("lib")
+            .join("vesl-graft.toml")
+    }
+
+    fn tempdir_for_test(label: &str) -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("graft-inject-test-{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn injects_all_markers() {
         let grafts = vesl_only_grafts();
@@ -642,17 +803,17 @@ mod tests {
         assert!(out.contains("%vesl-register"));
         assert!(out.contains("%vesl-verify"));
         assert!(out.contains("%vesl-settle"));
-        // Phase 4: peek emits a chain instead of a flat replacement.
-        // The body still contains the legacy `(vesl-peek vesl.state path)`
-        // expression, now wrapped in `=/  vesl-res  ...` and a fall-through.
+        // Peek emits the chain shape (Phase 4): the legacy expression
+        // lives inside the `=/ vesl-res ...` binding.
         assert!(out.contains("=/  vesl-res  (vesl-peek vesl.state path)"));
         assert!(out.contains("?.  =(~ vesl-res)  vesl-res"));
 
-        let injected_count = report
-            .iter()
-            .filter(|(_, s)| *s == MarkerStatus::Injected)
-            .count();
-        assert_eq!(injected_count, 5);
+        assert_eq!(report.markers_in_source.len(), 5);
+        assert!(report.markers_missing.is_empty());
+        let vesl = &report.grafts[0];
+        assert_eq!(vesl.name, "vesl-graft");
+        assert_eq!(vesl.injected.len(), 5);
+        assert!(vesl.skipped.is_empty());
     }
 
     #[test]
@@ -660,33 +821,35 @@ mod tests {
         let grafts = vesl_only_grafts();
         let (first, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
         let (second, report) = inject(&first, &grafts).unwrap();
-        assert_eq!(first, second);
-        for (m, s) in &report {
-            assert!(
-                matches!(s, MarkerStatus::Skipped | MarkerStatus::Injected),
-                "marker {:?} had unexpected status {:?}",
-                m,
-                s
-            );
-        }
+        assert_eq!(first, second, "second inject must produce identical output");
+        let vesl = &report.grafts[0];
+        assert!(vesl.injected.is_empty(), "no marker should re-inject");
+        assert_eq!(vesl.skipped.len(), 5, "all 5 markers should skip");
     }
 
     #[test]
     fn preserves_two_space_law() {
-        // Check that runes are followed by exactly two spaces (or EOL).
-        // Violation pattern: rune + single space + non-space character.
-        for block in [BLOCK_IMPORTS, BLOCK_STATE, BLOCK_CAUSE, BLOCK_POKE] {
-            for line in block.lines() {
+        // The two-space law applies to every Hoon rune in the manifest
+        // bodies. Scan the loaded `vesl-graft.toml` rather than the
+        // (deleted) BLOCK_* constants — same content post-Phase 3.
+        let graft = load_manifest(&vesl_graft_manifest_path())
+            .unwrap()
+            .unwrap();
+        let bodies: Vec<&str> = Marker::ALL
+            .iter()
+            .filter_map(|m| graft.block(*m).map(|b| b.trimmed_body()))
+            .collect();
+        for body in bodies {
+            for line in body.lines() {
                 let trimmed = line.trim_start();
                 for rune in ["=/", "|=", "/+", "/-", "/=", "^-", ":_", "?-", "?+", "?~", "?."] {
                     if let Some(rest) = trimmed.strip_prefix(rune) {
-                        // Valid: EOL, or two or more spaces, or no space (e.g. "=/=").
                         let next_two: Vec<char> = rest.chars().take(2).collect();
                         match next_two.as_slice() {
-                            [] => {}                       // rune alone on line — fine
-                            [' ', ' '] => {}               // two spaces — correct
-                            [' ', _] => panic!("single-space `{rune}` in block line: {line:?}"),
-                            _ => {}                        // non-space — different token
+                            [] => {}
+                            [' ', ' '] => {}
+                            [' ', _] => panic!("single-space `{rune}` in body line: {line:?}"),
+                            _ => {}
                         }
                     }
                 }
@@ -699,12 +862,10 @@ mod tests {
         let grafts = vesl_only_grafts();
         let src = "::  just a comment\n";
         let result = inject(src, &grafts);
-        // inject() always succeeds; it's run() that errors if ALL markers are missing
         assert!(result.is_ok());
         let (_, report) = result.unwrap();
-        for (_, status) in &report {
-            assert_eq!(*status, MarkerStatus::Missing);
-        }
+        assert_eq!(report.markers_missing.len(), 5);
+        assert!(report.markers_in_source.is_empty());
     }
 
     #[test]
@@ -712,48 +873,8 @@ mod tests {
         let grafts = vesl_only_grafts();
         let src = "::  nockup:pokemon\n";
         let (_, report) = inject(src, &grafts).unwrap();
-        for (_, status) in &report {
-            assert_eq!(*status, MarkerStatus::Missing);
-        }
-    }
-
-    fn vesl_graft_manifest_path() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("hoon")
-            .join("lib")
-            .join("vesl-graft.toml")
-    }
-
-    #[test]
-    fn manifest_matches_hardcoded_blocks() {
-        let path = vesl_graft_manifest_path();
-        let graft = load_manifest(&path)
-            .expect("manifest load failed")
-            .expect("vesl-graft.toml missing [graft] table");
-        assert_eq!(graft.name, "vesl-graft");
-        assert_eq!(graft.priority, 10);
-
-        let imports = graft.blocks.imports.as_ref().expect("imports block");
-        assert_eq!(imports.trimmed_body(), BLOCK_IMPORTS);
-        assert_eq!(imports.sentinel, SENTINEL_IMPORTS);
-
-        let state = graft.blocks.state.as_ref().expect("state block");
-        assert_eq!(state.trimmed_body(), BLOCK_STATE);
-        assert_eq!(state.sentinel, SENTINEL_STATE);
-
-        let cause = graft.blocks.cause.as_ref().expect("cause block");
-        assert_eq!(cause.trimmed_body(), BLOCK_CAUSE);
-        assert_eq!(cause.sentinel, SENTINEL_CAUSE);
-
-        let poke = graft.blocks.poke.as_ref().expect("poke block");
-        assert_eq!(poke.trimmed_body(), BLOCK_POKE);
-        assert_eq!(poke.sentinel, SENTINEL_POKE);
-
-        let peek = graft.blocks.peek.as_ref().expect("peek block");
-        assert_eq!(peek.trimmed_body(), PEEK_REPLACEMENT);
-        assert_eq!(peek.sentinel, SENTINEL_PEEK);
+        assert_eq!(report.markers_missing.len(), 5);
+        assert!(report.markers_in_source.is_empty());
     }
 
     #[test]
@@ -771,50 +892,33 @@ mod tests {
         for name in ["imports", "state", "cause", "poke", "peek"] {
             assert!(Marker::parse(name).is_some(), "expected Some for {name}");
         }
-        // Stage-3-reserved names must not parse in Stage 1.
         assert!(Marker::parse("load").is_none());
         assert!(Marker::parse("arms").is_none());
-        // Unknown name is None.
         assert!(Marker::parse("nonsense").is_none());
     }
 
-    fn tempdir_for_test(label: &str) -> PathBuf {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("graft-inject-test-{label}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     #[test]
-    fn single_graft_injection_byte_identical_to_hardcoded() {
-        // Proves the data-driven inject() pastes the manifest body
-        // verbatim at every non-peek marker, with the marker's leading
-        // whitespace prepended and no other rewriting. Since the manifest
-        // body matches BLOCK_* byte-for-byte (manifest_matches_hardcoded_blocks),
-        // this transitively proves the data path produces the same output
-        // a hardcoded inject() would have at those markers.
-        //
-        // Peek is intentionally excluded — Phase 4 changes peek from a
-        // flat replacement to a chain. peek_chain_n1_matches_legacy_replacement
-        // covers the new shape.
+    fn single_graft_injection_pastes_body_verbatim() {
+        // The data-driven inject() pastes the manifest body verbatim at
+        // every non-peek marker, with the marker's leading whitespace
+        // prepended and no other rewriting. Peek is excluded — see
+        // peek_chain_n1_matches_legacy_replacement for that shape.
         let grafts = vesl_only_grafts();
+        let graft = &grafts[0];
         let (out, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
         let lines: Vec<&str> = out.lines().collect();
-        for (label, block) in [
-            ("imports", BLOCK_IMPORTS),
-            ("state", BLOCK_STATE),
-            ("cause", BLOCK_CAUSE),
-            ("poke", BLOCK_POKE),
-        ] {
-            let needle = format!("::  nockup:{label}");
+        for marker in [Marker::Imports, Marker::State, Marker::Cause, Marker::Poke] {
+            let needle = format!("::  nockup:{}", marker.label());
             let marker_idx = lines
                 .iter()
                 .position(|l| l.trim_start().starts_with(&needle))
-                .unwrap_or_else(|| panic!("marker `{label}` missing from output"));
+                .unwrap_or_else(|| panic!("marker `{}` missing from output", marker.label()));
             let marker_indent = leading_whitespace(lines[marker_idx]).to_string();
-            let body_lines: Vec<&str> = block.lines().collect();
-            for (i, want) in body_lines.iter().enumerate() {
+            let body = graft
+                .block(marker)
+                .expect("vesl claims this marker")
+                .trimmed_body();
+            for (i, want) in body.lines().enumerate() {
                 let got = lines[marker_idx + 1 + i];
                 let expected = if want.is_empty() {
                     String::new()
@@ -822,8 +926,10 @@ mod tests {
                     format!("{marker_indent}{want}")
                 };
                 assert_eq!(
-                    got, expected,
-                    "marker `{label}` line {i} byte mismatch"
+                    got,
+                    expected,
+                    "marker `{}` line {i} byte mismatch",
+                    marker.label()
                 );
             }
         }
@@ -932,12 +1038,16 @@ mod tests {
                 "alpha line `{needle}` must appear exactly once"
             );
         }
-        for (m, s) in &report {
-            assert!(
-                matches!(s, MarkerStatus::Skipped | MarkerStatus::Injected),
-                "marker {m:?} reported {s:?}"
-            );
-        }
+        // vesl was wired on the first run, so all 5 of its markers
+        // skip on the second; alpha is fresh and injects all 5.
+        let vesl_report = &report.grafts[0];
+        let alpha_report = &report.grafts[1];
+        assert_eq!(vesl_report.name, "vesl-graft");
+        assert_eq!(vesl_report.injected.len(), 0);
+        assert_eq!(vesl_report.skipped.len(), 5);
+        assert_eq!(alpha_report.name, "alpha");
+        assert_eq!(alpha_report.injected.len(), 5);
+        assert_eq!(alpha_report.skipped.len(), 0);
     }
 
     #[test]
@@ -987,9 +1097,9 @@ mod tests {
         //   ?.  =(~ vesl-res)  vesl-res
         //   ~                                   <- terminal fallback
         //
-        // The legacy expression `(vesl-peek vesl.state path)` lives inside
-        // the chain's =/ binding — same runtime semantics as the pre-Phase-4
-        // flat replacement when only one graft contributes a peek body.
+        // The legacy `(vesl-peek vesl.state path)` expression lives inside
+        // the chain's `=/` binding — same runtime semantics as the
+        // pre-Phase-4 flat replacement.
         let grafts = vesl_only_grafts();
         let (out, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
         let peek_lines: Vec<&str> = out
@@ -999,11 +1109,140 @@ mod tests {
             .take(3)
             .collect();
         assert_eq!(peek_lines.len(), 3, "peek region has fewer than 3 lines");
-        let line0 = peek_lines[0].trim_start();
-        let line1 = peek_lines[1].trim_start();
-        let line2 = peek_lines[2].trim_start();
-        assert_eq!(line0, &format!("=/  vesl-res  {PEEK_REPLACEMENT}"));
-        assert_eq!(line1, "?.  =(~ vesl-res)  vesl-res");
-        assert_eq!(line2, "~");
+        assert_eq!(
+            peek_lines[0].trim_start(),
+            "=/  vesl-res  (vesl-peek vesl.state path)"
+        );
+        assert_eq!(peek_lines[1].trim_start(), "?.  =(~ vesl-res)  vesl-res");
+        assert_eq!(peek_lines[2].trim_start(), "~");
+    }
+
+    // ---------- Phase 6: CLI tests ----------
+
+    fn cli_with(lib_dir: PathBuf) -> Cli {
+        Cli {
+            path: None,
+            grafts: Vec::new(),
+            exclude: Vec::new(),
+            lib_dir,
+            list: false,
+            json: false,
+            dry_run: false,
+        }
+    }
+
+    /// Build a temp lib dir with vesl-graft.toml and an alpha synthetic
+    /// manifest so multi-manifest selection logic can be tested without
+    /// the real hoon/lib tree.
+    fn tempdir_with_two_manifests(label: &str) -> PathBuf {
+        let dir = tempdir_for_test(label);
+        let vesl_src = fs::read_to_string(vesl_graft_manifest_path()).unwrap();
+        fs::write(dir.join("vesl-graft.toml"), vesl_src).unwrap();
+        fs::write(
+            dir.join("alpha.toml"),
+            r#"[graft]
+name     = "alpha"
+version  = "0.1.0"
+priority = 50
+after    = []
+
+[graft.blocks.imports]
+sentinel = "*alpha"
+body     = "/+  *alpha"
+
+[graft.blocks.state]
+sentinel = "alpha=alpha-state"
+body     = "alpha=alpha-state"
+
+[graft.blocks.cause]
+sentinel = "alpha-cause"
+body     = "alpha-cause"
+
+[graft.blocks.poke]
+sentinel = "%alpha-do"
+body     = """
+  %alpha-do
+[~ state]"""
+
+[graft.blocks.peek]
+sentinel = "alpha-peek"
+body     = "(alpha-peek state path)"
+"#,
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn unknown_graft_name_errors() {
+        let dir = tempdir_with_two_manifests("unknown_graft");
+        let mut cli = cli_with(dir.clone());
+        cli.grafts = vec!["nosuch".to_string()];
+        let err = select_grafts(&cli).expect_err("unknown name must error");
+        assert!(
+            err.to_string().contains("unknown graft `nosuch`"),
+            "error should name the bad graft, got: {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exclude_flag_subtracts() {
+        let dir = tempdir_with_two_manifests("exclude_flag");
+        let mut cli = cli_with(dir.clone());
+        cli.exclude = vec!["alpha".to_string()];
+        let selected = select_grafts(&cli).unwrap();
+        let names: Vec<&str> = selected.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, vec!["vesl-graft"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dry_run_does_not_write() {
+        let dir = tempdir_with_two_manifests("dry_run");
+        let target = dir.join("app.hoon");
+        fs::write(&target, BARE_SCAFFOLD).unwrap();
+        let original = fs::read_to_string(&target).unwrap();
+
+        let mut cli = cli_with(dir.clone());
+        cli.path = Some(target.clone());
+        cli.dry_run = true;
+        // Constrain to vesl-graft so the synthetic alpha doesn't muddle
+        // the assertion (alpha's poke body is intentionally minimal).
+        cli.grafts = vec!["vesl-graft".to_string()];
+        run(cli).unwrap();
+
+        let after = fs::read_to_string(&target).unwrap();
+        assert_eq!(after, original, "--dry-run must not modify the file");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_json_is_stable() {
+        // Schema (documented in vesl/docs/graft-manifest.md):
+        //   [{ name, version, priority, blocks: [...], applicable, deferred }]
+        let grafts = vesl_only_grafts();
+        let summaries: Vec<GraftSummary> =
+            grafts.iter().map(GraftSummary::from_graft).collect();
+        let json = serde_json::to_string(&summaries).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let arr = parsed.as_array().expect("top-level array");
+        assert_eq!(arr.len(), 1);
+        let first = &arr[0];
+        assert_eq!(first["name"], "vesl-graft");
+        assert_eq!(first["version"], "0.1.0");
+        assert_eq!(first["priority"], 10);
+        assert_eq!(first["applicable"], 5);
+        assert_eq!(first["deferred"], false);
+        let blocks = first["blocks"].as_array().expect("blocks is array");
+        assert_eq!(blocks.len(), 5);
+        let block_names: Vec<&str> = blocks
+            .iter()
+            .map(|v| v.as_str().expect("block label is string"))
+            .collect();
+        assert_eq!(
+            block_names,
+            vec!["imports", "state", "cause", "poke", "peek"]
+        );
     }
 }
