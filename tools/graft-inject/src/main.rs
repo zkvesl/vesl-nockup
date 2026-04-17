@@ -297,10 +297,11 @@ pub fn inject(
     Ok((output, report))
 }
 
-/// Insert a non-peek block's body lines after the marker, indented to
-/// match the marker. Phase 4: `pending` is a single graft; Phase 5
-/// extends this to compose multiple grafts (blank-line separated; `::`
-/// separator for the poke marker).
+/// Insert composed body lines after the marker, indented to match the
+/// marker. Multi-graft composition: each pending graft's body is
+/// concatenated in priority order. The poke marker uses `::` as the
+/// inter-block separator (matching the existing intra-arm convention);
+/// other non-peek markers use a blank line.
 fn emit_block(
     lines: &mut Vec<String>,
     marker_idx: usize,
@@ -308,12 +309,25 @@ fn emit_block(
     marker: Marker,
     pending: &[&Graft],
 ) {
-    let body = pending[0]
-        .block(marker)
-        .expect("emit_block called with a graft missing this marker")
-        .trimmed_body();
-    let indented: Vec<String> = body
-        .lines()
+    let separator = match marker {
+        Marker::Poke => "::",
+        _ => "",
+    };
+    let mut composed: Vec<String> = Vec::new();
+    for (i, g) in pending.iter().enumerate() {
+        if i > 0 {
+            composed.push(separator.to_string());
+        }
+        let body = g
+            .block(marker)
+            .expect("emit_block called with a graft missing this marker")
+            .trimmed_body();
+        for line in body.lines() {
+            composed.push(line.to_string());
+        }
+    }
+    let indented: Vec<String> = composed
+        .into_iter()
         .map(|l| {
             if l.is_empty() {
                 String::new()
@@ -581,6 +595,42 @@ mod tests {
         vec![g]
     }
 
+    /// Build a minimal in-memory Graft for synthetic multi-graft tests.
+    /// `name` doubles as the binding stub in the peek chain (no `-graft`
+    /// suffix), so assertions can match `<name>-res` directly.
+    fn synthetic_graft(name: &str, priority: i32) -> Graft {
+        Graft {
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            priority,
+            after: vec![],
+            blocks: GraftBlocks {
+                imports: Some(Block {
+                    sentinel: format!("*{name}"),
+                    body: format!("/+  *{name}"),
+                }),
+                state: Some(Block {
+                    sentinel: format!("{name}={name}-state"),
+                    body: format!("{name}={name}-state"),
+                }),
+                cause: Some(Block {
+                    sentinel: format!("{name}-cause"),
+                    body: format!("{name}-cause"),
+                }),
+                poke: Some(Block {
+                    sentinel: format!("%{name}-do"),
+                    body: format!(
+                        "  %{name}-do\n=/  lc=cause  [%{name}-do ~]\n[~ state]"
+                    ),
+                }),
+                peek: Some(Block {
+                    sentinel: format!("{name}-peek"),
+                    body: format!("({name}-peek state path)"),
+                }),
+            },
+        }
+    }
+
     #[test]
     fn injects_all_markers() {
         let grafts = vesl_only_grafts();
@@ -777,6 +827,157 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn multi_graft_injection_composes_blocks() {
+        // vesl + two synthetic grafts, all three contribute to every marker.
+        // Each marker region must contain all three sentinels in priority order.
+        let mut grafts = vesl_only_grafts();
+        grafts.push(synthetic_graft("alpha", 50));
+        grafts.push(synthetic_graft("beta", 60));
+        let (out, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
+
+        // imports: all three import directives present
+        assert!(out.contains("/+  *vesl-graft"));
+        assert!(out.contains("/+  *alpha"));
+        assert!(out.contains("/+  *beta"));
+        // state: all three field declarations
+        assert!(out.contains("vesl=vesl-state"));
+        assert!(out.contains("alpha=alpha-state"));
+        assert!(out.contains("beta=beta-state"));
+        // cause: all three cause-union members
+        assert!(out.contains("vesl-cause"));
+        assert!(out.contains("alpha-cause"));
+        assert!(out.contains("beta-cause"));
+        // poke: all three first-arm tags
+        assert!(out.contains("%vesl-register"));
+        assert!(out.contains("%alpha-do"));
+        assert!(out.contains("%beta-do"));
+        // peek: all three chain bindings
+        assert!(out.contains("=/  vesl-res  (vesl-peek vesl.state path)"));
+        assert!(out.contains("=/  alpha-res  (alpha-peek state path)"));
+        assert!(out.contains("=/  beta-res  (beta-peek state path)"));
+    }
+
+    #[test]
+    fn peek_chain_composition() {
+        // Three grafts → six chain lines + terminal `~` = seven lines total
+        // immediately after the marker, in priority order.
+        let mut grafts = vesl_only_grafts();
+        grafts.push(synthetic_graft("alpha", 50));
+        grafts.push(synthetic_graft("beta", 60));
+        let (out, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
+        let peek_lines: Vec<String> = out
+            .lines()
+            .skip_while(|l| !l.contains("nockup:peek"))
+            .skip(1)
+            .take(7)
+            .map(|l| l.trim_start().to_string())
+            .collect();
+        assert_eq!(peek_lines.len(), 7, "expected 7 lines after peek marker");
+        assert_eq!(peek_lines[0], "=/  vesl-res  (vesl-peek vesl.state path)");
+        assert_eq!(peek_lines[1], "?.  =(~ vesl-res)  vesl-res");
+        assert_eq!(peek_lines[2], "=/  alpha-res  (alpha-peek state path)");
+        assert_eq!(peek_lines[3], "?.  =(~ alpha-res)  alpha-res");
+        assert_eq!(peek_lines[4], "=/  beta-res  (beta-peek state path)");
+        assert_eq!(peek_lines[5], "?.  =(~ beta-res)  beta-res");
+        assert_eq!(peek_lines[6], "~");
+    }
+
+    #[test]
+    fn per_graft_idempotence_inject_vesl_then_alpha() {
+        // First inject vesl alone; then re-inject with [vesl, alpha].
+        // vesl region must not double-up (no duplicated sentinels), and
+        // alpha must appear interleaved at every marker.
+        let vesl = vesl_only_grafts();
+        let (after_vesl, _) = inject(BARE_SCAFFOLD, &vesl).unwrap();
+
+        let mut both = vesl.clone();
+        both.push(synthetic_graft("alpha", 50));
+        let (after_both, report) = inject(&after_vesl, &both).unwrap();
+
+        // Use exact-trimmed-line matching to avoid spurious substring
+        // hits inside the poke body (e.g., `new-vesl=vesl-state` contains
+        // the `vesl=vesl-state` substring).
+        let lines: Vec<&str> = after_both.lines().collect();
+        let trimmed_eq_count = |needle: &str| -> usize {
+            lines.iter().filter(|l| l.trim() == needle).count()
+        };
+
+        for needle in [
+            "/+  *vesl-graft",
+            "/+  *vesl-merkle",
+            "vesl=vesl-state",
+            "vesl-cause",
+            "%vesl-register",
+            "=/  vesl-res  (vesl-peek vesl.state path)",
+        ] {
+            assert_eq!(
+                trimmed_eq_count(needle),
+                1,
+                "vesl line `{needle}` must appear exactly once"
+            );
+        }
+        for needle in [
+            "/+  *alpha",
+            "alpha=alpha-state",
+            "alpha-cause",
+            "%alpha-do",
+            "=/  alpha-res  (alpha-peek state path)",
+        ] {
+            assert_eq!(
+                trimmed_eq_count(needle),
+                1,
+                "alpha line `{needle}` must appear exactly once"
+            );
+        }
+        for (m, s) in &report {
+            assert!(
+                matches!(s, MarkerStatus::Skipped | MarkerStatus::Injected),
+                "marker {m:?} reported {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn peek_chain_idempotence_append_third_graft() {
+        // Build vesl+alpha chain, then add beta. Beta's two lines must
+        // land immediately before the terminal `~`, after the existing
+        // vesl and alpha chain lines.
+        let vesl_alpha: Vec<Graft> = {
+            let mut v = vesl_only_grafts();
+            v.push(synthetic_graft("alpha", 50));
+            v
+        };
+        let (after_va, _) = inject(BARE_SCAFFOLD, &vesl_alpha).unwrap();
+
+        let mut all = vesl_alpha.clone();
+        all.push(synthetic_graft("beta", 60));
+        let (after_all, _) = inject(&after_va, &all).unwrap();
+
+        // Beta lines exist exactly once in the output.
+        assert_eq!(
+            after_all
+                .matches("=/  beta-res  (beta-peek state path)")
+                .count(),
+            1
+        );
+
+        // The peek region after the marker is now: vesl pair, alpha pair,
+        // beta pair, terminal `~`. Beta's pair lands immediately before the
+        // terminal `~`.
+        let peek_lines: Vec<String> = after_all
+            .lines()
+            .skip_while(|l| !l.contains("nockup:peek"))
+            .skip(1)
+            .take(7)
+            .map(|l| l.trim_start().to_string())
+            .collect();
+        assert_eq!(peek_lines.len(), 7);
+        assert_eq!(peek_lines[4], "=/  beta-res  (beta-peek state path)");
+        assert_eq!(peek_lines[5], "?.  =(~ beta-res)  beta-res");
+        assert_eq!(peek_lines[6], "~");
     }
 
     #[test]
