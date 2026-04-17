@@ -28,6 +28,8 @@ cp "$vesl/protocol/lib/vesl-graft.hoon"  "$here/hoon/lib/"
 cp "$vesl/protocol/lib/vesl-graft.toml"  "$here/hoon/lib/"
 cp "$vesl/protocol/lib/mint-graft.hoon"  "$here/hoon/lib/"
 cp "$vesl/protocol/lib/mint-graft.toml"  "$here/hoon/lib/"
+cp "$vesl/protocol/lib/guard-graft.hoon" "$here/hoon/lib/"
+cp "$vesl/protocol/lib/guard-graft.toml" "$here/hoon/lib/"
 cp "$vesl/protocol/lib/vesl-merkle.hoon" "$here/hoon/lib/"
 
 echo "  hoon common"
