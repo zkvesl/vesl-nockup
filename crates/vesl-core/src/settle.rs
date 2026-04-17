@@ -459,6 +459,117 @@ fn build_settlement_payload_in(
     nockvm::noun::T(slab, &[note_noun, manifest_noun, exp_root])
 }
 
+// ---------------------------------------------------------------------------
+// Graft poke builders
+//
+// Tagged in the graft namespace (%vesl-register, %vesl-settle, %vesl-verify),
+// distinct from the RAG-specific %register / %settle / %prove pokes above.
+// Use these when wiring a kernel grafted via `graft-inject` — the marker
+// injection emits arms matching these tags.
+// ---------------------------------------------------------------------------
+
+/// Build a `[%vesl-register hull=@ root=@]` poke as a `NounSlab`.
+///
+/// Pair with the `%vesl-register` arm installed by `graft-inject`.
+pub fn build_vesl_register_poke(hull: u64, root: &Tip5Hash) -> NounSlab {
+    use nock_noun_rs::*;
+    use nockchain_tip5_rs::tip5_to_atom_le_bytes;
+
+    let mut slab = NounSlab::new();
+
+    let tag = make_tag_in(&mut slab, "vesl-register");
+    let hull_noun = nockvm::noun::D(hull);
+    let root_bytes = tip5_to_atom_le_bytes(root);
+    let root_noun = make_atom_in(&mut slab, &root_bytes);
+
+    let poke = nockvm::noun::T(&mut slab, &[tag, hull_noun, root_noun]);
+    slab.set_root(poke);
+    slab
+}
+
+/// Build a `[%vesl-settle jammed-graft-payload]` poke as a `NounSlab`
+/// for a single-leaf commitment.
+///
+/// `data` is the raw payload bytes the default hash-gate will hash and
+/// compare against the registered root. For single-leaf commits, the
+/// registered root equals `hash-leaf(data)`.
+pub fn build_vesl_settle_poke(
+    note_id: u64,
+    hull: u64,
+    root: &Tip5Hash,
+    data: &[u8],
+) -> NounSlab {
+    build_vesl_payload_poke("vesl-settle", note_id, hull, root, data)
+}
+
+/// Build a `[%vesl-verify jammed-graft-payload]` poke as a `NounSlab`
+/// for a single-leaf commitment. Same payload shape as `vesl-settle`,
+/// but pure verification — no state transition, no replay check.
+pub fn build_vesl_verify_poke(
+    note_id: u64,
+    hull: u64,
+    root: &Tip5Hash,
+    data: &[u8],
+) -> NounSlab {
+    build_vesl_payload_poke("vesl-verify", note_id, hull, root, data)
+}
+
+fn build_vesl_payload_poke(
+    verb: &str,
+    note_id: u64,
+    hull: u64,
+    root: &Tip5Hash,
+    data: &[u8],
+) -> NounSlab {
+    use nock_noun_rs::*;
+
+    let mut slab = NounSlab::new();
+
+    let tag = make_tag_in(&mut slab, verb);
+    let payload = build_graft_single_leaf_payload_in(&mut slab, note_id, hull, root, data);
+    let payload_bytes = {
+        let mut stack = new_stack();
+        jam_to_bytes(&mut stack, payload)
+    };
+    let jammed = make_atom_in(&mut slab, &payload_bytes);
+
+    let poke = nockvm::noun::T(&mut slab, &[tag, jammed]);
+    slab.set_root(poke);
+    slab
+}
+
+/// Build a single-leaf graft-payload noun in a NounSlab.
+///
+/// Shape matches `vesl-graft.hoon`'s `graft-payload`:
+/// `[note=[id=@ hull=@ root=@ state=[%pending ~]] data=@ expected-root=@]`
+fn build_graft_single_leaf_payload_in(
+    slab: &mut NounSlab,
+    note_id: u64,
+    hull: u64,
+    root: &Tip5Hash,
+    data: &[u8],
+) -> nockvm::noun::Noun {
+    use nock_noun_rs::*;
+    use nockchain_tip5_rs::tip5_to_atom_le_bytes;
+
+    let root_bytes = tip5_to_atom_le_bytes(root);
+    let note_root = make_atom_in(slab, &root_bytes);
+    let pending = make_tag_in(slab, "pending");
+    let state = nockvm::noun::T(slab, &[pending, nockvm::noun::D(0)]);
+    let note = nockvm::noun::T(
+        slab,
+        &[
+            nockvm::noun::D(note_id),
+            nockvm::noun::D(hull),
+            note_root,
+            state,
+        ],
+    );
+    let data_atom = make_atom_in(slab, data);
+    let exp_root = make_atom_in(slab, &root_bytes);
+    nockvm::noun::T(slab, &[note, data_atom, exp_root])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

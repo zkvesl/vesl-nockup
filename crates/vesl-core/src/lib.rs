@@ -1,13 +1,13 @@
 //! vesl-core — High-level Vesl SDK
 //!
-//! Four tiers, each a different weight class:
+//! Four primitives, each a different weight class:
 //!
 //! - **Mint** — Data commitment. Pure math, zero async. Commit chunks, get a root.
 //! - **Guard** — Verification. Prove chunks and manifests against trusted roots.
 //! - **Settle** — Settlement. Kernel boot + chain access for note state transitions.
 //! - **Forge** — STARK proof. Everything Settle does, plus proof generation.
 //!
-//! Callers pick the tier they need. Mint users never touch the kernel.
+//! Callers pick the primitive they need. Mint users never touch the kernel.
 //! Forge users get the full pipeline.
 
 pub mod settle;
@@ -37,6 +37,8 @@ pub use types::{
 };
 pub use guard::GuardError;
 pub use mint::MintError;
-pub use settle::RagVerifier;
+pub use settle::{
+    build_vesl_register_poke, build_vesl_settle_poke, build_vesl_verify_poke, RagVerifier,
+};
 pub use signing::{SigningError, derive_pubkey, pubkey_hash, sign, key_from_seed_phrase};
 pub use config::{SettlementMode, SettlementConfig, SettlementToml};

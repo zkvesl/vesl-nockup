@@ -7,3 +7,4 @@ Cargo.lock
 *.swp
 .DS_Store
 out.jam
+.dev/

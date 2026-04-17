@@ -14,10 +14,10 @@ If those all resolve, you're ready.
 
 ## Step 1 — scaffold a project
 
-```bash
-mkdir my-app && cd my-app
+From whatever directory you want your project to live under, write a `nockapp.toml` describing the package, then let nockup create the project subdir:
 
-cat > my-app.toml <<'TOML'
+```bash
+cat > nockapp.toml <<'TOML'
 [package]
 name = "my-app"
 version = "0.1.0"
@@ -26,17 +26,80 @@ template = "basic"
 TOML
 
 nockup project init
+cd my-app
 ```
 
-That gives you `hoon/app/app.hoon`, `src/main.rs`, `Cargo.toml`, and `build.rs` — the empty nockup scaffold.
+`nockup project init` reads `nockapp.toml` from the current directory and creates `my-app/` containing `hoon/app/app.hoon`, `src/main.rs`, `Cargo.toml`, and `build.rs` — the empty nockup scaffold. The filename must be exactly `nockapp.toml`; nockup won't pick it up under any other name.
+
+The nockup `basic` template is generic and needs three one-time fixups before vesl deps will compile. Apply these inside `my-app/`:
+
+1. **`Cargo.toml`** — the scaffolded nockchain deps carry empty git revisions (`rev = ""`). Replace them with path deps (or pinned revs). For a local dev checkout of the nockchain monorepo, replace the whole `[dependencies]` section and add a `[patch]` block so vesl-core's transitive git deps resolve to the same checkout:
+
+   ```toml
+   [dependencies]
+   nockapp       = { path = "../../nockchain/crates/nockapp", default-features = false }
+   nockvm        = { path = "../../nockchain/crates/nockvm/rust/nockvm" }
+   nockvm_macros = { path = "../../nockchain/crates/nockvm/rust/nockvm_macros" }
+
+   vesl-core         = { path = "../../vesl-nockup/crates/vesl-core" }
+   nock-noun-rs      = { path = "../../vesl-nockup/crates/nock-noun-rs" }
+   nockchain-tip5-rs = { path = "../../vesl-nockup/crates/nockchain-tip5-rs" }
+
+   tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+   [patch."https://github.com/nockchain/nockchain.git"]
+   nockapp         = { path = "../../nockchain/crates/nockapp" }
+   nockvm          = { path = "../../nockchain/crates/nockvm/rust/nockvm" }
+   nockvm_macros   = { path = "../../nockchain/crates/nockvm/rust/nockvm_macros" }
+   nockchain-math  = { path = "../../nockchain/crates/nockchain-math" }
+   nockchain-types = { path = "../../nockchain/crates/nockchain-types" }
+   noun-serde      = { path = "../../nockchain/crates/noun-serde" }
+   ibig            = { path = "../../nockchain/crates/nockvm/rust/ibig" }
+   ```
+
+   Adjust `../../` to wherever your `nockchain` and `vesl-nockup` checkouts live relative to the project. If `nockup package add` resolves `zkvesl/vesl-graft` for you (Step 2 below), the three `vesl-core`/`nock-noun-rs`/`nockchain-tip5-rs` lines will be written for you — leave them out of this block. Everything else stays.
+
+2. **`build.rs`** — the scaffold invokes a `hoonc --output <path>` flag that doesn't exist. Vesl compiles `out.jam` via `hoonc` in Step 4 directly, so collapse `build.rs` to a no-op:
+
+   ```rust
+   fn main() {
+       println!("cargo:rerun-if-changed=out.jam");
+   }
+   ```
+
+3. **`src/main.rs`** — the scaffold wraps the CLI in `Some(cli)` and imports a handful of unused symbols. Step 6 below replaces this file wholesale, so you can leave it alone for now — just know that the driver template here is the one that compiles.
 
 ## Step 2 — install the vesl graft package
 
 ```bash
-nockup package add zkvesl/vesl-graft
+nockup package add zkvesl/vesl-graft -v latest
 ```
 
-This drops the Hoon libraries into `hoon/lib/` (`vesl-graft.hoon`, `vesl-merkle.hoon`) and the tip5 hash tree into `hoon/common/` (`zeke.hoon`, `ztd/*.hoon`). It does not touch your Rust code or `app.hoon`.
+(`-v latest` is required; nockup refuses a bare `add` without a version spec.)
+
+When the package resolves, `nockup package add` records the dep in `nockapp.toml` and installs on the next `nockup project init` / `nockup package install` — run from the **parent** of the project dir, not from inside (`nockup package install` walks `./<package-name>/` and will error `Project directory '<package-name>' not found. Run nockup project init first.` if you run it from within the project). A successful install drops the Hoon libraries into `hoon/lib/` (`vesl-graft.hoon`, `vesl-merkle.hoon`) and the tip5 hash tree into `hoon/common/` (`zeke.hoon`, `ztd/*.hoon`). It does not touch your Rust `src/` or `hoon/app/app.hoon`. Confirm with `ls hoon/lib/vesl-graft.hoon` — nockup silently skips dependencies it can't resolve, so the absence of a warning does not mean it succeeded.
+
+Then copy the marker template over the scaffolded (and markerless) `app.hoon`:
+
+```bash
+cp <path-to-vesl-nockup>/templates/app.hoon hoon/app/app.hoon
+```
+
+The nockup `basic` template's `app.hoon` does not contain the five `::  nockup:*` markers that `graft-inject` wires against. `templates/app.hoon` is the same minimal kernel with the markers pre-placed at the correct structural points.
+
+### If the registry hasn't resolved `zkvesl/vesl-graft` yet
+
+Until the package lands in nockup's resolver, mirror what `package add` would have done by copying directly out of your local `vesl-nockup` checkout. (Skip `nockup package add` / `package install` entirely — they won't resolve, and `install` will error from inside the project dir anyway.)
+
+```bash
+cp <vesl-nockup>/hoon/lib/vesl-graft.hoon   hoon/lib/
+cp <vesl-nockup>/hoon/lib/vesl-merkle.hoon  hoon/lib/
+cp <vesl-nockup>/hoon/common/zeke.hoon      hoon/common/
+mkdir -p hoon/common/ztd
+cp <vesl-nockup>/hoon/common/ztd/*.hoon     hoon/common/ztd/
+```
+
+The three `vesl-core` / `nock-noun-rs` / `nockchain-tip5-rs` Rust deps are already in your `Cargo.toml` from Step 1's fixup — nothing to add here. Proceed to the marker copy above.
 
 ## Step 3 — wire the kernel
 
@@ -44,7 +107,7 @@ This drops the Hoon libraries into `hoon/lib/` (`vesl-graft.hoon`, `vesl-merkle.
 graft-inject hoon/app/app.hoon
 ```
 
-Your `app.hoon` starts with five `::  nockup:*` marker comments at fixed structural points. `graft-inject` reads each marker and inserts the Hoon needed to compose vesl into your kernel — imports, a `vesl-state` field, a `vesl-cause` union branch, three `?-` poke arms (`%vesl-register`, `%vesl-verify`, `%vesl-settle`), and a `vesl-peek` fallthrough in your peek handler. About 80 lines of mechanical boilerplate, written for you. The tool is idempotent — run it twice and it skips anything already wired.
+The `app.hoon` you copied in Step 2 has five `::  nockup:*` marker comments at fixed structural points. `graft-inject` reads each marker and inserts the Hoon needed to compose vesl into your kernel — imports, a `vesl-state` field, a `vesl-cause` union branch, three `?-` poke arms (`%vesl-register`, `%vesl-verify`, `%vesl-settle`), and a `vesl-peek` fallthrough in your peek handler. About 80 lines of mechanical boilerplate, written for you. The tool is idempotent — run it twice and it skips anything already wired.
 
 Expected output:
 
@@ -58,36 +121,37 @@ The arms `graft-inject` installs use a default hash-comparison gate: the kernel 
 ## Step 4 — compile the kernel
 
 ```bash
-hoonc --new hoon/app/app.hoon hoon/
+hoonc hoon/app/app.hoon hoon/
 ```
 
-Produces `out.jam`, the compiled kernel your Rust driver will boot.
+Produces `out.jam`, the compiled kernel your Rust driver will boot. (If you're iterating and want to bypass hoonc's cache, add `--new`.)
 
 ## Step 5 — build and run
 
-`nockup package add` updated your `Cargo.toml` with the vesl Rust deps and gave you a minimal `src/main.rs` that boots `out.jam`. Build:
+With `Cargo.toml` set up from Step 1 and the vesl crates from Step 2, build the driver:
 
 ```bash
 cargo +nightly build
 ```
 
-First build resolves `nockchain` as a git dep — expect 2–5 minutes.
+First build compiles the full nockchain stack — expect 2–5 minutes with path deps (faster on subsequent builds) or longer if the nockchain git deps resolve over the network.
 
 ## Step 6 — exercise the full lifecycle
 
-Replace `src/main.rs` with a driver that registers a Merkle root and settles a note against it:
+Replace `src/main.rs` with a driver that registers a Merkle root and settles a note against it. The poke construction lives in `vesl-core` — you only write the orchestration:
 
 ```rust
 use std::error::Error;
 use std::fs;
 
-use nock_noun_rs::{jam_to_bytes, make_atom_in, make_tag_in, new_stack};
 use nockapp::NockApp;
 use nockapp::kernel::boot;
 use nockapp::noun::slab::NounSlab;
 use nockapp::wire::{SystemWire, Wire};
-use nockvm::noun::{D, T};
-use vesl_core::{Mint, Tip5Hash, tip5_to_atom_le_bytes};
+use vesl_core::{
+    Mint, Tip5Hash,
+    build_vesl_register_poke, build_vesl_settle_poke,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -96,17 +160,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let kernel = fs::read("out.jam")?;
     let mut app: NockApp = boot::setup(&kernel, cli, &[], "my-app", None).await?;
 
-    // 1. Commit data to a Merkle tree
-    let items = [b"first" as &[u8], b"second"];
+    // 1. Commit data to a Merkle tree.
+    //    Default hash-gate verifies single-leaf commits only; see Customizing
+    //    below for multi-leaf / signed / STARK gates.
+    let items: [&[u8]; 1] = [b"first"];
     let mut mint = Mint::new();
     let root: Tip5Hash = mint.commit(&items);
 
     // 2. Register the root under hull_id = 1
-    poke(&mut app, build_register(1, &root)).await?;
+    poke(&mut app, build_vesl_register_poke(1, &root)).await?;
 
-    // 3. Settle a note committing to `first`
-    let payload = build_single_leaf_payload(1, 1, &root, items[0]);
-    poke(&mut app, build_payload_poke("vesl-settle", &payload)).await?;
+    // 3. Settle a note committing to `first` (note_id = 1, hull = 1)
+    poke(&mut app, build_vesl_settle_poke(1, 1, &root, items[0])).await?;
 
     Ok(())
 }
@@ -125,40 +190,6 @@ async fn poke(app: &mut NockApp, slab: NounSlab) -> Result<(), Box<dyn Error>> {
     }
     Ok(())
 }
-
-fn build_register(hull: u64, root: &Tip5Hash) -> NounSlab {
-    let mut slab = NounSlab::new();
-    let tag = make_tag_in(&mut slab, "vesl-register");
-    let root_atom = make_atom_in(&mut slab, &tip5_to_atom_le_bytes(root));
-    let poke = T(&mut slab, &[tag, D(hull), root_atom]);
-    slab.set_root(poke);
-    slab
-}
-
-fn build_payload_poke(verb: &str, payload: &[u8]) -> NounSlab {
-    let mut slab = NounSlab::new();
-    let tag = make_tag_in(&mut slab, verb);
-    let jammed = make_atom_in(&mut slab, payload);
-    let poke = T(&mut slab, &[tag, jammed]);
-    slab.set_root(poke);
-    slab
-}
-
-fn build_single_leaf_payload(
-    note_id: u64, hull: u64, root: &Tip5Hash, data: &[u8],
-) -> Vec<u8> {
-    let mut slab: NounSlab = NounSlab::new();
-    let rb = tip5_to_atom_le_bytes(root);
-    let note_root = make_atom_in(&mut slab, &rb);
-    let pending = make_tag_in(&mut slab, "pending");
-    let state = T(&mut slab, &[pending, D(0)]);
-    let note = T(&mut slab, &[D(note_id), D(hull), note_root, state]);
-    let data_atom = make_atom_in(&mut slab, data);
-    let exp_root = make_atom_in(&mut slab, &rb);
-    let payload = T(&mut slab, &[note, data_atom, exp_root]);
-    let mut stack = new_stack();
-    jam_to_bytes(&mut stack, payload)
-}
 ```
 
 ```bash
@@ -174,11 +205,15 @@ Expected output:
 
 You now have a grafted NockApp with on-kernel Merkle verification and replay-protected settlement.
 
+`vesl-core` also exports `build_vesl_verify_poke(note_id, hull, root, data)` for pure verification (no state transition). All three builders take the same shape: primitives in, ready-to-poke `NounSlab` out.
+
+**Why a single-leaf commit?** The default verification gate that `graft-inject` installs tip5-hashes the raw payload bytes and compares the digest against the registered root. That equality holds only when the committed tree has one leaf (root ≡ `hash-leaf(data)`). The moment you commit two or more leaves, the registered root becomes the Merkle hash of the subtree and the default gate returns `%.n` on settle — which triggers a deterministic crash (see Troubleshooting). For multi-leaf commitments, replace the gate per *Customizing → Replace the default verification gate*.
+
 ## Adding vesl to an existing nockup project
 
-If you already have a working nockapp and want to bolt vesl onto it, Steps 1 and 5 don't apply. The rest do, with one extra step.
+If you already have a working nockapp, skip Step 1. The rest applies, with one extra step: you have an `app.hoon` already — you need to *annotate* it with markers rather than copy the template over it.
 
-1. `nockup package add zkvesl/vesl-graft` — same as above. Adds Hoon libs and Rust deps without touching your `app.hoon`.
+1. `nockup package add zkvesl/vesl-graft -v latest && nockup package install` — same as Step 2 above.
 2. **Annotate your existing `app.hoon` with the five `::  nockup:*` markers.** `graft-inject` looks for exact marker comments at specific structural points:
    - `::  nockup:imports` — at the top of the file, near your other `/+` imports
    - `::  nockup:state` — inside your `versioned-state` `$:` block, above the closing `==`
@@ -188,8 +223,8 @@ If you already have a working nockapp and want to bolt vesl onto it, Steps 1 and
 
    See `templates/app.hoon` for a reference placement. Two-space law applies — `::` followed by exactly two spaces, then `nockup:<name>`.
 3. `graft-inject hoon/app/app.hoon` — same as Step 3 above. Safe to run against a populated kernel; it only edits marker lines.
-4. Recompile (`hoonc --new hoon/app/app.hoon hoon/`) and rebuild (`cargo +nightly build`).
-5. Call the vesl pokes from your existing `main.rs` using the helpers from Step 6. You don't need to rewrite — just add `build_register`, `build_payload_poke`, and `build_single_leaf_payload` alongside your domain pokes.
+4. Recompile (`hoonc hoon/app/app.hoon hoon/`) and rebuild (`cargo +nightly build`).
+5. Call `vesl_core::build_vesl_register_poke`, `build_vesl_settle_poke`, `build_vesl_verify_poke` from your existing `main.rs` alongside your domain pokes. No rewrite needed.
 
 If `graft-inject` reports `warning — markers not found: ...`, you missed a marker or a two-space law violation. The tool is pure text — it does what the regex says.
 
@@ -214,26 +249,34 @@ Any new field needs handling in `++load` (migration from older state versions) a
 
 ### Add your own domain pokes
 
-Vesl handles `%vesl-register`, `%vesl-verify`, and `%vesl-settle`. Your app handles everything else — order placement, message sending, whatever your domain is. Add a cause variant:
+Vesl handles `%vesl-register`, `%vesl-verify`, and `%vesl-settle`. Your app handles everything else — order placement, message sending, whatever your domain is. The minimum per domain command is three blocks of Hoon: one state field (if the command needs state), one cause variant, and one `?-` arm.
+
+Worked example — a **badge issuer** that increments a per-subject counter and emits `%badge-issued`:
 
 ```hoon
-+$  cause
-  $%  [%cause ~]
-      [%my-action data=@t]
-      vesl-cause
-  ==
+::  in versioned-state, after `vesl=vesl-state`:
+badges=(map @ud @ud)
 ```
-
-And an arm inside `?-`:
 
 ```hoon
-  %my-action
-~>  %slog.[0 data.u.act]
-:_  state(counter +(counter.state))
-~[[%my-actioned counter.state]]
+::  in the cause $% union, alongside vesl-cause:
+[%issue-badge subject=@ud]
 ```
+
+```hoon
+::  inside ?-, alongside the vesl arms:
+  %issue-badge
+=/  n=@ud  +((~(gut by badges.state) subject.u.act 0))
+:_  state(badges (~(put by badges.state) subject.u.act n))
+^-  (list effect)
+~[[%badge-issued subject.u.act n]]
+```
+
+Seven lines of custom Hoon total. Two of those (the state field and the cause variant) are pure type declarations; five are the arm itself. The arm's `:_ state(...)` / `^- (list effect)` / `~[[...]]` shape is NockApp's required `[effects state]` return — the same in any nockapp, graft or no graft.
 
 The vesl arms stay put. You're adding arms, not replacing them.
+
+Future direction: `graft-inject` is being rearchitected (see `.dev/PARAMETIZATION.md`) so that user-defined domains can ship as their own grafts with a TOML manifest — which will mechanize the state-field and cause-variant declarations. The arm body is the part that stays yours.
 
 ### Replace the default verification gate
 
@@ -291,6 +334,9 @@ You pulled `ibig` from crates.io instead of the nockchain fork. Vesl-core pins t
 
 **`Number is greater than DIRECT_MAX` panic**
 A `u64` you're feeding into `D()` has its top bit set. Use `nock_noun_rs::atom_from_u64(alloc, value)` instead of `D(value)` for hashed IDs.
+
+**`%vesl-settle` returns no effects, stderr shows `DETERMINISTIC error mote=Exit`**
+The verify-gate returned `%.n`. The `?>` at `lib/vesl-graft.hoon:132` crashes on gate failure by design — a rejected payload must remain an unprovable STARK state rather than an emitted error. From the Rust side, `app.poke(...).await` resolves `Ok(effects)` with `effects.len() == 0`; treat that as a gate rejection and inspect stderr for the trace. The most common cause is committing multiple leaves with the default single-leaf hash-gate (see Step 6's *Why a single-leaf commit?* note).
 
 ## Reference
 
