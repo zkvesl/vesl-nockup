@@ -243,7 +243,10 @@ enum MarkerStatus {
     Missing,
 }
 
-pub fn inject(source: &str) -> Result<(String, Vec<(Marker, MarkerStatus)>)> {
+pub fn inject(
+    source: &str,
+    grafts: &[Graft],
+) -> Result<(String, Vec<(Marker, MarkerStatus)>)> {
     // Normalize CRLF -> LF for processing; we re-emit LF regardless.
     let mut lines: Vec<String> = source.replace("\r\n", "\n").lines().map(String::from).collect();
     let trailing_newline = source.ends_with('\n');
@@ -253,46 +256,33 @@ pub fn inject(source: &str) -> Result<(String, Vec<(Marker, MarkerStatus)>)> {
         match find_marker(&lines, marker)? {
             Some(idx) => {
                 let indent = leading_whitespace(&lines[idx]).to_string();
-                if already_wired(&lines, idx, marker) {
+                // Grafts that contribute a block here AND aren't already wired.
+                // Phase 4: Stage 1 ships only the vesl graft, so `pending` is
+                // either empty or a one-element slice. Phase 5 generalizes.
+                let pending: Vec<&Graft> = grafts
+                    .iter()
+                    .filter(|g| {
+                        g.block(marker)
+                            .map(|b| !already_wired_for(&lines, idx, marker, &b.sentinel))
+                            .unwrap_or(false)
+                    })
+                    .collect();
+                if pending.is_empty() {
+                    // Marker is in source. Either every claiming graft is
+                    // already wired (skip), or no graft claims the marker
+                    // (also skip — nothing to do, no warning needed).
                     report.push((marker, MarkerStatus::Skipped));
                     continue;
                 }
                 match marker {
                     Marker::Peek => {
-                        if let Some(target) = find_bare_tilde(&lines, idx + 1) {
-                            let tilde_indent = leading_whitespace(&lines[target]).to_string();
-                            lines[target] = format!("{}{}", tilde_indent, PEEK_REPLACEMENT);
-                            report.push((marker, MarkerStatus::Injected));
-                        } else {
-                            // No `~` to replace — insert at marker+1 with the
-                            // marker's indent so the surrounding `?+` still
-                            // has something to eval against.
-                            lines.insert(
-                                idx + 1,
-                                format!("{}{}", indent, PEEK_REPLACEMENT),
-                            );
-                            report.push((marker, MarkerStatus::Injected));
-                        }
+                        emit_peek_chain(&mut lines, idx, &indent, &pending);
                     }
                     _ => {
-                        let block = marker.block().expect("non-peek markers carry a block");
-                        let indented: Vec<String> = block
-                            .lines()
-                            .map(|l| {
-                                if l.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!("{}{}", indent, l)
-                                }
-                            })
-                            .collect();
-                        // Insert directly after the marker line.
-                        for (offset, line) in indented.into_iter().enumerate() {
-                            lines.insert(idx + 1 + offset, line);
-                        }
-                        report.push((marker, MarkerStatus::Injected));
+                        emit_block(&mut lines, idx, &indent, marker, &pending);
                     }
                 }
+                report.push((marker, MarkerStatus::Injected));
             }
             None => {
                 report.push((marker, MarkerStatus::Missing));
@@ -305,6 +295,86 @@ pub fn inject(source: &str) -> Result<(String, Vec<(Marker, MarkerStatus)>)> {
         output.push('\n');
     }
     Ok((output, report))
+}
+
+/// Insert a non-peek block's body lines after the marker, indented to
+/// match the marker. Phase 4: `pending` is a single graft; Phase 5
+/// extends this to compose multiple grafts (blank-line separated; `::`
+/// separator for the poke marker).
+fn emit_block(
+    lines: &mut Vec<String>,
+    marker_idx: usize,
+    indent: &str,
+    marker: Marker,
+    pending: &[&Graft],
+) {
+    let body = pending[0]
+        .block(marker)
+        .expect("emit_block called with a graft missing this marker")
+        .trimmed_body();
+    let indented: Vec<String> = body
+        .lines()
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("{}{}", indent, l)
+            }
+        })
+        .collect();
+    for (offset, line) in indented.into_iter().enumerate() {
+        lines.insert(marker_idx + 1 + offset, line);
+    }
+}
+
+/// Emit the peek-chain prelude(s) immediately before the terminal `~`
+/// fallback. Each graft contributes two lines:
+///
+///   =/  <stub>-res  <peek.body>
+///   ?.  =(~ <stub>-res)  <stub>-res
+///
+/// where `<stub>` is the graft name with the `-graft` suffix stripped.
+/// The bare `~` already in the source remains as the chain's terminal
+/// fallback. If no bare `~` is found in the window after the marker, a
+/// synthetic one is appended so the `?+` still has something to evaluate.
+fn emit_peek_chain(
+    lines: &mut Vec<String>,
+    marker_idx: usize,
+    indent: &str,
+    pending: &[&Graft],
+) {
+    let chain_lines: Vec<String> = pending
+        .iter()
+        .flat_map(|g| {
+            let body = g
+                .block(Marker::Peek)
+                .expect("peek graft missing a peek block")
+                .trimmed_body();
+            let stub = binding_stub(&g.name);
+            vec![
+                format!("{indent}=/  {stub}-res  {body}"),
+                format!("{indent}?.  =(~ {stub}-res)  {stub}-res"),
+            ]
+        })
+        .collect();
+
+    if let Some(target) = find_bare_tilde(lines, marker_idx + 1) {
+        for (offset, line) in chain_lines.into_iter().enumerate() {
+            lines.insert(target + offset, line);
+        }
+    } else {
+        let mut to_insert = chain_lines;
+        to_insert.push(format!("{indent}~"));
+        for (offset, line) in to_insert.into_iter().enumerate() {
+            lines.insert(marker_idx + 1 + offset, line);
+        }
+    }
+}
+
+/// Strip the `-graft` suffix from a graft name to get the binding stub
+/// used in the peek chain (`vesl-graft` -> `vesl`, `mint-graft` -> `mint`).
+fn binding_stub(name: &str) -> &str {
+    name.strip_suffix("-graft").unwrap_or(name)
 }
 
 fn find_marker(lines: &[String], marker: Marker) -> Result<Option<usize>> {
@@ -335,11 +405,11 @@ fn leading_whitespace(s: &str) -> &str {
     &s[..end]
 }
 
-// Check whether the wiring for a marker is already present.
-// Scans a window of lines after the marker for the marker's sentinel.
-fn already_wired(lines: &[String], marker_idx: usize, marker: Marker) -> bool {
-    let sentinel = marker.sentinel();
-    // Window size depends on marker — poke wiring is large.
+/// Per-graft idempotence check: scan a window of lines after the marker
+/// for THIS graft's sentinel. Replaces the pre-Phase-4 single-sentinel
+/// `already_wired` so multiple grafts can share a marker without each
+/// other's sentinels triggering false positives.
+fn already_wired_for(lines: &[String], marker_idx: usize, marker: Marker, sentinel: &str) -> bool {
     let window = match marker {
         Marker::Poke => 60,
         Marker::Imports => 10,
@@ -348,7 +418,6 @@ fn already_wired(lines: &[String], marker_idx: usize, marker: Marker) -> bool {
     let start = marker_idx + 1;
     let end = (start + window).min(lines.len());
     for line in &lines[start..end] {
-        // Skip comment lines for state/cause to avoid false positives.
         if matches!(marker, Marker::State | Marker::Cause)
             && line.trim_start().starts_with("::")
         {
@@ -390,7 +459,24 @@ fn run() -> Result<()> {
     let source = fs::read_to_string(&path)
         .with_context(|| format!("reading {}", path.display()))?;
 
-    let (output, report) = inject(&source)
+    // Phase 4: discover grafts in the conventional ./hoon/lib/ root
+    // relative to cwd. Phase 6 adds the --lib-dir / --grafts CLI flags
+    // and richer discovery.
+    let lib_dir = PathBuf::from("hoon").join("lib");
+    let grafts = if lib_dir.is_dir() {
+        discover_grafts(&lib_dir)
+            .with_context(|| format!("discovering grafts under {}", lib_dir.display()))?
+    } else {
+        Vec::new()
+    };
+    if grafts.is_empty() {
+        bail!(
+            "no grafts discovered under {}; expected at least one *.toml manifest with a [graft] table",
+            lib_dir.display()
+        );
+    }
+
+    let (output, report) = inject(&source, &grafts)
         .with_context(|| format!("injecting into {}", path.display()))?;
 
     if output != source {
@@ -487,9 +573,18 @@ mod tests {
 ((moat |) inner)
 ";
 
+    fn vesl_only_grafts() -> Vec<Graft> {
+        let path = vesl_graft_manifest_path();
+        let g = load_manifest(&path)
+            .expect("load vesl-graft.toml")
+            .expect("vesl-graft.toml has [graft] table");
+        vec![g]
+    }
+
     #[test]
     fn injects_all_markers() {
-        let (out, report) = inject(BARE_SCAFFOLD).unwrap();
+        let grafts = vesl_only_grafts();
+        let (out, report) = inject(BARE_SCAFFOLD, &grafts).unwrap();
         assert!(out.contains("/+  *vesl-graft"));
         assert!(out.contains("/+  *vesl-merkle"));
         assert!(out.contains("vesl=vesl-state"));
@@ -497,15 +592,11 @@ mod tests {
         assert!(out.contains("%vesl-register"));
         assert!(out.contains("%vesl-verify"));
         assert!(out.contains("%vesl-settle"));
-        assert!(out.contains("(vesl-peek vesl.state path)"));
-        // The original `~` fallthrough should be gone.
-        let peek_region: String = out
-            .lines()
-            .skip_while(|l| !l.contains("nockup:peek"))
-            .take(4)
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(peek_region.contains("vesl-peek"));
+        // Phase 4: peek emits a chain instead of a flat replacement.
+        // The body still contains the legacy `(vesl-peek vesl.state path)`
+        // expression, now wrapped in `=/  vesl-res  ...` and a fall-through.
+        assert!(out.contains("=/  vesl-res  (vesl-peek vesl.state path)"));
+        assert!(out.contains("?.  =(~ vesl-res)  vesl-res"));
 
         let injected_count = report
             .iter()
@@ -516,8 +607,9 @@ mod tests {
 
     #[test]
     fn is_idempotent() {
-        let (first, _) = inject(BARE_SCAFFOLD).unwrap();
-        let (second, report) = inject(&first).unwrap();
+        let grafts = vesl_only_grafts();
+        let (first, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
+        let (second, report) = inject(&first, &grafts).unwrap();
         assert_eq!(first, second);
         for (m, s) in &report {
             assert!(
@@ -554,8 +646,9 @@ mod tests {
 
     #[test]
     fn missing_marker_is_warning_not_error() {
+        let grafts = vesl_only_grafts();
         let src = "::  just a comment\n";
-        let result = inject(src);
+        let result = inject(src, &grafts);
         // inject() always succeeds; it's run() that errors if ALL markers are missing
         assert!(result.is_ok());
         let (_, report) = result.unwrap();
@@ -566,8 +659,9 @@ mod tests {
 
     #[test]
     fn does_not_match_nockup_pokemon() {
+        let grafts = vesl_only_grafts();
         let src = "::  nockup:pokemon\n";
-        let (_, report) = inject(src).unwrap();
+        let (_, report) = inject(src, &grafts).unwrap();
         for (_, status) in &report {
             assert_eq!(*status, MarkerStatus::Missing);
         }
@@ -640,5 +734,75 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn single_graft_injection_byte_identical_to_hardcoded() {
+        // Proves the data-driven inject() pastes the manifest body
+        // verbatim at every non-peek marker, with the marker's leading
+        // whitespace prepended and no other rewriting. Since the manifest
+        // body matches BLOCK_* byte-for-byte (manifest_matches_hardcoded_blocks),
+        // this transitively proves the data path produces the same output
+        // a hardcoded inject() would have at those markers.
+        //
+        // Peek is intentionally excluded — Phase 4 changes peek from a
+        // flat replacement to a chain. peek_chain_n1_matches_legacy_replacement
+        // covers the new shape.
+        let grafts = vesl_only_grafts();
+        let (out, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        for (label, block) in [
+            ("imports", BLOCK_IMPORTS),
+            ("state", BLOCK_STATE),
+            ("cause", BLOCK_CAUSE),
+            ("poke", BLOCK_POKE),
+        ] {
+            let needle = format!("::  nockup:{label}");
+            let marker_idx = lines
+                .iter()
+                .position(|l| l.trim_start().starts_with(&needle))
+                .unwrap_or_else(|| panic!("marker `{label}` missing from output"));
+            let marker_indent = leading_whitespace(lines[marker_idx]).to_string();
+            let body_lines: Vec<&str> = block.lines().collect();
+            for (i, want) in body_lines.iter().enumerate() {
+                let got = lines[marker_idx + 1 + i];
+                let expected = if want.is_empty() {
+                    String::new()
+                } else {
+                    format!("{marker_indent}{want}")
+                };
+                assert_eq!(
+                    got, expected,
+                    "marker `{label}` line {i} byte mismatch"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn peek_chain_n1_matches_legacy_replacement() {
+        // For N=1 the chain is:
+        //   =/  vesl-res  (vesl-peek vesl.state path)
+        //   ?.  =(~ vesl-res)  vesl-res
+        //   ~                                   <- terminal fallback
+        //
+        // The legacy expression `(vesl-peek vesl.state path)` lives inside
+        // the chain's =/ binding — same runtime semantics as the pre-Phase-4
+        // flat replacement when only one graft contributes a peek body.
+        let grafts = vesl_only_grafts();
+        let (out, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
+        let peek_lines: Vec<&str> = out
+            .lines()
+            .skip_while(|l| !l.contains("nockup:peek"))
+            .skip(1)
+            .take(3)
+            .collect();
+        assert_eq!(peek_lines.len(), 3, "peek region has fewer than 3 lines");
+        let line0 = peek_lines[0].trim_start();
+        let line1 = peek_lines[1].trim_start();
+        let line2 = peek_lines[2].trim_start();
+        assert_eq!(line0, &format!("=/  vesl-res  {PEEK_REPLACEMENT}"));
+        assert_eq!(line1, "?.  =(~ vesl-res)  vesl-res");
+        assert_eq!(line2, "~");
     }
 }
