@@ -94,18 +94,30 @@ fn compose_and_compile() -> Result<PathBuf> {
     let hoon_app = scratch.join("hoon/app");
     let hoon_lib = scratch.join("hoon/lib");
     let hoon_common = scratch.join("hoon/common");
+    let hoon_dat = scratch.join("hoon/dat");
+    let hoon_jams = scratch.join("hoon/jams");
     fs::create_dir_all(&hoon_app)?;
     fs::create_dir_all(&hoon_lib)?;
     fs::create_dir_all(&hoon_common)?;
+    fs::create_dir_all(&hoon_dat)?;
+    fs::create_dir_all(&hoon_jams)?;
 
     // Scaffold + libraries. `templates/app.hoon` carries the 5 nockup
     // markers; graft-inject seeds its composition from there.
+    //
+    // hoon/dat and hoon/jams carry the STARK constraint artifacts
+    // (softed-constraints + pre-jammed constraint tables). hoonc
+    // eager-parses common/ — including forge-graft's prover deps —
+    // even on a 2-graft compose, so every scratch needs those trees
+    // present to avoid "need" failures.
     fs::copy(
         repo_root.join("templates/app.hoon"),
         hoon_app.join("app.hoon"),
     )?;
     copy_dir_contents(&repo_root.join("hoon/lib"), &hoon_lib)?;
     copy_dir_contents(&repo_root.join("hoon/common"), &hoon_common)?;
+    copy_dir_contents(&repo_root.join("hoon/dat"), &hoon_dat)?;
+    copy_dir_contents(&repo_root.join("hoon/jams"), &hoon_jams)?;
 
     // graft-inject: bin is built automatically by cargo test and its
     // path lives in CARGO_BIN_EXE_graft-inject.
@@ -113,6 +125,11 @@ fn compose_and_compile() -> Result<PathBuf> {
     let status = Command::new(&graft_inject)
         .arg("--lib-dir")
         .arg(&hoon_lib)
+        // Explicit --grafts so auto-discovery doesn't pull in
+        // forge-graft.toml (which arrived in Phase 9b and would
+        // drag in prover deps this test doesn't stage).
+        .arg("--grafts")
+        .arg("vesl-graft,mint-graft")
         .arg(hoon_app.join("app.hoon"))
         .status()
         .with_context(|| format!("spawn {}", graft_inject.display()))?;

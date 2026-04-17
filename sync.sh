@@ -24,19 +24,50 @@ echo "syncing from $vesl"
 
 # --- Hoon files ---
 echo "  hoon libs"
-cp "$vesl/protocol/lib/vesl-graft.hoon"  "$here/hoon/lib/"
-cp "$vesl/protocol/lib/vesl-graft.toml"  "$here/hoon/lib/"
-cp "$vesl/protocol/lib/mint-graft.hoon"  "$here/hoon/lib/"
-cp "$vesl/protocol/lib/mint-graft.toml"  "$here/hoon/lib/"
-cp "$vesl/protocol/lib/guard-graft.hoon" "$here/hoon/lib/"
-cp "$vesl/protocol/lib/guard-graft.toml" "$here/hoon/lib/"
-cp "$vesl/protocol/lib/vesl-merkle.hoon" "$here/hoon/lib/"
+cp "$vesl/protocol/lib/vesl-graft.hoon"   "$here/hoon/lib/"
+cp "$vesl/protocol/lib/vesl-graft.toml"   "$here/hoon/lib/"
+cp "$vesl/protocol/lib/mint-graft.hoon"   "$here/hoon/lib/"
+cp "$vesl/protocol/lib/mint-graft.toml"   "$here/hoon/lib/"
+cp "$vesl/protocol/lib/guard-graft.hoon"  "$here/hoon/lib/"
+cp "$vesl/protocol/lib/guard-graft.toml"  "$here/hoon/lib/"
+cp "$vesl/protocol/lib/forge-graft.hoon"  "$here/hoon/lib/"
+cp "$vesl/protocol/lib/forge-graft.toml"  "$here/hoon/lib/"
+cp "$vesl/protocol/lib/vesl-merkle.hoon"  "$here/hoon/lib/"
+cp "$vesl/protocol/lib/vesl-prover.hoon"  "$here/hoon/lib/"
+cp "$vesl/protocol/lib/vesl-lower.hoon"   "$here/hoon/lib/"
 
-echo "  hoon common"
-cp "$vesl/templates/graft-scaffold/hoon/common/zeke.hoon"    "$here/hoon/common/"
-cp "$vesl/templates/graft-scaffold/hoon/common/wrapper.hoon" "$here/hoon/common/"
-mkdir -p "$here/hoon/common/ztd"
-cp "$vesl/templates/graft-scaffold/hoon/common/ztd/"*.hoon   "$here/hoon/common/ztd/"
+# Phase 9b: forge-graft pulls in the STARK prover, which depends on
+# /common/v2/table/prover/{compute,memory}, /common/stark/prover,
+# /common/nock-common, zose/zoon, and friends. The graft-scaffold
+# template's hoon/common/ subset (wrapper + zeke + ztd only) is too
+# thin to compile a forge-composed kernel.
+#
+# vesl/hoon/common is itself a symlink into nockchain/hoon/common,
+# and that tree carries nested symlinks (e.g. common/hoon.hoon →
+# ../../crates/hoonc/hoon/hoon-138.hoon). `cp -L` dereferences them
+# so vesl-nockup ends up with real file content — required for any
+# consumer that doesn't have the nockchain repo next to them, which
+# is the whole point of vesl-nockup as a distribution.
+echo "  hoon common (full tree, incl. STARK deps for forge-graft)"
+rm -rf "$here/hoon/common"
+cp -rL "$vesl/hoon/common" "$here/hoon/common"
+
+# /#  softed-constraints inside vesl-prover.hoon resolves to
+# hoon/dat/softed-constraints.hoon (hoonc's "/#" rune looks in dat/).
+# Tiny tree (3 files, 16K); copy wholesale.
+echo "  hoon dat (softed-constraints for STARK)"
+rm -rf "$here/hoon/dat"
+cp -rL "$vesl/hoon/dat" "$here/hoon/dat"
+
+# softed-constraints.hoon in turn loads pre-jammed constraint tables
+# from /jams/constraints-0-1.jam and /jams/constraints-2.jam. These
+# are large (~16MB total) but unavoidable: the STARK prover uses
+# them at compile time as pre-computed Polynomial constraints.
+# Without this tree forge-graft compositions fail with
+# "missing dependency /jams/constraints-0-1.jam".
+echo "  hoon jams (pre-jammed STARK constraint tables, ~16MB)"
+rm -rf "$here/hoon/jams"
+cp -rL "$vesl/hoon/jams" "$here/hoon/jams"
 
 echo
 echo "sync complete. review with:"

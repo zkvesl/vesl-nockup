@@ -112,21 +112,36 @@ fn compose_and_compile() -> Result<PathBuf> {
     let hoon_app = scratch.join("hoon/app");
     let hoon_lib = scratch.join("hoon/lib");
     let hoon_common = scratch.join("hoon/common");
+    let hoon_dat = scratch.join("hoon/dat");
+    let hoon_jams = scratch.join("hoon/jams");
     fs::create_dir_all(&hoon_app)?;
     fs::create_dir_all(&hoon_lib)?;
     fs::create_dir_all(&hoon_common)?;
+    fs::create_dir_all(&hoon_dat)?;
+    fs::create_dir_all(&hoon_jams)?;
 
+    // hoon/dat + hoon/jams are required even on grafts that don't
+    // invoke the prover — hoonc eager-parses files in common/, some
+    // of which transitively `/#` softed-constraints. See comment in
+    // mint_lifecycle.rs for the full story.
     fs::copy(
         repo_root.join("templates/app.hoon"),
         hoon_app.join("app.hoon"),
     )?;
     copy_dir_contents(&repo_root.join("hoon/lib"), &hoon_lib)?;
     copy_dir_contents(&repo_root.join("hoon/common"), &hoon_common)?;
+    copy_dir_contents(&repo_root.join("hoon/dat"), &hoon_dat)?;
+    copy_dir_contents(&repo_root.join("hoon/jams"), &hoon_jams)?;
 
     let graft_inject = PathBuf::from(env!("CARGO_BIN_EXE_graft-inject"));
     let status = Command::new(&graft_inject)
         .arg("--lib-dir")
         .arg(&hoon_lib)
+        // Explicit --grafts so auto-discovery doesn't pull in
+        // forge-graft.toml (which arrived in Phase 9b and would
+        // drag in prover deps this test doesn't stage).
+        .arg("--grafts")
+        .arg("vesl-graft,mint-graft,guard-graft")
         .arg(hoon_app.join("app.hoon"))
         .status()
         .with_context(|| format!("spawn {}", graft_inject.display()))?;
