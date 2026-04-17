@@ -7,9 +7,11 @@
 //! Usage: graft-inject <path-to-app.hoon>
 
 use anyhow::{Context, Result, anyhow, bail};
+use serde::Deserialize;
+use std::collections::HashSet;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const MARKER_PREFIX: &str = "::  nockup:";
@@ -40,7 +42,7 @@ const BLOCK_POKE: &str = "\
   %vesl-register
 =/  lc=vesl-cause  [%vesl-register hull.u.act root.u.act]
 =/  hash-gate=verify-gate
-  |=  [data=* expected-root=@]
+  |=  [note-id=@ data=* expected-root=@]
   ^-  ?
   =((hash-leaf ;;(@ data)) expected-root)
 =/  [efx=(list vesl-effect) new-vesl=vesl-state]
@@ -52,7 +54,7 @@ efx
   %vesl-verify
 =/  lc=vesl-cause  [%vesl-verify payload.u.act]
 =/  hash-gate=verify-gate
-  |=  [data=* expected-root=@]
+  |=  [note-id=@ data=* expected-root=@]
   ^-  ?
   =((hash-leaf ;;(@ data)) expected-root)
 =/  [efx=(list vesl-effect) new-vesl=vesl-state]
@@ -64,7 +66,7 @@ efx
   %vesl-settle
 =/  lc=vesl-cause  [%vesl-settle payload.u.act]
 =/  hash-gate=verify-gate
-  |=  [data=* expected-root=@]
+  |=  [note-id=@ data=* expected-root=@]
   ^-  ?
   =((hash-leaf ;;(@ data)) expected-root)
 =/  [efx=(list vesl-effect) new-vesl=vesl-state]
@@ -75,6 +77,112 @@ efx";
 
 // Peek replacement: substituted in place of a bare `~` fallthrough.
 const PEEK_REPLACEMENT: &str = "(vesl-peek vesl.state path)";
+
+// ---------------------------------------------------------------------------
+// Manifest schema (graft.toml)
+// ---------------------------------------------------------------------------
+
+/// Top-level wrapper for the `[graft]` table in a manifest file.
+#[derive(Debug, Clone, Deserialize)]
+struct ManifestFile {
+    graft: Graft,
+}
+
+/// A discovered graft package — identity, ordering, and per-marker blocks.
+#[derive(Debug, Clone, Deserialize)]
+struct Graft {
+    name: String,
+    #[allow(dead_code)] // surfaced via --list in Phase 6
+    version: String,
+    priority: i32,
+    #[serde(default)]
+    after: Vec<String>,
+    blocks: GraftBlocks,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct GraftBlocks {
+    imports: Option<Block>,
+    state: Option<Block>,
+    cause: Option<Block>,
+    poke: Option<Block>,
+    peek: Option<Block>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Block {
+    sentinel: String,
+    body: String,
+}
+
+impl Block {
+    /// Composition-ready body — leading and trailing newlines stripped so
+    /// the inject step's indent-prepending lands on the first content line.
+    fn trimmed_body(&self) -> &str {
+        self.body.trim_matches('\n')
+    }
+}
+
+impl Graft {
+    /// Block for a marker, if the manifest declares one.
+    #[allow(dead_code)] // consumed by the data-driven inject() in Phase 4
+    fn block(&self, marker: Marker) -> Option<&Block> {
+        match marker {
+            Marker::Imports => self.blocks.imports.as_ref(),
+            Marker::State => self.blocks.state.as_ref(),
+            Marker::Cause => self.blocks.cause.as_ref(),
+            Marker::Poke => self.blocks.poke.as_ref(),
+            Marker::Peek => self.blocks.peek.as_ref(),
+        }
+    }
+}
+
+/// Load a single `*.toml` manifest. Returns Ok(None) if the file lacks a
+/// `[graft]` table (caller skips it); Err for parse or I/O failures.
+fn load_manifest(path: &Path) -> Result<Option<Graft>> {
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("reading manifest {}", path.display()))?;
+    let value: toml::Value = toml::from_str(&raw)
+        .with_context(|| format!("parsing manifest {}", path.display()))?;
+    if value.get("graft").is_none() {
+        return Ok(None);
+    }
+    let manifest: ManifestFile = toml::from_str(&raw)
+        .with_context(|| format!("deserializing manifest {}", path.display()))?;
+    Ok(Some(manifest.graft))
+}
+
+/// Scan `lib_dir` for `*.toml` files and return loaded grafts in priority
+/// order, ties broken by name. Files lacking a `[graft]` table are skipped
+/// silently. Validates that every `after` hint names a discovered graft.
+fn discover_grafts(lib_dir: &Path) -> Result<Vec<Graft>> {
+    let mut grafts: Vec<Graft> = Vec::new();
+    let entries = fs::read_dir(lib_dir)
+        .with_context(|| format!("scanning {}", lib_dir.display()))?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+            if let Some(g) = load_manifest(&path)? {
+                grafts.push(g);
+            }
+        }
+    }
+    grafts.sort_by(|a, b| a.priority.cmp(&b.priority).then(a.name.cmp(&b.name)));
+    let names: HashSet<&str> = grafts.iter().map(|g| g.name.as_str()).collect();
+    for g in &grafts {
+        for hint in &g.after {
+            if !names.contains(hint.as_str()) {
+                bail!(
+                    "graft `{}` declares after = [\"{}\"], but no such graft was discovered",
+                    g.name,
+                    hint
+                );
+            }
+        }
+    }
+    Ok(grafts)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Marker {
@@ -463,5 +571,74 @@ mod tests {
         for (_, status) in &report {
             assert_eq!(*status, MarkerStatus::Missing);
         }
+    }
+
+    fn vesl_graft_manifest_path() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("hoon")
+            .join("lib")
+            .join("vesl-graft.toml")
+    }
+
+    #[test]
+    fn manifest_matches_hardcoded_blocks() {
+        let path = vesl_graft_manifest_path();
+        let graft = load_manifest(&path)
+            .expect("manifest load failed")
+            .expect("vesl-graft.toml missing [graft] table");
+        assert_eq!(graft.name, "vesl-graft");
+        assert_eq!(graft.priority, 10);
+
+        let imports = graft.blocks.imports.as_ref().expect("imports block");
+        assert_eq!(imports.trimmed_body(), BLOCK_IMPORTS);
+        assert_eq!(imports.sentinel, SENTINEL_IMPORTS);
+
+        let state = graft.blocks.state.as_ref().expect("state block");
+        assert_eq!(state.trimmed_body(), BLOCK_STATE);
+        assert_eq!(state.sentinel, SENTINEL_STATE);
+
+        let cause = graft.blocks.cause.as_ref().expect("cause block");
+        assert_eq!(cause.trimmed_body(), BLOCK_CAUSE);
+        assert_eq!(cause.sentinel, SENTINEL_CAUSE);
+
+        let poke = graft.blocks.poke.as_ref().expect("poke block");
+        assert_eq!(poke.trimmed_body(), BLOCK_POKE);
+        assert_eq!(poke.sentinel, SENTINEL_POKE);
+
+        let peek = graft.blocks.peek.as_ref().expect("peek block");
+        assert_eq!(peek.trimmed_body(), PEEK_REPLACEMENT);
+        assert_eq!(peek.sentinel, SENTINEL_PEEK);
+    }
+
+    #[test]
+    fn loader_rejects_missing_graft_table() {
+        let dir = tempdir_for_test("loader_no_graft_table");
+        let path = dir.join("not-a-graft.toml");
+        fs::write(&path, "[other]\nkey = \"value\"\n").unwrap();
+        let result = load_manifest(&path).expect("toml itself parses");
+        assert!(result.is_none(), "manifest without [graft] must return None");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn marker_parse_covers_five() {
+        for name in ["imports", "state", "cause", "poke", "peek"] {
+            assert!(Marker::parse(name).is_some(), "expected Some for {name}");
+        }
+        // Stage-3-reserved names must not parse in Stage 1.
+        assert!(Marker::parse("load").is_none());
+        assert!(Marker::parse("arms").is_none());
+        // Unknown name is None.
+        assert!(Marker::parse("nonsense").is_none());
+    }
+
+    fn tempdir_for_test(label: &str) -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("graft-inject-test-{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
     }
 }

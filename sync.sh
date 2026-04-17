@@ -49,6 +49,7 @@ done
 # --- Hoon files ---
 echo "  hoon libs"
 cp "$vesl/protocol/lib/vesl-graft.hoon"  "$here/hoon/lib/"
+cp "$vesl/protocol/lib/vesl-graft.toml"  "$here/hoon/lib/"
 cp "$vesl/protocol/lib/vesl-merkle.hoon" "$here/hoon/lib/"
 
 echo "  hoon common"
