@@ -72,6 +72,29 @@ impl GraftTestHarness {
         Ok(effect_tags(&effects))
     }
 
+    /// Peek a path through the kernel's `++peek` arm. Wraps
+    /// `NockApp::peek_handle` semantics: `Ok(None)` for a recognized
+    /// path with no value (`[~ ~]` in Hoon), `Ok(Some(slab))` when a
+    /// value is present, `Err` when the kernel returned bare `~`
+    /// (unrecognized path).
+    pub async fn peek_handle(&mut self, path: NounSlab) -> Result<Option<NounSlab>> {
+        self.app
+            .peek_handle(path)
+            .await
+            .map_err(|e| anyhow::anyhow!("peek failed: {e}"))
+    }
+
+    /// Peek and return the raw `(unit (unit *))` result from the
+    /// kernel — no unwrapping. Use this when the peek returns a
+    /// nested unit (vesl-graft's `%root` convention — `` `` `` around
+    /// a `(unit @)` — produces `[~ [~ [~ value]]]` / `[~ [~ ~]]`).
+    pub async fn peek_raw(&mut self, path: NounSlab) -> Result<NounSlab> {
+        self.app
+            .peek(path)
+            .await
+            .map_err(|e| anyhow::anyhow!("peek failed: {e}"))
+    }
+
     /// Run the standard lifecycle suite. Returns a report with pass/fail
     /// per test. Does not panic on failure — the caller decides.
     pub async fn run_standard_suite(&mut self) -> SuiteReport {
