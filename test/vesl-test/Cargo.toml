@@ -6,13 +6,24 @@ description = "Test harness for grafted NockApp kernels — boot, poke, assert e
 license = "MIT"
 
 [dependencies]
-vesl-core = { path = "../../crates/vesl-core" }
-nock-noun-rs = { path = "../../crates/nock-noun-rs" }
-nockchain-tip5-rs = { path = "../../crates/nockchain-tip5-rs" }
+# Phase 6.5b: consume vesl-core (and transitively nock-noun-rs etc.) from
+# the upstream vesl repo, not from local mirrors. Path dep during
+# development; switches to a git dep on the published vesl branch at
+# plan merge (per .dev/00_PARAMETIZATION.md §"Merge order"):
+#   vesl-core    = { git = "https://github.com/zkVesl/vesl", branch = "dev" }
+#   nock-noun-rs = { git = "https://github.com/zkVesl/vesl", branch = "dev" }
+# Tip5Hash + tip5_to_atom_le_bytes flow through vesl-core's re-exports —
+# no direct nockchain-tip5-rs dep needed.
+vesl-core    = { path = "../../../vesl/crates/vesl-core" }
+nock-noun-rs = { path = "../../../vesl/crates/nock-noun-rs" }
 
-nockapp = { git = "https://github.com/nockchain/nockchain.git", default-features = false }
-nockvm = { git = "https://github.com/nockchain/nockchain.git" }
-nockvm_macros = { git = "https://github.com/nockchain/nockchain.git" }
+# nockchain monorepo crates: must use the same source as vesl-core's
+# transitive deps or we get duplicate `nockvm`/`nockapp` versions in the
+# graph and `nock_noun_rs::Noun` stops type-equating to `nockapp::Noun`.
+# vesl-core uses path = "../../../nockchain/crates/...", so we mirror.
+nockapp        = { path = "../../../nockchain/crates/nockapp", default-features = false }
+nockvm         = { path = "../../../nockchain/crates/nockvm/rust/nockvm" }
+nockvm_macros  = { path = "../../../nockchain/crates/nockvm/rust/nockvm_macros" }
 
 anyhow = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

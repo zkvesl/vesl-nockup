@@ -1,10 +1,11 @@
 [workspace]
 resolver = "2"
+# Phase 6.5b: vesl-nockup no longer mirrors the vesl crate stack.
+# vesl-core / nock-noun-rs / nockchain-tip5-rs / nockchain-client-rs
+# are consumed from the upstream vesl repo via path/git dep; the local
+# `crates/` directory is gone. Only first-party tools and test harness
+# live here.
 members = [
-    "crates/vesl-core",
-    "crates/nock-noun-rs",
-    "crates/nockchain-tip5-rs",
-    "crates/nockchain-client-rs",
     "tools/graft-inject",
     "test/vesl-test",
 ]
