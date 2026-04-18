@@ -33,7 +33,7 @@ cd my-app
 
 The nockup `basic` template is generic and needs three one-time fixups before vesl deps will compile. Apply these inside `my-app/`:
 
-1. **`Cargo.toml`** — the scaffolded nockchain deps carry empty git revisions (`rev = ""`). Replace them with path deps (or pinned revs). For a local dev checkout of the nockchain monorepo, replace the whole `[dependencies]` section and add a `[patch]` block so vesl-core's transitive git deps resolve to the same checkout:
+1. **`Cargo.toml`** — the scaffolded nockchain deps carry empty git revisions (`rev = ""`). Replace them with path deps (or pinned revs). As of Phase 6.5b the `vesl-core` / `nock-noun-rs` crates live in the main `vesl` repo, not `vesl-nockup`; point the project at them there. For a local dev checkout of the nockchain monorepo, replace the whole `[dependencies]` section and add a `[patch]` block so vesl-core's transitive git deps resolve to the same checkout:
 
    ```toml
    [dependencies]
@@ -41,9 +41,8 @@ The nockup `basic` template is generic and needs three one-time fixups before ve
    nockvm        = { path = "../../nockchain/crates/nockvm/rust/nockvm" }
    nockvm_macros = { path = "../../nockchain/crates/nockvm/rust/nockvm_macros" }
 
-   vesl-core         = { path = "../../vesl-nockup/crates/vesl-core" }
-   nock-noun-rs      = { path = "../../vesl-nockup/crates/nock-noun-rs" }
-   nockchain-tip5-rs = { path = "../../vesl-nockup/crates/nockchain-tip5-rs" }
+   vesl-core    = { path = "../../vesl/crates/vesl-core" }
+   nock-noun-rs = { path = "../../vesl/crates/nock-noun-rs" }
 
    tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
@@ -57,7 +56,7 @@ The nockup `basic` template is generic and needs three one-time fixups before ve
    ibig            = { path = "../../nockchain/crates/nockvm/rust/ibig" }
    ```
 
-   Adjust `../../` to wherever your `nockchain` and `vesl-nockup` checkouts live relative to the project. If `nockup package add` resolves `zkvesl/vesl-graft` for you (Step 2 below), the three `vesl-core`/`nock-noun-rs`/`nockchain-tip5-rs` lines will be written for you — leave them out of this block. Everything else stays.
+   Adjust `../../` to wherever your `nockchain` and `vesl` checkouts live relative to the project. If `nockup package add` resolves `zkvesl/vesl-graft` for you (Step 2 below), the two `vesl-core` / `nock-noun-rs` lines will be written for you — leave them out of this block. Everything else stays.
 
 2. **`build.rs`** — the scaffold invokes a `hoonc --output <path>` flag that doesn't exist. Vesl compiles `out.jam` via `hoonc` in Step 4 directly, so collapse `build.rs` to a no-op:
 
@@ -69,7 +68,7 @@ The nockup `basic` template is generic and needs three one-time fixups before ve
 
 3. **`src/main.rs`** — the scaffold wraps the CLI in `Some(cli)` and imports a handful of unused symbols. Step 6 below replaces this file wholesale, so you can leave it alone for now — just know that the driver template here is the one that compiles.
 
-## Step 2 — install the vesl graft package
+## Step 2 — install the vesl graft packages
 
 ```bash
 nockup package add zkvesl/vesl-graft -v latest
@@ -77,7 +76,18 @@ nockup package add zkvesl/vesl-graft -v latest
 
 (`-v latest` is required; nockup refuses a bare `add` without a version spec.)
 
-When the package resolves, `nockup package add` records the dep in `nockapp.toml` and installs on the next `nockup project init` / `nockup package install` — run from the **parent** of the project dir, not from inside (`nockup package install` walks `./<package-name>/` and will error `Project directory '<package-name>' not found. Run nockup project init first.` if you run it from within the project). A successful install drops the Hoon libraries into `hoon/lib/` (`vesl-graft.hoon`, `vesl-merkle.hoon`) and the tip5 hash tree into `hoon/common/` (`zeke.hoon`, `ztd/*.hoon`). It does not touch your Rust `src/` or `hoon/app/app.hoon`. Confirm with `ls hoon/lib/vesl-graft.hoon` — nockup silently skips dependencies it can't resolve, so the absence of a warning does not mean it succeeded.
+The `zkvesl/vesl-graft` package ships four composable primitives:
+
+| Graft | Priority | What it does |
+|---|---|---|
+| `vesl-graft`  | 10 | Register/verify/settle notes against a Merkle root, with replay protection and epoch rotation. |
+| `mint-graft`  | 20 | Commit a Merkle root to a `hull=@` trellis cell. Append-only. |
+| `guard-graft` | 30 | Register a root per hull, check leaves against it. Soft verify (ok=%.y/%.n). |
+| `forge-graft` | 40 | STARK-prove a Nock computation over jammed data, bound to a hull + note-id. |
+
+Each graft ships its own `<name>-graft.hoon` library and a sibling `<name>-graft.toml` manifest that `graft-inject` consumes in Step 3. Install gives you all four by default; Step 3 picks which ones compose into your kernel.
+
+When the package resolves, `nockup package add` records the dep in `nockapp.toml` and installs on the next `nockup project init` / `nockup package install` — run from the **parent** of the project dir, not from inside (`nockup package install` walks `./<package-name>/` and will error `Project directory '<package-name>' not found. Run nockup project init first.` if you run it from within the project). A successful install drops eight Hoon files into `hoon/lib/` (the four `<name>-graft.hoon` libraries and their `.toml` manifests), plus `vesl-merkle.hoon` and — for forge — `vesl-prover.hoon` / `vesl-lower.hoon`. The tip5 hash tree lands in `hoon/common/` (`zeke.hoon`, `ztd/*.hoon`); forge additionally pulls in the STARK prover tree (`common/v2/`, `common/stark/`, `common/nock-common/`, `dat/softed-constraints.hoon`, and the pre-jammed constraint tables in `jams/`). Nothing touches your Rust `src/` or `hoon/app/app.hoon`. Confirm with `ls hoon/lib/vesl-graft.hoon hoon/lib/mint-graft.toml` — nockup silently skips dependencies it can't resolve, so the absence of a warning does not mean it succeeded.
 
 Then copy the marker template over the scaffolded (and markerless) `app.hoon`:
 
@@ -92,14 +102,30 @@ The nockup `basic` template's `app.hoon` does not contain the five `::  nockup:*
 Until the package lands in nockup's resolver, mirror what `package add` would have done by copying directly out of your local `vesl-nockup` checkout. (Skip `nockup package add` / `package install` entirely — they won't resolve, and `install` will error from inside the project dir anyway.)
 
 ```bash
+# Always-required libs + the vesl graft.
 cp <vesl-nockup>/hoon/lib/vesl-graft.hoon   hoon/lib/
+cp <vesl-nockup>/hoon/lib/vesl-graft.toml   hoon/lib/
 cp <vesl-nockup>/hoon/lib/vesl-merkle.hoon  hoon/lib/
 cp <vesl-nockup>/hoon/common/zeke.hoon      hoon/common/
 mkdir -p hoon/common/ztd
 cp <vesl-nockup>/hoon/common/ztd/*.hoon     hoon/common/ztd/
+
+# Optional: pick any subset of the other three primitives.
+cp <vesl-nockup>/hoon/lib/mint-graft.{hoon,toml}   hoon/lib/
+cp <vesl-nockup>/hoon/lib/guard-graft.{hoon,toml}  hoon/lib/
+
+# Forge requires the STARK prover tree — copy the lot or skip it.
+cp <vesl-nockup>/hoon/lib/forge-graft.{hoon,toml}  hoon/lib/
+cp <vesl-nockup>/hoon/lib/vesl-prover.hoon         hoon/lib/
+cp <vesl-nockup>/hoon/lib/vesl-lower.hoon          hoon/lib/
+cp -r <vesl-nockup>/hoon/common/v2                 hoon/common/
+cp -r <vesl-nockup>/hoon/common/stark              hoon/common/
+cp -r <vesl-nockup>/hoon/common/nock-common.hoon   hoon/common/
+cp -r <vesl-nockup>/hoon/dat                       hoon/
+cp -r <vesl-nockup>/hoon/jams                      hoon/
 ```
 
-The three `vesl-core` / `nock-noun-rs` / `nockchain-tip5-rs` Rust deps are already in your `Cargo.toml` from Step 1's fixup — nothing to add here. Proceed to the marker copy above.
+The two `vesl-core` / `nock-noun-rs` Rust deps are already in your `Cargo.toml` from Step 1's fixup — nothing to add here. Proceed to the marker copy above.
 
 ## Step 3 — wire the kernel
 
@@ -107,16 +133,31 @@ The three `vesl-core` / `nock-noun-rs` / `nockchain-tip5-rs` Rust deps are alrea
 graft-inject hoon/app/app.hoon
 ```
 
-The `app.hoon` you copied in Step 2 has five `::  nockup:*` marker comments at fixed structural points. `graft-inject` reads each marker and inserts the Hoon needed to compose vesl into your kernel — imports, a `vesl-state` field, a `vesl-cause` union branch, three `?-` poke arms (`%vesl-register`, `%vesl-verify`, `%vesl-settle`), and a `vesl-peek` fallthrough in your peek handler. About 80 lines of mechanical boilerplate, written for you. The tool is idempotent — run it twice and it skips anything already wired.
+The `app.hoon` you copied in Step 2 has five `::  nockup:*` marker comments at fixed structural points. `graft-inject` discovers every `<name>-graft.toml` under `hoon/lib/`, composes their per-marker blocks, and writes them into your kernel — imports, state fields, cause-union branches, `?-` poke arms, and a chained peek dispatcher. About 80 lines per graft, written for you. The tool is idempotent — run it twice and it skips anything already wired.
 
-Expected output:
+Bare invocation auto-discovers every installed graft. Selective composition:
+
+```bash
+graft-inject --list                                          # see what's available
+graft-inject --grafts vesl-graft,mint-graft hoon/app/app.hoon  # explicit subset
+graft-inject --exclude forge-graft hoon/app/app.hoon           # everything but forge
+graft-inject --dry-run hoon/app/app.hoon                     # preview; don't write
+```
+
+Expected output for an all-four compose:
 
 ```
 graft-inject: hoon/app/app.hoon
-  injected: imports, state, cause, poke, peek (5/5)
+  vesl-graft:  injected 5/5 (imports, state, cause, poke, peek)
+  mint-graft:  injected 5/5 (imports, state, cause, poke, peek)
+  guard-graft: injected 5/5 (imports, state, cause, poke, peek)
+  forge-graft: injected 3/3 (imports, cause, poke)
+  markers present: 5 (imports, state, cause, poke, peek)
 ```
 
-The arms `graft-inject` installs use a default hash-comparison gate: the kernel tip5-hashes the raw payload and checks it against the registered root. That's enough to verify single-leaf commitments. For anything richer — Merkle manifests, signatures, ZK proofs — see *Customizing* below.
+`forge-graft` ships three blocks (no state, no peek — forge is stateless). The denominator is per-graft: each graft reports against the blocks *it* declares, not a fixed 5.
+
+The arms `graft-inject` installs for the vesl graft use a default hash-comparison gate: the kernel tip5-hashes the raw payload and checks it against the registered root. That's enough to verify single-leaf commitments. For anything richer — Merkle manifests, signatures, ZK proofs — see *Customizing* below.
 
 ## Step 4 — compile the kernel
 
@@ -208,6 +249,49 @@ You now have a grafted NockApp with on-kernel Merkle verification and replay-pro
 `vesl-core` also exports `build_vesl_verify_poke(note_id, hull, root, data)` for pure verification (no state transition). All three builders take the same shape: primitives in, ready-to-poke `NounSlab` out.
 
 **Why a single-leaf commit?** The default verification gate that `graft-inject` installs tip5-hashes the raw payload bytes and compares the digest against the registered root. That equality holds only when the committed tree has one leaf (root ≡ `hash-leaf(data)`). The moment you commit two or more leaves, the registered root becomes the Merkle hash of the subtree and the default gate returns `%.n` on settle — which triggers a deterministic crash (see Troubleshooting). For multi-leaf commitments, replace the gate per *Customizing → Replace the default verification gate*.
+
+### mint / guard / forge: the other three primitives
+
+If your `graft-inject` call composed more than just `vesl-graft`, `vesl-core` also exports builders for the other primitives. All take the same shape — primitives in, `NounSlab` out:
+
+```rust
+use vesl_core::{
+    build_mint_commit_poke,       // mint-graft
+    build_guard_register_poke,    // guard-graft
+    build_guard_check_poke,       //   "
+    build_forge_prove_poke,       // forge-graft
+};
+
+// Commit a Merkle root under hull=7 on the mint trellis.
+poke(&mut app, build_mint_commit_poke(7, &root)).await?;
+
+// Register the same hull/root on guard, then check a leaf.
+poke(&mut app, build_guard_register_poke(7, &root)).await?;
+poke(&mut app, build_guard_check_poke(7, b"leaf data")).await?;
+// → %guard-checked ok=%.y if leaf hashes to the registered root,
+//   ok=%.n if it doesn't, %guard-error if hull 7 isn't registered.
+```
+
+Mint is **append-only** — a second `build_mint_commit_poke(7, ...)` on the same hull emits `%mint-error`. Guard's check is **soft** on the hash (emits `%guard-checked` either way) but **hard** on registration (unregistered hull → `%guard-error`). The unified `hull=@` key means the same integer addresses the same logical cell across settle/mint/guard — you pick when to propagate (nothing auto-bridges).
+
+### Forge: proving a Nock computation
+
+Forge is the one primitive that produces a STARK, and the one with the heaviest compile (the prover tree adds ~16MB of pre-jammed constraint tables to your kernel). Whether to include it is a deployment decision — skip it via `graft-inject --exclude forge-graft` if you don't need proofs.
+
+```rust
+use vesl_core::build_forge_prove_poke;
+
+// Prove a 64-increment Nock computation over `data`, bound to
+// hull=7 and note-id=101 via the Fiat-Shamir transcript.
+let slab = build_forge_prove_poke(7, 101, b"data to prove");
+poke(&mut app, slab).await?;
+// → %forge-proved (proof=@) on success,
+//   %forge-error (msg=@t) if the prover crashed.
+```
+
+Cost: 5–40 s per proof on a modern CPU, dominated by FRI commitments. The kernel's `%forge-prove` arm wraps `prove-computation` in a `mule` so a prover crash won't kill the host kernel — it surfaces as `%forge-error`. Pair forge with mint/guard if you want the proof *and* a commitment trellis; forge itself is stateless (no state block, no peek surface).
+
+The STARK verifier lives on the Rust side; see `vesl-core`'s forge module for the `verify` entry point. Cross-VM prove→verify is the real test — run it once per deployment, then let the kernel handle the per-request proving.
 
 ## Adding vesl to an existing nockup project
 
@@ -326,23 +410,39 @@ The standard suite covers register, duplicate-register, verify, settle, replay, 
 **`graft-inject` reports `warning — markers not found: imports, state, ...`**
 You edited `app.hoon` without the marker comments, or your spacing is off. Two-space law: `::` followed by exactly two spaces, then `nockup:<name>`.
 
+**`graft-inject` errors with `unknown graft: <name>`**
+`--grafts <csv>` names a graft whose `.toml` isn't in `--lib-dir`. Check `graft-inject --list` to see what's installed. Auto-discovery (bare invocation) won't produce this error — it just picks what's there.
+
 **`hoonc` exits 0 but no `out.jam`**
 Type error in the kernel. Most common cause: your `effect` type is narrower than the union the grafted arms produce. Use `+$  effect  *` unless you've explicitly constrained it.
+
+**`hoonc` fails with `mint-lost` / `-lost %<tag>` on a multi-graft compose**
+The composed `?-` over `-.u.act` isn't exhaustive. Usually this means one of the graft manifests is stale — re-install the vesl graft package (or re-run `sync.sh` in a dev checkout) to pick up the latest arm set. H-01 added `%vesl-rotate-epoch` and pre-H-01 manifests will trip this.
+
+**`hoonc` fails with `missing dependency /jams/constraints-0-1.jam`**
+Forge-graft pulls in the STARK prover tree, which depends on pre-jammed constraint tables. Copy `hoon/dat/` and `hoon/jams/` from `vesl-nockup/` into your project, or skip forge via `graft-inject --exclude forge-graft`.
 
 **`cargo build` fails on `ibig` with "expected `UBig`, found `ibig::ubig::UBig`"**
 You pulled `ibig` from crates.io instead of the nockchain fork. Vesl-core pins the nockchain fork — if you've added your own `ibig` dep, remove it.
 
 **`Number is greater than DIRECT_MAX` panic**
-A `u64` you're feeding into `D()` has its top bit set. Use `nock_noun_rs::atom_from_u64(alloc, value)` instead of `D(value)` for hashed IDs.
+A `u64` you're feeding into `D()` has its top bit set. Use `nock_noun_rs::atom_from_u64(alloc, value)` instead of `D(value)` for hashed IDs. All vesl-core pokes already route hull-ids through `atom_from_u64` internally.
 
 **`%vesl-settle` returns no effects, stderr shows `DETERMINISTIC error mote=Exit`**
 The verify-gate returned `%.n`. The `?>` at `lib/vesl-graft.hoon:132` crashes on gate failure by design — a rejected payload must remain an unprovable STARK state rather than an emitted error. From the Rust side, `app.poke(...).await` resolves `Ok(effects)` with `effects.len() == 0`; treat that as a gate rejection and inspect stderr for the trace. The most common cause is committing multiple leaves with the default single-leaf hash-gate (see Step 6's *Why a single-leaf commit?* note).
 
+**Peek returns `~` on what looks like a valid path**
+Vesl-graft's peek paths are **namespaced**: `[%vesl-registered hull ~]`, `[%vesl-settled note-id ~]`, `[%vesl-root hull ~]`, `[%vesl-epoch ~]`, `[%settle-count ~]`. The unprefixed `%registered` / `%settled` / `%root` / `%epoch` forms (pre-Phase-10) are retired. Rust callers going through `vesl-core` are unaffected — the builders don't construct peek paths, they construct pokes.
+
 ## Reference
 
 - Marker source-of-truth: `tools/graft-inject/src/main.rs`
-- Hoon graft state + dispatcher: `hoon/lib/vesl-graft.hoon`
+- Manifest schema: `<vesl>/docs/graft-manifest.md`
+- Hoon grafts + manifests: `hoon/lib/{vesl,mint,guard,forge}-graft.{hoon,toml}`
 - Merkle primitives: `hoon/lib/vesl-merkle.hoon`
-- Rust SDK: `crates/vesl-core/src/`
-- Tip5 tree: `crates/nockchain-tip5-rs/src/`
+- STARK prover / lower (forge deps): `hoon/lib/vesl-prover.hoon`, `hoon/lib/vesl-lower.hoon`
+- Rust SDK (upstream, consumed as a dep): `<vesl>/crates/vesl-core/src/`
+  - Poke builders: `graft_pokes/{settle,mint,guard,forge}.rs`
 - Test harness: `test/vesl-test/src/lib.rs`
+- Integration tests: `tools/graft-inject/tests/{mint_lifecycle,guard_lifecycle,forge_compile,integration}.rs`
+- Test scaffolding: `tools/graft-inject/tests/fixtures/mod.rs`
