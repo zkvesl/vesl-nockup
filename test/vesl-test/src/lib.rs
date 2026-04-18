@@ -1,9 +1,14 @@
 //! vesl-test — harness + standard suite for grafted NockApp kernels.
 //!
-//! Boots a kernel from an `out.jam`, constructs vesl-register / verify /
-//! settle pokes, runs a lifecycle test, and asserts the effect tags.
+//! Boots a kernel from an `out.jam`, constructs settle-register / verify /
+//! note pokes, runs a lifecycle test, and asserts the effect tags.
 //! Reuses the poke shapes from vesl-core and nock-noun-rs — no kernel
 //! knowledge required from the caller.
+//!
+//! Phase 12A renamed the primitive from `vesl-graft` to `settle-graft`;
+//! the method names below track the new naming (`register` /  `verify`
+//! /  `note`). The `settle` method remains as a deprecated alias so
+//! existing tests outside this repo keep compiling for one release.
 
 use std::fs;
 use std::path::Path;
@@ -44,22 +49,29 @@ impl GraftTestHarness {
         Ok(Self { app })
     }
 
-    /// Send `[%vesl-register hull root]`. Returns the effect tag list.
+    /// Send `[%settle-register hull root]`. Returns the effect tag list.
     pub async fn register(&mut self, hull: u64, root: &Tip5Hash) -> Result<Vec<String>> {
         let slab = build_register_poke(hull, root);
         self.poke_slab(slab).await
     }
 
-    /// Send `[%vesl-verify payload]` where payload is pre-jammed graft bytes.
+    /// Send `[%settle-verify payload]` where payload is pre-jammed graft bytes.
     pub async fn verify(&mut self, payload: &[u8]) -> Result<Vec<String>> {
-        let slab = build_payload_poke("vesl-verify", payload);
+        let slab = build_payload_poke("settle-verify", payload);
         self.poke_slab(slab).await
     }
 
-    /// Send `[%vesl-settle payload]` where payload is pre-jammed graft bytes.
-    pub async fn settle(&mut self, payload: &[u8]) -> Result<Vec<String>> {
-        let slab = build_payload_poke("vesl-settle", payload);
+    /// Send `[%settle-note payload]` where payload is pre-jammed graft bytes.
+    pub async fn note(&mut self, payload: &[u8]) -> Result<Vec<String>> {
+        let slab = build_payload_poke("settle-note", payload);
         self.poke_slab(slab).await
+    }
+
+    /// Deprecated alias for [`GraftTestHarness::note`]. The `%vesl-settle`
+    /// cause tag became `%settle-note` in Phase 12A.
+    #[deprecated(since = "0.2.0", note = "renamed in Phase 12A; use note()")]
+    pub async fn settle(&mut self, payload: &[u8]) -> Result<Vec<String>> {
+        self.note(payload).await
     }
 
     /// Raw escape hatch — send an arbitrary NounSlab as a system poke.
@@ -86,8 +98,8 @@ impl GraftTestHarness {
 
     /// Peek and return the raw `(unit (unit *))` result from the
     /// kernel — no unwrapping. Use this when the peek returns a
-    /// nested unit (vesl-graft's `%root` convention — `` `` `` around
-    /// a `(unit @)` — produces `[~ [~ [~ value]]]` / `[~ [~ ~]]`).
+    /// nested unit (settle-graft's `%settle-root` convention — `` `` ``
+    /// around a `(unit @)` — produces `[~ [~ [~ value]]]` / `[~ [~ ~]]`).
     pub async fn peek_raw(&mut self, path: NounSlab) -> Result<NounSlab> {
         self.app
             .peek(path)
@@ -108,14 +120,14 @@ impl GraftTestHarness {
         report.record(
             "register",
             self.register(TEST_HULL_A, &root).await,
-            &["vesl-registered"],
+            &["settle-registered"],
         );
 
         // 2. duplicate register → error
         report.record(
             "duplicate-register",
             self.register(TEST_HULL_A, &root).await,
-            &["vesl-error"],
+            &["settle-error"],
         );
 
         // 3. verify (valid payload)
@@ -123,35 +135,35 @@ impl GraftTestHarness {
         report.record(
             "verify",
             self.verify(&payload).await,
-            &["vesl-verified"],
+            &["settle-verified"],
         );
 
         // 4. register B, settle
         report.record(
             "register-b",
             self.register(TEST_HULL_B, &root).await,
-            &["vesl-registered"],
+            &["settle-registered"],
         );
         let settle_payload = jam_graft_payload(42, TEST_HULL_B, &root, TEST_PAYLOAD);
         report.record(
-            "settle",
-            self.settle(&settle_payload).await,
-            &["vesl-settled"],
+            "note",
+            self.note(&settle_payload).await,
+            &["settle-noted"],
         );
 
         // 5. replay settle (same note-id)
         report.record(
-            "replay-settle",
-            self.settle(&settle_payload).await,
-            &["vesl-error"],
+            "replay-note",
+            self.note(&settle_payload).await,
+            &["settle-error"],
         );
 
         // 6. unregistered hull
         let bogus = jam_graft_payload(99, 99_999, &root, TEST_PAYLOAD);
         report.record(
             "unregistered-hull",
-            self.settle(&bogus).await,
-            &["vesl-error"],
+            self.note(&bogus).await,
+            &["settle-error"],
         );
 
         // 7. root mismatch
@@ -160,8 +172,8 @@ impl GraftTestHarness {
         let mismatched = jam_graft_payload(100, TEST_HULL_A, &other_root, TEST_PAYLOAD);
         report.record(
             "root-mismatch",
-            self.settle(&mismatched).await,
-            &["vesl-error"],
+            self.note(&mismatched).await,
+            &["settle-error"],
         );
 
         report
@@ -170,10 +182,10 @@ impl GraftTestHarness {
 
 // -- poke builders ----------------------------------------------------------
 
-/// Build a `[%vesl-register hull root]` poke.
+/// Build a `[%settle-register hull root]` poke.
 pub fn build_register_poke(hull: u64, root: &Tip5Hash) -> NounSlab {
     let mut slab = NounSlab::new();
-    let tag = make_tag_in(&mut slab, "vesl-register");
+    let tag = make_tag_in(&mut slab, "settle-register");
     let root_bytes = tip5_to_atom_le_bytes(root);
     let root_atom = make_atom_in(&mut slab, &root_bytes);
     let poke = T(&mut slab, &[tag, D(hull), root_atom]);
@@ -181,7 +193,7 @@ pub fn build_register_poke(hull: u64, root: &Tip5Hash) -> NounSlab {
     slab
 }
 
-/// Build a `[%vesl-<verb> payload]` poke where payload is a pre-jammed atom.
+/// Build a `[%settle-<verb> payload]` poke where payload is a pre-jammed atom.
 pub fn build_payload_poke(verb: &str, payload: &[u8]) -> NounSlab {
     let mut slab = NounSlab::new();
     let tag = make_tag_in(&mut slab, verb);

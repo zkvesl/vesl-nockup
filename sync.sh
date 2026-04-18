@@ -24,8 +24,8 @@ echo "syncing from $vesl"
 
 # --- Hoon files ---
 echo "  hoon libs"
-cp "$vesl/protocol/lib/vesl-graft.hoon"   "$here/hoon/lib/"
-cp "$vesl/protocol/lib/vesl-graft.toml"   "$here/hoon/lib/"
+cp "$vesl/protocol/lib/settle-graft.hoon" "$here/hoon/lib/"
+cp "$vesl/protocol/lib/settle-graft.toml" "$here/hoon/lib/"
 cp "$vesl/protocol/lib/mint-graft.hoon"   "$here/hoon/lib/"
 cp "$vesl/protocol/lib/mint-graft.toml"   "$here/hoon/lib/"
 cp "$vesl/protocol/lib/guard-graft.hoon"  "$here/hoon/lib/"

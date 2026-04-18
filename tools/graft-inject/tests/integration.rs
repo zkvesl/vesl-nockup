@@ -1,11 +1,11 @@
 //! End-to-end four-graft integration test (Phase 11).
 //!
-//! Composes `[vesl-graft, mint-graft, guard-graft, forge-graft]` on
+//! Composes `[settle-graft, mint-graft, guard-graft, forge-graft]` on
 //! top of the bare `templates/app.hoon` scaffold, compiles the
 //! kernel, boots it through `vesl-test`, and exercises every
 //! primitive the plan treats as in-scope for PARAMETIZATION:
 //!
-//!   * vesl-graft: the full 7-test standard suite — register /
+//!   * settle-graft: the full 7-test standard suite — register /
 //!     duplicate-register / verify / register-b / settle /
 //!     replay-settle / root-mismatch. (This is vesl-test's
 //!     `run_standard_suite`; all three settle guardrails are in it.)
@@ -39,12 +39,12 @@ const DOMAIN_LEAF: &[u8] = b"integration fixture leaf";
 async fn four_graft_end_to_end() -> Result<()> {
     let jam_path = fixtures::compose_and_compile(
         "integration",
-        &["vesl-graft", "mint-graft", "guard-graft", "forge-graft"],
+        &["settle-graft", "mint-graft", "guard-graft", "forge-graft"],
     )?;
     let mut harness = GraftTestHarness::boot(&jam_path).await?;
 
     // ---------------------------------------------------------------
-    // vesl-graft: standard 8-test suite — register / duplicate-register
+    // settle-graft: standard 8-test suite — register / duplicate-register
     // / verify / register-b / settle / replay-settle / unregistered-
     // hull / root-mismatch. Every happy path plus all three settle
     // guardrails plus root-mismatch. Fail loudly if anything regresses.

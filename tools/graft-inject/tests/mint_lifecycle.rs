@@ -1,6 +1,6 @@
 //! Mint-graft lifecycle integration test (Phase 7b).
 //!
-//! Composes a kernel from `[vesl-graft, mint-graft]`, compiles it with
+//! Composes a kernel from `[settle-graft, mint-graft]`, compiles it with
 //! `hoonc`, boots it through `vesl-test`, and exercises the full
 //! mint-commit / peek flow. Runs end-to-end in ~30-50s (the bulk is
 //! `hoonc`); treat accordingly in CI.
@@ -19,7 +19,7 @@ use vesl_test::GraftTestHarness;
 async fn mint_commit_two_hulls_then_peek() -> Result<()> {
     let jam_path = fixtures::compose_and_compile(
         "mint_lifecycle",
-        &["vesl-graft", "mint-graft"],
+        &["settle-graft", "mint-graft"],
     )?;
     let mut harness = GraftTestHarness::boot(&jam_path).await?;
 

@@ -1,6 +1,6 @@
 //! Guard-graft lifecycle integration test (Phase 8b).
 //!
-//! Composes a kernel from `[vesl-graft, mint-graft, guard-graft]`,
+//! Composes a kernel from `[settle-graft, mint-graft, guard-graft]`,
 //! compiles it with `hoonc`, boots it through `vesl-test`, and drives
 //! the full mint → guard-register → guard-check flow. ~30-50s runtime
 //! (most of it `hoonc`); treat accordingly in CI.
@@ -23,7 +23,7 @@ const LEAF: &[u8] = b"guard-graft fixture leaf";
 async fn guard_register_check_happy_and_error_paths() -> Result<()> {
     let jam_path = fixtures::compose_and_compile(
         "guard_lifecycle",
-        &["vesl-graft", "mint-graft", "guard-graft"],
+        &["settle-graft", "mint-graft", "guard-graft"],
     )?;
     let mut harness = GraftTestHarness::boot(&jam_path).await?;
 
@@ -50,7 +50,7 @@ async fn guard_register_check_happy_and_error_paths() -> Result<()> {
     );
 
     // Tampered data — still %guard-checked (soft ok=%.n). Guard's
-    // design is crash-on-bad-leaf is vesl-graft's job, not guard's.
+    // design is crash-on-bad-leaf is settle-graft's job, not guard's.
     let tags = harness.poke_slab(build_guard_check_poke(1, b"tampered")).await?;
     assert!(
         tags.iter().any(|t| t == "guard-checked"),

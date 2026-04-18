@@ -68,7 +68,7 @@ pub fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
 /// `out.jam` path.
 ///
 /// `grafts` selects which manifests graft-inject consumes. Pass
-/// explicit names (e.g. `&["vesl-graft", "mint-graft"]`) so a future
+/// explicit names (e.g. `&["settle-graft", "mint-graft"]`) so a future
 /// graft dropping into `hoon/lib/` doesn't silently join the test's
 /// composed kernel via auto-discovery.
 ///

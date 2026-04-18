@@ -30,7 +30,7 @@ use vesl_test::GraftTestHarness;
 async fn four_graft_compose_boots_and_accepts_forge_shape() -> Result<()> {
     let jam_path = fixtures::compose_and_compile(
         "forge_compile",
-        &["vesl-graft", "mint-graft", "guard-graft", "forge-graft"],
+        &["settle-graft", "mint-graft", "guard-graft", "forge-graft"],
     )?;
     let mut harness = GraftTestHarness::boot(&jam_path).await?;
 

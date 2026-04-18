@@ -360,7 +360,7 @@ fn emit_peek_chain(
 }
 
 /// Strip the `-graft` suffix from a graft name to get the binding stub
-/// used in the peek chain (`vesl-graft` -> `vesl`, `mint-graft` -> `mint`).
+/// used in the peek chain (`settle-graft` -> `settle`, `mint-graft` -> `mint`).
 fn binding_stub(name: &str) -> &str {
     name.strip_suffix("-graft").unwrap_or(name)
 }
@@ -731,11 +731,11 @@ mod tests {
 ((moat |) inner)
 ";
 
-    fn vesl_only_grafts() -> Vec<Graft> {
-        let path = vesl_graft_manifest_path();
+    fn settle_only_grafts() -> Vec<Graft> {
+        let path = settle_graft_manifest_path();
         let g = load_manifest(&path)
-            .expect("load vesl-graft.toml")
-            .expect("vesl-graft.toml has [graft] table");
+            .expect("load settle-graft.toml")
+            .expect("settle-graft.toml has [graft] table");
         vec![g]
     }
 
@@ -775,13 +775,13 @@ mod tests {
         }
     }
 
-    fn vesl_graft_manifest_path() -> PathBuf {
+    fn settle_graft_manifest_path() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
             .join("hoon")
             .join("lib")
-            .join("vesl-graft.toml")
+            .join("settle-graft.toml")
     }
 
     fn tempdir_for_test(label: &str) -> PathBuf {
@@ -794,45 +794,45 @@ mod tests {
 
     #[test]
     fn injects_all_markers() {
-        let grafts = vesl_only_grafts();
+        let grafts = settle_only_grafts();
         let (out, report) = inject(BARE_SCAFFOLD, &grafts).unwrap();
-        assert!(out.contains("/+  *vesl-graft"));
+        assert!(out.contains("/+  *settle-graft"));
         assert!(out.contains("/+  *vesl-merkle"));
-        assert!(out.contains("vesl=vesl-state"));
-        assert!(out.contains("vesl-cause"));
-        assert!(out.contains("%vesl-register"));
-        assert!(out.contains("%vesl-verify"));
-        assert!(out.contains("%vesl-settle"));
+        assert!(out.contains("settle=settle-state"));
+        assert!(out.contains("settle-cause"));
+        assert!(out.contains("%settle-register"));
+        assert!(out.contains("%settle-verify"));
+        assert!(out.contains("%settle-note"));
         // Peek emits the chain shape (Phase 4): the legacy expression
-        // lives inside the `=/ vesl-res ...` binding.
-        assert!(out.contains("=/  vesl-res  (vesl-peek vesl.state path)"));
-        assert!(out.contains("?.  =(~ vesl-res)  vesl-res"));
+        // lives inside the `=/ settle-res ...` binding.
+        assert!(out.contains("=/  settle-res  (settle-peek settle.state path)"));
+        assert!(out.contains("?.  =(~ settle-res)  settle-res"));
 
         assert_eq!(report.markers_in_source.len(), 5);
         assert!(report.markers_missing.is_empty());
-        let vesl = &report.grafts[0];
-        assert_eq!(vesl.name, "vesl-graft");
-        assert_eq!(vesl.injected.len(), 5);
-        assert!(vesl.skipped.is_empty());
+        let settle = &report.grafts[0];
+        assert_eq!(settle.name, "settle-graft");
+        assert_eq!(settle.injected.len(), 5);
+        assert!(settle.skipped.is_empty());
     }
 
     #[test]
     fn is_idempotent() {
-        let grafts = vesl_only_grafts();
+        let grafts = settle_only_grafts();
         let (first, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
         let (second, report) = inject(&first, &grafts).unwrap();
         assert_eq!(first, second, "second inject must produce identical output");
-        let vesl = &report.grafts[0];
-        assert!(vesl.injected.is_empty(), "no marker should re-inject");
-        assert_eq!(vesl.skipped.len(), 5, "all 5 markers should skip");
+        let settle = &report.grafts[0];
+        assert!(settle.injected.is_empty(), "no marker should re-inject");
+        assert_eq!(settle.skipped.len(), 5, "all 5 markers should skip");
     }
 
     #[test]
     fn preserves_two_space_law() {
         // The two-space law applies to every Hoon rune in the manifest
-        // bodies. Scan the loaded `vesl-graft.toml` rather than the
+        // bodies. Scan the loaded `settle-graft.toml` rather than the
         // (deleted) BLOCK_* constants — same content post-Phase 3.
-        let graft = load_manifest(&vesl_graft_manifest_path())
+        let graft = load_manifest(&settle_graft_manifest_path())
             .unwrap()
             .unwrap();
         let bodies: Vec<&str> = Marker::ALL
@@ -859,7 +859,7 @@ mod tests {
 
     #[test]
     fn missing_marker_is_warning_not_error() {
-        let grafts = vesl_only_grafts();
+        let grafts = settle_only_grafts();
         let src = "::  just a comment\n";
         let result = inject(src, &grafts);
         assert!(result.is_ok());
@@ -870,7 +870,7 @@ mod tests {
 
     #[test]
     fn does_not_match_nockup_pokemon() {
-        let grafts = vesl_only_grafts();
+        let grafts = settle_only_grafts();
         let src = "::  nockup:pokemon\n";
         let (_, report) = inject(src, &grafts).unwrap();
         assert_eq!(report.markers_missing.len(), 5);
@@ -903,7 +903,7 @@ mod tests {
         // every non-peek marker, with the marker's leading whitespace
         // prepended and no other rewriting. Peek is excluded — see
         // peek_chain_n1_matches_legacy_replacement for that shape.
-        let grafts = vesl_only_grafts();
+        let grafts = settle_only_grafts();
         let graft = &grafts[0];
         let (out, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
         let lines: Vec<&str> = out.lines().collect();
@@ -916,7 +916,7 @@ mod tests {
             let marker_indent = leading_whitespace(lines[marker_idx]).to_string();
             let body = graft
                 .block(marker)
-                .expect("vesl claims this marker")
+                .expect("settle claims this marker")
                 .trimmed_body();
             for (i, want) in body.lines().enumerate() {
                 let got = lines[marker_idx + 1 + i];
@@ -939,29 +939,29 @@ mod tests {
     fn multi_graft_injection_composes_blocks() {
         // vesl + two synthetic grafts, all three contribute to every marker.
         // Each marker region must contain all three sentinels in priority order.
-        let mut grafts = vesl_only_grafts();
+        let mut grafts = settle_only_grafts();
         grafts.push(synthetic_graft("alpha", 50));
         grafts.push(synthetic_graft("beta", 60));
         let (out, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
 
         // imports: all three import directives present
-        assert!(out.contains("/+  *vesl-graft"));
+        assert!(out.contains("/+  *settle-graft"));
         assert!(out.contains("/+  *alpha"));
         assert!(out.contains("/+  *beta"));
         // state: all three field declarations
-        assert!(out.contains("vesl=vesl-state"));
+        assert!(out.contains("settle=settle-state"));
         assert!(out.contains("alpha=alpha-state"));
         assert!(out.contains("beta=beta-state"));
         // cause: all three cause-union members
-        assert!(out.contains("vesl-cause"));
+        assert!(out.contains("settle-cause"));
         assert!(out.contains("alpha-cause"));
         assert!(out.contains("beta-cause"));
         // poke: all three first-arm tags
-        assert!(out.contains("%vesl-register"));
+        assert!(out.contains("%settle-register"));
         assert!(out.contains("%alpha-do"));
         assert!(out.contains("%beta-do"));
         // peek: all three chain bindings
-        assert!(out.contains("=/  vesl-res  (vesl-peek vesl.state path)"));
+        assert!(out.contains("=/  settle-res  (settle-peek settle.state path)"));
         assert!(out.contains("=/  alpha-res  (alpha-peek state path)"));
         assert!(out.contains("=/  beta-res  (beta-peek state path)"));
     }
@@ -970,7 +970,7 @@ mod tests {
     fn peek_chain_composition() {
         // Three grafts → six chain lines + terminal `~` = seven lines total
         // immediately after the marker, in priority order.
-        let mut grafts = vesl_only_grafts();
+        let mut grafts = settle_only_grafts();
         grafts.push(synthetic_graft("alpha", 50));
         grafts.push(synthetic_graft("beta", 60));
         let (out, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
@@ -982,8 +982,8 @@ mod tests {
             .map(|l| l.trim_start().to_string())
             .collect();
         assert_eq!(peek_lines.len(), 7, "expected 7 lines after peek marker");
-        assert_eq!(peek_lines[0], "=/  vesl-res  (vesl-peek vesl.state path)");
-        assert_eq!(peek_lines[1], "?.  =(~ vesl-res)  vesl-res");
+        assert_eq!(peek_lines[0], "=/  settle-res  (settle-peek settle.state path)");
+        assert_eq!(peek_lines[1], "?.  =(~ settle-res)  settle-res");
         assert_eq!(peek_lines[2], "=/  alpha-res  (alpha-peek state path)");
         assert_eq!(peek_lines[3], "?.  =(~ alpha-res)  alpha-res");
         assert_eq!(peek_lines[4], "=/  beta-res  (beta-peek state path)");
@@ -992,37 +992,37 @@ mod tests {
     }
 
     #[test]
-    fn per_graft_idempotence_inject_vesl_then_alpha() {
-        // First inject vesl alone; then re-inject with [vesl, alpha].
-        // vesl region must not double-up (no duplicated sentinels), and
+    fn per_graft_idempotence_inject_settle_then_alpha() {
+        // First inject settle alone; then re-inject with [settle, alpha].
+        // settle region must not double-up (no duplicated sentinels), and
         // alpha must appear interleaved at every marker.
-        let vesl = vesl_only_grafts();
-        let (after_vesl, _) = inject(BARE_SCAFFOLD, &vesl).unwrap();
+        let settle = settle_only_grafts();
+        let (after_settle, _) = inject(BARE_SCAFFOLD, &settle).unwrap();
 
-        let mut both = vesl.clone();
+        let mut both = settle.clone();
         both.push(synthetic_graft("alpha", 50));
-        let (after_both, report) = inject(&after_vesl, &both).unwrap();
+        let (after_both, report) = inject(&after_settle, &both).unwrap();
 
         // Use exact-trimmed-line matching to avoid spurious substring
-        // hits inside the poke body (e.g., `new-vesl=vesl-state` contains
-        // the `vesl=vesl-state` substring).
+        // hits inside the poke body (e.g., `new-settle=settle-state` contains
+        // the `settle=settle-state` substring).
         let lines: Vec<&str> = after_both.lines().collect();
         let trimmed_eq_count = |needle: &str| -> usize {
             lines.iter().filter(|l| l.trim() == needle).count()
         };
 
         for needle in [
-            "/+  *vesl-graft",
+            "/+  *settle-graft",
             "/+  *vesl-merkle",
-            "vesl=vesl-state",
-            "vesl-cause",
-            "%vesl-register",
-            "=/  vesl-res  (vesl-peek vesl.state path)",
+            "settle=settle-state",
+            "settle-cause",
+            "%settle-register",
+            "=/  settle-res  (settle-peek settle.state path)",
         ] {
             assert_eq!(
                 trimmed_eq_count(needle),
                 1,
-                "vesl line `{needle}` must appear exactly once"
+                "settle line `{needle}` must appear exactly once"
             );
         }
         for needle in [
@@ -1038,13 +1038,13 @@ mod tests {
                 "alpha line `{needle}` must appear exactly once"
             );
         }
-        // vesl was wired on the first run, so all 5 of its markers
+        // settle was wired on the first run, so all 5 of its markers
         // skip on the second; alpha is fresh and injects all 5.
-        let vesl_report = &report.grafts[0];
+        let settle_report = &report.grafts[0];
         let alpha_report = &report.grafts[1];
-        assert_eq!(vesl_report.name, "vesl-graft");
-        assert_eq!(vesl_report.injected.len(), 0);
-        assert_eq!(vesl_report.skipped.len(), 5);
+        assert_eq!(settle_report.name, "settle-graft");
+        assert_eq!(settle_report.injected.len(), 0);
+        assert_eq!(settle_report.skipped.len(), 5);
         assert_eq!(alpha_report.name, "alpha");
         assert_eq!(alpha_report.injected.len(), 5);
         assert_eq!(alpha_report.skipped.len(), 0);
@@ -1056,7 +1056,7 @@ mod tests {
         // land immediately before the terminal `~`, after the existing
         // vesl and alpha chain lines.
         let vesl_alpha: Vec<Graft> = {
-            let mut v = vesl_only_grafts();
+            let mut v = settle_only_grafts();
             v.push(synthetic_graft("alpha", 50));
             v
         };
@@ -1093,14 +1093,14 @@ mod tests {
     #[test]
     fn peek_chain_n1_matches_legacy_replacement() {
         // For N=1 the chain is:
-        //   =/  vesl-res  (vesl-peek vesl.state path)
-        //   ?.  =(~ vesl-res)  vesl-res
+        //   =/  settle-res  (settle-peek settle.state path)
+        //   ?.  =(~ settle-res)  settle-res
         //   ~                                   <- terminal fallback
         //
-        // The legacy `(vesl-peek vesl.state path)` expression lives inside
+        // The legacy `(settle-peek settle.state path)` expression lives inside
         // the chain's `=/` binding — same runtime semantics as the
         // pre-Phase-4 flat replacement.
-        let grafts = vesl_only_grafts();
+        let grafts = settle_only_grafts();
         let (out, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
         let peek_lines: Vec<&str> = out
             .lines()
@@ -1111,9 +1111,9 @@ mod tests {
         assert_eq!(peek_lines.len(), 3, "peek region has fewer than 3 lines");
         assert_eq!(
             peek_lines[0].trim_start(),
-            "=/  vesl-res  (vesl-peek vesl.state path)"
+            "=/  settle-res  (settle-peek settle.state path)"
         );
-        assert_eq!(peek_lines[1].trim_start(), "?.  =(~ vesl-res)  vesl-res");
+        assert_eq!(peek_lines[1].trim_start(), "?.  =(~ settle-res)  settle-res");
         assert_eq!(peek_lines[2].trim_start(), "~");
     }
 
@@ -1131,13 +1131,13 @@ mod tests {
         }
     }
 
-    /// Build a temp lib dir with vesl-graft.toml and an alpha synthetic
+    /// Build a temp lib dir with settle-graft.toml and an alpha synthetic
     /// manifest so multi-manifest selection logic can be tested without
     /// the real hoon/lib tree.
     fn tempdir_with_two_manifests(label: &str) -> PathBuf {
         let dir = tempdir_for_test(label);
-        let vesl_src = fs::read_to_string(vesl_graft_manifest_path()).unwrap();
-        fs::write(dir.join("vesl-graft.toml"), vesl_src).unwrap();
+        let settle_src = fs::read_to_string(settle_graft_manifest_path()).unwrap();
+        fs::write(dir.join("settle-graft.toml"), settle_src).unwrap();
         fs::write(
             dir.join("alpha.toml"),
             r#"[graft]
@@ -1193,7 +1193,7 @@ body     = "(alpha-peek state path)"
         cli.exclude = vec!["alpha".to_string()];
         let selected = select_grafts(&cli).unwrap();
         let names: Vec<&str> = selected.iter().map(|g| g.name.as_str()).collect();
-        assert_eq!(names, vec!["vesl-graft"]);
+        assert_eq!(names, vec!["settle-graft"]);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1207,9 +1207,9 @@ body     = "(alpha-peek state path)"
         let mut cli = cli_with(dir.clone());
         cli.path = Some(target.clone());
         cli.dry_run = true;
-        // Constrain to vesl-graft so the synthetic alpha doesn't muddle
+        // Constrain to settle-graft so the synthetic alpha doesn't muddle
         // the assertion (alpha's poke body is intentionally minimal).
-        cli.grafts = vec!["vesl-graft".to_string()];
+        cli.grafts = vec!["settle-graft".to_string()];
         run(cli).unwrap();
 
         let after = fs::read_to_string(&target).unwrap();
@@ -1221,7 +1221,7 @@ body     = "(alpha-peek state path)"
     fn list_json_is_stable() {
         // Schema (documented in vesl/docs/graft-manifest.md):
         //   [{ name, version, priority, blocks: [...], applicable, deferred }]
-        let grafts = vesl_only_grafts();
+        let grafts = settle_only_grafts();
         let summaries: Vec<GraftSummary> =
             grafts.iter().map(GraftSummary::from_graft).collect();
         let json = serde_json::to_string(&summaries).unwrap();
@@ -1229,7 +1229,7 @@ body     = "(alpha-peek state path)"
         let arr = parsed.as_array().expect("top-level array");
         assert_eq!(arr.len(), 1);
         let first = &arr[0];
-        assert_eq!(first["name"], "vesl-graft");
+        assert_eq!(first["name"], "settle-graft");
         assert_eq!(first["version"], "0.1.0");
         assert_eq!(first["priority"], 10);
         assert_eq!(first["applicable"], 5);
