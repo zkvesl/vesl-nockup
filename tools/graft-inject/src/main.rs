@@ -51,6 +51,11 @@ struct GraftBlocks {
 
 #[derive(Debug, Clone, Deserialize)]
 struct Block {
+    // Retained in the schema for manifest authors to document intent;
+    // idempotence switched from sentinel-substring matching to
+    // `::  graft-inject:<name>:begin` banner comments in AUDIT
+    // 2026-04-19 (H-11..H-14).
+    #[allow(dead_code)]
     sentinel: String,
     body: String,
 }
@@ -94,9 +99,12 @@ fn load_manifest(path: &Path) -> Result<Option<Graft>> {
 
 /// Scan `lib_dir` for `*.toml` files and return loaded grafts in priority
 /// order, ties broken by name. Files lacking a `[graft]` table are skipped
-/// silently. Validates that every `after` hint names a discovered graft.
+/// silently. Validates that every `after` hint names a discovered graft,
+/// rejects duplicate graft names (AUDIT 2026-04-19 H-11), and rejects
+/// graft names that don't match the kebab-case shape the schema documents.
 fn discover_grafts(lib_dir: &Path) -> Result<Vec<Graft>> {
     let mut grafts: Vec<Graft> = Vec::new();
+    let mut seen: HashMap<String, PathBuf> = HashMap::new();
     let entries = fs::read_dir(lib_dir)
         .with_context(|| format!("scanning {}", lib_dir.display()))?;
     for entry in entries {
@@ -104,6 +112,23 @@ fn discover_grafts(lib_dir: &Path) -> Result<Vec<Graft>> {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("toml") {
             if let Some(g) = load_manifest(&path)? {
+                if !is_valid_graft_name(&g.name) {
+                    bail!(
+                        "invalid graft name `{}` in {}: expected kebab-case \
+                         matching ^[a-z][a-z0-9-]*$",
+                        g.name,
+                        path.display()
+                    );
+                }
+                if let Some(prev) = seen.get(&g.name) {
+                    bail!(
+                        "duplicate graft name `{}` in {} and {}",
+                        g.name,
+                        prev.display(),
+                        path.display()
+                    );
+                }
+                seen.insert(g.name.clone(), path.clone());
                 grafts.push(g);
             }
         }
@@ -122,6 +147,19 @@ fn discover_grafts(lib_dir: &Path) -> Result<Vec<Graft>> {
         }
     }
     Ok(grafts)
+}
+
+/// Kebab-case validator. Names are interpolated into emitted banner
+/// comments and into filesystem paths elsewhere — rejecting `.`/`/` keeps
+/// a hostile manifest from injecting banner-collision or path-traversal
+/// shapes through the name field.
+fn is_valid_graft_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,12 +260,13 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
                 let indent = leading_whitespace(&lines[idx]).to_string();
                 let mut pending: Vec<&Graft> = Vec::new();
                 for g in grafts {
-                    if let Some(block) = g.block(marker) {
-                        if already_wired_for(&lines, idx, marker, &block.sentinel) {
-                            per_graft.get_mut(&g.name).unwrap().skipped.push(marker);
-                        } else {
-                            pending.push(g);
-                        }
+                    if g.block(marker).is_none() {
+                        continue;
+                    }
+                    if already_wired(&lines, &g.name, marker) {
+                        per_graft.get_mut(&g.name).unwrap().skipped.push(marker);
+                    } else {
+                        pending.push(g);
                     }
                 }
                 if pending.is_empty() {
@@ -271,11 +310,13 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
     ))
 }
 
-/// Insert composed body lines after the marker, indented to match the
-/// marker. Multi-graft composition: each pending graft's body is
-/// concatenated in priority order. The poke marker uses `::` as the
-/// inter-block separator (matching the existing intra-arm convention);
-/// other non-peek markers use a blank line.
+/// Insert composed body lines after the marker, each pending graft wrapped
+/// in a `::  graft-inject:<name>:<marker>:begin` / `:end` banner pair. The
+/// banners carry per-graft-per-marker idempotence (AUDIT 2026-04-19
+/// H-11..H-14): re-runs scan for the begin banner by exact trimmed-line
+/// match rather than hunting for body substrings inside an expanding
+/// `?-` switch. Distinct marker labels keep a graft's banner at one
+/// marker from being mistaken for its banner at another.
 fn emit_block(
     lines: &mut Vec<String>,
     marker_idx: usize,
@@ -283,15 +324,9 @@ fn emit_block(
     marker: Marker,
     pending: &[&Graft],
 ) {
-    let separator = match marker {
-        Marker::Poke => "::",
-        _ => "",
-    };
     let mut composed: Vec<String> = Vec::new();
-    for (i, g) in pending.iter().enumerate() {
-        if i > 0 {
-            composed.push(separator.to_string());
-        }
+    for g in pending.iter() {
+        composed.push(begin_banner(&g.name, marker));
         let body = g
             .block(marker)
             .expect("emit_block called with a graft missing this marker")
@@ -299,6 +334,7 @@ fn emit_block(
         for line in body.lines() {
             composed.push(line.to_string());
         }
+        composed.push(end_banner(&g.name, marker));
     }
     let indented: Vec<String> = composed
         .into_iter()
@@ -315,16 +351,30 @@ fn emit_block(
     }
 }
 
+/// Begin/end banner strings for per-graft-per-marker idempotence. Emitted
+/// indented to match the marker's leading whitespace; the trimmed form is
+/// what `already_wired` matches on.
+fn begin_banner(name: &str, marker: Marker) -> String {
+    format!("::  graft-inject:{}:{}:begin", name, marker.label())
+}
+
+fn end_banner(name: &str, marker: Marker) -> String {
+    format!("::  graft-inject:{}:{}:end", name, marker.label())
+}
+
 /// Emit the peek-chain prelude(s) immediately before the terminal `~`
-/// fallback. Each graft contributes two lines:
+/// fallback. Each graft contributes a banner-wrapped pair:
 ///
+///   ::  graft-inject:<name>:begin
 ///   =/  <stub>-res  <peek.body>
 ///   ?.  =(~ <stub>-res)  <stub>-res
+///   ::  graft-inject:<name>:end
 ///
 /// where `<stub>` is the graft name with the `-graft` suffix stripped.
 /// The bare `~` already in the source remains as the chain's terminal
-/// fallback. If no bare `~` is found in the window after the marker, a
-/// synthetic one is appended so the `?+` still has something to evaluate.
+/// fallback. If no bare `~` is found between the marker and the block's
+/// closing `==`, a synthetic one is appended so the `?+` still has
+/// something to evaluate.
 fn emit_peek_chain(
     lines: &mut Vec<String>,
     marker_idx: usize,
@@ -340,13 +390,15 @@ fn emit_peek_chain(
                 .trimmed_body();
             let stub = binding_stub(&g.name);
             vec![
+                format!("{indent}{}", begin_banner(&g.name, Marker::Peek)),
                 format!("{indent}=/  {stub}-res  {body}"),
                 format!("{indent}?.  =(~ {stub}-res)  {stub}-res"),
+                format!("{indent}{}", end_banner(&g.name, Marker::Peek)),
             ]
         })
         .collect();
 
-    if let Some(target) = find_bare_tilde(lines, marker_idx + 1) {
+    if let Some(target) = find_last_bare_tilde(lines, marker_idx) {
         for (offset, line) in chain_lines.into_iter().enumerate() {
             lines.insert(target + offset, line);
         }
@@ -393,59 +445,43 @@ fn leading_whitespace(s: &str) -> &str {
     &s[..end]
 }
 
-/// Per-graft idempotence check: scan from the marker for THIS graft's
-/// sentinel. Replaces the pre-Phase-4 single-sentinel `already_wired` so
-/// multiple grafts can share a marker without each other's sentinels
-/// triggering false positives.
+/// Per-graft-per-marker idempotence check: is `graft_name` wired at
+/// `marker` somewhere in the file?
 ///
-/// `Poke` walks the entire `?-` switch body — from the marker down to
-/// its closing `==` — because the ?- block grows unboundedly as more
-/// grafts compose into it. A fixed window misses sentinels that land
-/// past the cutoff (e.g. forge's %forge-prove arm after settle's four
-/// arms pushed it past line 60), causing idempotence to falsely
-/// re-inject. Other markers stay on fixed windows since their bodies
-/// don't expand the same way.
-fn already_wired_for(lines: &[String], marker_idx: usize, marker: Marker, sentinel: &str) -> bool {
-    match marker {
-        Marker::Poke => {
-            for i in (marker_idx + 1)..lines.len() {
-                if lines[i].trim() == "==" {
-                    break;
-                }
-                if lines[i].contains(sentinel) {
-                    return true;
-                }
-            }
-            false
-        }
-        _ => {
-            let window = match marker {
-                Marker::Imports => 10,
-                _ => 20,
-            };
-            let start = marker_idx + 1;
-            let end = (start + window).min(lines.len());
-            for line in &lines[start..end] {
-                if matches!(marker, Marker::State | Marker::Cause)
-                    && line.trim_start().starts_with("::")
-                {
-                    continue;
-                }
-                if line.contains(sentinel) {
-                    return true;
-                }
-            }
-            false
-        }
-    }
+/// AUDIT 2026-04-19 H-11..H-14: the pre-audit implementation walked a
+/// marker window for the graft's sentinel string. That had three
+/// failure modes — cross-graft false positives (A's body containing B's
+/// sentinel), peek-chain overflow past the 10-line window at 6+ grafts,
+/// and early termination on an inner `==` inside any poke body. A banner
+/// comment emitted alongside each injected block is an exact-match
+/// invariant that removes all three footguns: it appears iff the
+/// specific graft has been injected at this specific marker, it's never
+/// a substring of any body, and a file-wide scan doesn't care how far
+/// the expanding poke switch has pushed it.
+fn already_wired(lines: &[String], graft_name: &str, marker: Marker) -> bool {
+    let needle = begin_banner(graft_name, marker);
+    lines.iter().any(|l| l.trim() == needle)
 }
 
-fn find_bare_tilde(lines: &[String], from: usize) -> Option<usize> {
-    let end = lines.len().min(from + 10);
-    lines[from..end]
-        .iter()
-        .position(|l| l.trim() == "~")
-        .map(|offset| from + offset)
+/// Last bare `~` between the peek marker and the block's closing `==`.
+/// The pre-audit implementation capped the scan at 10 lines, which broke
+/// idempotence once 6+ grafts were wired (AUDIT 2026-04-19 H-13): new
+/// grafts landed ahead of the existing chain, duplicating the `~` and
+/// preempting earlier grafts' peek semantics. Scanning the entire block
+/// and returning the last bare `~` keeps the new pair inserted just
+/// before the terminal fallback no matter how long the chain grows.
+fn find_last_bare_tilde(lines: &[String], marker_idx: usize) -> Option<usize> {
+    let mut last = None;
+    for i in (marker_idx + 1)..lines.len() {
+        let trimmed = lines[i].trim();
+        if trimmed == "==" {
+            break;
+        }
+        if trimmed == "~" {
+            last = Some(i);
+        }
+    }
+    last
 }
 
 // ---------------------------------------------------------------------------
@@ -993,8 +1029,18 @@ mod tests {
                 .block(marker)
                 .expect("settle claims this marker")
                 .trimmed_body();
+            // Body lines land one row after the `begin_banner` emitted by
+            // AUDIT 2026-04-19 H-11..H-14's idempotence refactor.
+            let expected_begin =
+                format!("{marker_indent}::  graft-inject:settle-graft:{}:begin", marker.label());
+            assert_eq!(
+                lines[marker_idx + 1],
+                expected_begin,
+                "marker `{}` begin banner missing",
+                marker.label()
+            );
             for (i, want) in body.lines().enumerate() {
-                let got = lines[marker_idx + 1 + i];
+                let got = lines[marker_idx + 2 + i];
                 let expected = if want.is_empty() {
                     String::new()
                 } else {
@@ -1043,8 +1089,9 @@ mod tests {
 
     #[test]
     fn peek_chain_composition() {
-        // Three grafts → six chain lines + terminal `~` = seven lines total
-        // immediately after the marker, in priority order.
+        // Three grafts → each contributes a 4-line banner-wrapped pair
+        // (begin, =/, ?., end) for 12 lines, plus the terminal `~` = 13
+        // lines total immediately after the marker, in priority order.
         let mut grafts = settle_only_grafts();
         grafts.push(synthetic_graft("alpha", 50));
         grafts.push(synthetic_graft("beta", 60));
@@ -1053,17 +1100,23 @@ mod tests {
             .lines()
             .skip_while(|l| !l.contains("nockup:peek"))
             .skip(1)
-            .take(7)
+            .take(13)
             .map(|l| l.trim_start().to_string())
             .collect();
-        assert_eq!(peek_lines.len(), 7, "expected 7 lines after peek marker");
-        assert_eq!(peek_lines[0], "=/  settle-res  (settle-peek settle.state path)");
-        assert_eq!(peek_lines[1], "?.  =(~ settle-res)  settle-res");
-        assert_eq!(peek_lines[2], "=/  alpha-res  (alpha-peek state path)");
-        assert_eq!(peek_lines[3], "?.  =(~ alpha-res)  alpha-res");
-        assert_eq!(peek_lines[4], "=/  beta-res  (beta-peek state path)");
-        assert_eq!(peek_lines[5], "?.  =(~ beta-res)  beta-res");
-        assert_eq!(peek_lines[6], "~");
+        assert_eq!(peek_lines.len(), 13, "expected 13 lines after peek marker");
+        assert_eq!(peek_lines[0], "::  graft-inject:settle-graft:peek:begin");
+        assert_eq!(peek_lines[1], "=/  settle-res  (settle-peek settle.state path)");
+        assert_eq!(peek_lines[2], "?.  =(~ settle-res)  settle-res");
+        assert_eq!(peek_lines[3], "::  graft-inject:settle-graft:peek:end");
+        assert_eq!(peek_lines[4], "::  graft-inject:alpha:peek:begin");
+        assert_eq!(peek_lines[5], "=/  alpha-res  (alpha-peek state path)");
+        assert_eq!(peek_lines[6], "?.  =(~ alpha-res)  alpha-res");
+        assert_eq!(peek_lines[7], "::  graft-inject:alpha:peek:end");
+        assert_eq!(peek_lines[8], "::  graft-inject:beta:peek:begin");
+        assert_eq!(peek_lines[9], "=/  beta-res  (beta-peek state path)");
+        assert_eq!(peek_lines[10], "?.  =(~ beta-res)  beta-res");
+        assert_eq!(peek_lines[11], "::  graft-inject:beta:peek:end");
+        assert_eq!(peek_lines[12], "~");
     }
 
     #[test]
@@ -1149,27 +1202,32 @@ mod tests {
             1
         );
 
-        // The peek region after the marker is now: vesl pair, alpha pair,
-        // beta pair, terminal `~`. Beta's pair lands immediately before the
-        // terminal `~`.
+        // The peek region after the marker is now: vesl banner-wrapped pair,
+        // alpha banner-wrapped pair, beta banner-wrapped pair, terminal `~`.
+        // Each pair is 4 lines (begin, =/, ?., end); 3 pairs + `~` = 13 lines.
+        // Beta's pair lands immediately before the terminal `~`.
         let peek_lines: Vec<String> = after_all
             .lines()
             .skip_while(|l| !l.contains("nockup:peek"))
             .skip(1)
-            .take(7)
+            .take(13)
             .map(|l| l.trim_start().to_string())
             .collect();
-        assert_eq!(peek_lines.len(), 7);
-        assert_eq!(peek_lines[4], "=/  beta-res  (beta-peek state path)");
-        assert_eq!(peek_lines[5], "?.  =(~ beta-res)  beta-res");
-        assert_eq!(peek_lines[6], "~");
+        assert_eq!(peek_lines.len(), 13);
+        assert_eq!(peek_lines[8], "::  graft-inject:beta:peek:begin");
+        assert_eq!(peek_lines[9], "=/  beta-res  (beta-peek state path)");
+        assert_eq!(peek_lines[10], "?.  =(~ beta-res)  beta-res");
+        assert_eq!(peek_lines[11], "::  graft-inject:beta:peek:end");
+        assert_eq!(peek_lines[12], "~");
     }
 
     #[test]
     fn peek_chain_n1_matches_legacy_replacement() {
-        // For N=1 the chain is:
+        // For N=1 the chain (post-AUDIT 2026-04-19 banner refactor) is:
+        //   ::  graft-inject:settle-graft:peek:begin
         //   =/  settle-res  (settle-peek settle.state path)
         //   ?.  =(~ settle-res)  settle-res
+        //   ::  graft-inject:settle-graft:peek:end
         //   ~                                   <- terminal fallback
         //
         // The legacy `(settle-peek settle.state path)` expression lives inside
@@ -1181,15 +1239,23 @@ mod tests {
             .lines()
             .skip_while(|l| !l.contains("nockup:peek"))
             .skip(1)
-            .take(3)
+            .take(5)
             .collect();
-        assert_eq!(peek_lines.len(), 3, "peek region has fewer than 3 lines");
+        assert_eq!(peek_lines.len(), 5, "peek region has fewer than 5 lines");
         assert_eq!(
             peek_lines[0].trim_start(),
+            "::  graft-inject:settle-graft:peek:begin"
+        );
+        assert_eq!(
+            peek_lines[1].trim_start(),
             "=/  settle-res  (settle-peek settle.state path)"
         );
-        assert_eq!(peek_lines[1].trim_start(), "?.  =(~ settle-res)  settle-res");
-        assert_eq!(peek_lines[2].trim_start(), "~");
+        assert_eq!(peek_lines[2].trim_start(), "?.  =(~ settle-res)  settle-res");
+        assert_eq!(
+            peek_lines[3].trim_start(),
+            "::  graft-inject:settle-graft:peek:end"
+        );
+        assert_eq!(peek_lines[4].trim_start(), "~");
     }
 
     // ---------- Phase 6: CLI tests ----------
@@ -1319,5 +1385,214 @@ body     = "(alpha-peek state path)"
             block_names,
             vec!["imports", "state", "cause", "poke", "peek"]
         );
+    }
+
+    // ---------- AUDIT 2026-04-19 H-11..H-14 regressions ----------
+
+    /// Write a synthetic manifest with the given `name` into `dir` at
+    /// `file_name`, so `discover_grafts` can exercise collision + name
+    /// validation paths without touching the real hoon/lib tree.
+    fn write_manifest(dir: &Path, file_name: &str, name: &str) {
+        fs::write(
+            dir.join(file_name),
+            format!(
+                r#"[graft]
+name     = "{name}"
+version  = "0.1.0"
+priority = 50
+after    = []
+
+[graft.blocks.imports]
+sentinel = "*{name}"
+body     = "/+  *{name}"
+
+[graft.blocks.poke]
+sentinel = "%{name}-do"
+body     = """
+  %{name}-do
+[~ state]"""
+"#,
+            ),
+        )
+        .unwrap();
+    }
+
+    /// H-11: two manifests claiming the same `name` must hard-error at
+    /// discovery time, naming both source paths. The pre-audit loader let
+    /// both through and panicked downstream with `expect("seeded above")`.
+    #[test]
+    fn duplicate_name_bails() {
+        let dir = tempdir_for_test("duplicate_name");
+        write_manifest(&dir, "a.toml", "shared");
+        write_manifest(&dir, "b.toml", "shared");
+        let err = discover_grafts(&dir).expect_err("duplicate name must bail");
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate graft name `shared`"), "got: {msg}");
+        assert!(msg.contains("a.toml"), "missing path a in: {msg}");
+        assert!(msg.contains("b.toml"), "missing path b in: {msg}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// H-11 defense-in-depth: names interpolate into banner comments and
+    /// internal paths, so a hostile manifest that sneaks a `.`/`/` into
+    /// the name field would break idempotence and risk path traversal on
+    /// consumers that key on the name. Reject at discovery.
+    #[test]
+    fn invalid_name_bails() {
+        let dir = tempdir_for_test("invalid_name");
+        write_manifest(&dir, "evil.toml", "../evil");
+        let err = discover_grafts(&dir).expect_err("bad name must bail");
+        assert!(
+            err.to_string().contains("invalid graft name"),
+            "got: {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// H-12: graft A's injected body contains graft B's sentinel as a
+    /// bare substring. Banner-comment idempotence must not mistake A's
+    /// body for B being wired — B's begin banner is the only signal.
+    #[test]
+    fn cross_graft_sentinel_no_false_positive() {
+        // `poison` carries `%contaminant-do` in its poke body but never
+        // emits a `contaminant:poke:begin` banner. A subsequent run that
+        // adds the real `contaminant` graft must still inject it.
+        let poison = Graft {
+            name: "poison".to_string(),
+            version: "0.1.0".to_string(),
+            priority: 10,
+            after: vec![],
+            blocks: GraftBlocks {
+                imports: Some(Block {
+                    sentinel: "*poison".to_string(),
+                    body: "/+  *poison".to_string(),
+                }),
+                state: None,
+                cause: None,
+                poke: Some(Block {
+                    sentinel: "%poison-do".to_string(),
+                    body: "  %poison-do\n::  references %contaminant-do elsewhere\n[~ state]".to_string(),
+                }),
+                peek: None,
+            },
+        };
+        let contaminant = synthetic_graft("contaminant", 20);
+
+        let (after_poison, _) = inject(BARE_SCAFFOLD, &[poison.clone()]).unwrap();
+        // Pre-condition: poison's body literally contains the contaminant sentinel.
+        assert!(after_poison.contains("%contaminant-do"));
+
+        let (after_both, report) =
+            inject(&after_poison, &[poison.clone(), contaminant.clone()]).unwrap();
+        let contaminant_report = report
+            .grafts
+            .iter()
+            .find(|g| g.name == "contaminant")
+            .expect("contaminant present");
+        assert!(
+            contaminant_report.injected.contains(&Marker::Poke),
+            "H-12: contaminant poke must inject despite %contaminant-do \
+             appearing in poison's body"
+        );
+        assert!(after_both.contains("::  graft-inject:contaminant:poke:begin"));
+
+        // Now a second re-run with both grafts: nothing should inject.
+        let (after_third, report) =
+            inject(&after_both, &[poison, contaminant]).unwrap();
+        assert_eq!(after_third, after_both);
+        for g in &report.grafts {
+            assert!(g.injected.is_empty(), "re-run must not re-inject {}", g.name);
+        }
+    }
+
+    /// H-13: peek-chain idempotence broke at 6+ grafts because the bare
+    /// `~` lived past the 10-line scan window. Build 7 grafts, inject,
+    /// re-inject, and assert byte-identical output plus exactly one bare
+    /// `~` between the peek marker and its `==` closer (the pre-fix path
+    /// produced two).
+    #[test]
+    fn peek_chain_seven_grafts_idempotent() {
+        let grafts: Vec<Graft> = (0..7)
+            .map(|i| synthetic_graft(&format!("g{i}"), 10 + i as i32 * 10))
+            .collect();
+        let (first, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
+        let (second, report) = inject(&first, &grafts).unwrap();
+        assert_eq!(first, second, "seven-graft inject must be idempotent");
+        for g in &report.grafts {
+            assert!(g.injected.is_empty(), "{} re-injected", g.name);
+        }
+        let lines: Vec<&str> = second.lines().collect();
+        let peek_idx = lines
+            .iter()
+            .position(|l| l.contains("nockup:peek"))
+            .expect("peek marker present");
+        let close_idx = lines[peek_idx..]
+            .iter()
+            .position(|l| l.trim() == "==")
+            .map(|o| peek_idx + o)
+            .expect("peek block closer");
+        let tilde_count = lines[peek_idx..close_idx]
+            .iter()
+            .filter(|l| l.trim() == "~")
+            .count();
+        assert_eq!(
+            tilde_count, 1,
+            "exactly one terminal ~ expected in peek block"
+        );
+        // Peek block is large enough to span all 7 banner-wrapped pairs
+        // (4 lines each) plus the terminal tilde.
+        assert!(
+            close_idx - peek_idx >= 7 * 4,
+            "peek block should fit 7 banner-wrapped pairs, got {} lines",
+            close_idx - peek_idx
+        );
+    }
+
+    /// H-14: poke-body with an inner bare `==` line (a shape Hoon kernels
+    /// routinely produce from nested `?-`/`?+` tuple destructures) made
+    /// the sentinel walk terminate before reaching the sentinel, causing
+    /// every re-run to append the body again. Banner-comment idempotence
+    /// is file-wide, so inner `==` is no longer a concern — this locks
+    /// the fix in place.
+    #[test]
+    fn poke_body_inner_double_equals_idempotent() {
+        let nested = Graft {
+            name: "nested".to_string(),
+            version: "0.1.0".to_string(),
+            priority: 10,
+            after: vec![],
+            blocks: GraftBlocks {
+                imports: None,
+                state: None,
+                cause: None,
+                poke: Some(Block {
+                    sentinel: "%nested-do".to_string(),
+                    body: "  %nested-do\n?-  +.state\n  [%foo ~]  [~ state]\n  [%bar ~]  [~ state]\n==\n[~ state]".to_string(),
+                }),
+                peek: None,
+            },
+        };
+        let (first, _) = inject(BARE_SCAFFOLD, &[nested.clone()]).unwrap();
+        assert!(first.lines().any(|l| l.trim() == "=="), "inner == present");
+        let (second, report) = inject(&first, &[nested]).unwrap();
+        assert_eq!(first, second, "inner == must not re-trigger inject");
+        assert!(report.grafts[0].injected.is_empty());
+    }
+
+    /// Removing a graft from the injection set must NOT delete an
+    /// already-wired banner block. The tool is additive by design; cleanup
+    /// is a manual op, not a side-effect of `--grafts`.
+    #[test]
+    fn removed_graft_banner_preserved() {
+        let a = synthetic_graft("alpha", 10);
+        let b = synthetic_graft("beta", 20);
+        let (after_both, _) = inject(BARE_SCAFFOLD, &[a.clone(), b.clone()]).unwrap();
+        assert!(after_both.contains("::  graft-inject:beta:imports:begin"));
+        let (after_alpha_only, _) = inject(&after_both, &[a]).unwrap();
+        assert!(
+            after_alpha_only.contains("::  graft-inject:beta:imports:begin"),
+            "beta banner must survive a re-run with only alpha selected"
+        );
+        assert!(after_alpha_only.contains("/+  *beta"));
     }
 }
