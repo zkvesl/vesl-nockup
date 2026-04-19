@@ -113,6 +113,7 @@ pub fn compose_and_compile(scratch_subdir: &str, grafts: &[&str]) -> Result<Path
         .arg(&hoon_lib)
         .arg("--grafts")
         .arg(grafts.join(","))
+        .arg("--apply")
         .arg(hoon_app.join("app.hoon"))
         .status()
         .with_context(|| format!("spawn {}", graft_inject.display()))?;

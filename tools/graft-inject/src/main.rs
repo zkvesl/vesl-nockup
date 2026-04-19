@@ -10,6 +10,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,6 +39,12 @@ struct Graft {
     #[serde(default)]
     after: Vec<String>,
     blocks: GraftBlocks,
+    /// Hex sha256 of the raw TOML bytes. Populated by `load_manifest` at
+    /// discovery time so the composer can surface per-manifest digests
+    /// in the preview report and `--list --json` output (AUDIT 2026-04-19
+    /// H-10 supply-chain surface).
+    #[serde(skip, default)]
+    sha256: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -84,6 +91,8 @@ impl Graft {
 
 /// Load a single `*.toml` manifest. Returns Ok(None) if the file lacks a
 /// `[graft]` table (caller skips it); Err for parse or I/O failures.
+/// Populates `Graft::sha256` from the raw file bytes so downstream code
+/// can surface provenance without reopening the file.
 fn load_manifest(path: &Path) -> Result<Option<Graft>> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("reading manifest {}", path.display()))?;
@@ -94,7 +103,15 @@ fn load_manifest(path: &Path) -> Result<Option<Graft>> {
     }
     let manifest: ManifestFile = toml::from_str(&raw)
         .with_context(|| format!("deserializing manifest {}", path.display()))?;
-    Ok(Some(manifest.graft))
+    let mut graft = manifest.graft;
+    graft.sha256 = sha256_hex(raw.as_bytes());
+    Ok(Some(graft))
+}
+
+/// Lowercase-hex sha256 digest of the given bytes.
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Scan `lib_dir` for `*.toml` files and return loaded grafts in priority
@@ -521,9 +538,20 @@ struct Cli {
     #[arg(long)]
     json: bool,
 
-    /// Print the would-be output to stdout instead of writing to disk.
+    /// Deprecated alias of the default preview-only behavior. Kept for
+    /// script compatibility through the AUDIT 2026-04-19 H-10 transition.
+    /// Prints a one-line deprecation note to stderr and otherwise does
+    /// nothing beyond the default.
     #[arg(long)]
     dry_run: bool,
+
+    /// Write the composed output to PATH. AUDIT 2026-04-19 H-10: the
+    /// default is preview-only — stdout gets the composed Hoon, stderr
+    /// gets the per-manifest sha256 summary, disk is untouched. This
+    /// flag is the explicit "yes, compose these manifests into kernel
+    /// source" acknowledgement.
+    #[arg(long)]
+    apply: bool,
 }
 
 /// Schema item for `--list --json`. Stable across the v3 plan's lifespan;
@@ -537,6 +565,10 @@ struct GraftSummary<'a> {
     blocks: Vec<&'static str>,
     applicable: usize,
     deferred: bool,
+    /// Hex sha256 of the manifest's raw TOML bytes. AUDIT 2026-04-19
+    /// H-10: lets supply-chain reviewers pin expected digests without
+    /// re-reading the file.
+    sha256: &'a str,
 }
 
 impl<'a> GraftSummary<'a> {
@@ -554,6 +586,7 @@ impl<'a> GraftSummary<'a> {
             blocks,
             applicable,
             deferred: false,
+            sha256: &g.sha256,
         }
     }
 }
@@ -587,12 +620,26 @@ fn run(cli: Cli) -> Result<()> {
         .with_context(|| format!("injecting into {}", path.display()))?;
 
     if cli.dry_run {
-        print!("{output}");
-    } else if output != source {
-        fs::write(path, &output).with_context(|| format!("writing {}", path.display()))?;
+        eprintln!(
+            "graft-inject: --dry-run is deprecated; preview is the default. \
+             Pass --apply to write."
+        );
     }
 
-    print_report(path, &report);
+    // AUDIT 2026-04-19 H-10: preview by default, `--apply` to write. The
+    // preview prints composed Hoon to stdout and a sha256 summary to
+    // stderr so reviewers can see both the exact output and which
+    // manifests produced it before any bytes hit disk.
+    if cli.apply {
+        if output != source {
+            fs::write(path, &output)
+                .with_context(|| format!("writing {}", path.display()))?;
+        }
+    } else {
+        print!("{output}");
+    }
+
+    print_report(path, &report, &grafts, cli.apply);
     if report.markers_in_source.is_empty() {
         bail!(
             "no nockup markers found in {}; nothing to wire",
@@ -681,9 +728,15 @@ fn emit_list(grafts: &[Graft], json: bool) {
 }
 
 /// Print the per-graft injection report to stderr. stderr (not stdout)
-/// so `--dry-run` users can pipe the rendered file out cleanly.
-fn print_report(path: &Path, report: &InjectReport) {
+/// so preview users can pipe the rendered file out cleanly. Includes the
+/// per-manifest sha256 so supply-chain reviewers can confirm what's
+/// about to be composed (AUDIT 2026-04-19 H-10).
+fn print_report(path: &Path, report: &InjectReport, grafts: &[Graft], applied: bool) {
     eprintln!("graft-inject: {}", path.display());
+    let sha_by_name: HashMap<&str, &str> = grafts
+        .iter()
+        .map(|g| (g.name.as_str(), g.sha256.as_str()))
+        .collect();
     let mut had_output = false;
     for g in &report.grafts {
         if g.applicable.is_empty() {
@@ -694,8 +747,15 @@ fn print_report(path: &Path, report: &InjectReport) {
             g.injected.iter().map(|m| m.label()).collect();
         let skipped_labels: Vec<&str> =
             g.skipped.iter().map(|m| m.label()).collect();
+        let sha = sha_by_name
+            .get(g.name.as_str())
+            .copied()
+            .unwrap_or("(sha unavailable)");
+        // First 12 hex chars are enough to eyeball; full digest goes in
+        // --list --json for machine-readable audits.
+        let short = &sha[..sha.len().min(12)];
         let mut summary = format!(
-            "  {:<16} injected {}/{}",
+            "  {:<16} sha256:{short} injected {}/{}",
             g.name,
             g.injected.len(),
             g.applicable.len()
@@ -731,6 +791,9 @@ fn print_report(path: &Path, report: &InjectReport) {
             "  warning — markers not found: {}",
             missing_labels.join(", ")
         );
+    }
+    if !applied {
+        eprintln!("  (preview only — pass --apply to write {})", path.display());
     }
 }
 
@@ -830,6 +893,7 @@ mod tests {
                     body: format!("({name}-peek state path)"),
                 }),
             },
+            sha256: String::new(),
         }
     }
 
@@ -1269,6 +1333,7 @@ mod tests {
             list: false,
             json: false,
             dry_run: false,
+            apply: false,
         }
     }
 
@@ -1339,29 +1404,71 @@ body     = "(alpha-peek state path)"
     }
 
     #[test]
-    fn dry_run_does_not_write() {
-        let dir = tempdir_with_two_manifests("dry_run");
+    fn default_does_not_write() {
+        // AUDIT 2026-04-19 H-10: the default is preview-only. Without
+        // --apply, the file on disk must be unchanged regardless of what
+        // `graft-inject` composed into stdout.
+        let dir = tempdir_with_two_manifests("default_preview");
         let target = dir.join("app.hoon");
         fs::write(&target, BARE_SCAFFOLD).unwrap();
         let original = fs::read_to_string(&target).unwrap();
 
         let mut cli = cli_with(dir.clone());
         cli.path = Some(target.clone());
-        cli.dry_run = true;
-        // Constrain to settle-graft so the synthetic alpha doesn't muddle
-        // the assertion (alpha's poke body is intentionally minimal).
         cli.grafts = vec!["settle-graft".to_string()];
         run(cli).unwrap();
 
         let after = fs::read_to_string(&target).unwrap();
-        assert_eq!(after, original, "--dry-run must not modify the file");
+        assert_eq!(after, original, "preview-only default must not modify the file");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_writes() {
+        // --apply is the explicit write-enabler post-AUDIT 2026-04-19 H-10.
+        let dir = tempdir_with_two_manifests("apply_writes");
+        let target = dir.join("app.hoon");
+        fs::write(&target, BARE_SCAFFOLD).unwrap();
+
+        let mut cli = cli_with(dir.clone());
+        cli.path = Some(target.clone());
+        cli.grafts = vec!["settle-graft".to_string()];
+        cli.apply = true;
+        run(cli).unwrap();
+
+        let after = fs::read_to_string(&target).unwrap();
+        assert_ne!(after, BARE_SCAFFOLD, "--apply must modify the file");
+        assert!(after.contains("::  graft-inject:settle-graft:imports:begin"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dry_run_alias_still_parses() {
+        // `--dry-run` is the deprecated alias of the preview-only default.
+        // It should still parse and leave the file unchanged; the
+        // deprecation note to stderr is best-effort.
+        let dir = tempdir_with_two_manifests("dry_run_alias");
+        let target = dir.join("app.hoon");
+        fs::write(&target, BARE_SCAFFOLD).unwrap();
+
+        let mut cli = cli_with(dir.clone());
+        cli.path = Some(target.clone());
+        cli.dry_run = true;
+        cli.grafts = vec!["settle-graft".to_string()];
+        run(cli).unwrap();
+
+        let after = fs::read_to_string(&target).unwrap();
+        assert_eq!(after, BARE_SCAFFOLD);
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn list_json_is_stable() {
         // Schema (documented in vesl/docs/graft-manifest.md):
-        //   [{ name, version, priority, blocks: [...], applicable, deferred }]
+        //   [{ name, version, priority, blocks: [...], applicable, deferred, sha256 }]
+        //
+        // `sha256` was added per AUDIT 2026-04-19 H-10 — additive per the
+        // "append never reshape" contract this schema keeps.
         let grafts = settle_only_grafts();
         let summaries: Vec<GraftSummary> =
             grafts.iter().map(GraftSummary::from_graft).collect();
@@ -1384,6 +1491,12 @@ body     = "(alpha-peek state path)"
         assert_eq!(
             block_names,
             vec!["imports", "state", "cause", "poke", "peek"]
+        );
+        let sha = first["sha256"].as_str().expect("sha256 is a string");
+        assert_eq!(sha.len(), 64, "sha256 hex length");
+        assert!(
+            sha.chars().all(|c| c.is_ascii_hexdigit()),
+            "sha256 must be lowercase hex: {sha}"
         );
     }
 
@@ -1475,6 +1588,7 @@ body     = """
                 }),
                 peek: None,
             },
+            sha256: String::new(),
         };
         let contaminant = synthetic_graft("contaminant", 20);
 
@@ -1571,6 +1685,7 @@ body     = """
                 }),
                 peek: None,
             },
+            sha256: String::new(),
         };
         let (first, _) = inject(BARE_SCAFFOLD, &[nested.clone()]).unwrap();
         assert!(first.lines().any(|l| l.trim() == "=="), "inner == present");

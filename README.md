@@ -144,28 +144,30 @@ The two `vesl-core` / `nock-noun-rs` Rust deps are already in your `Cargo.toml` 
 ## Step 3 — wire the kernel
 
 ```bash
-graft-inject hoon/app/app.hoon
+graft-inject hoon/app/app.hoon            # preview
+graft-inject --apply hoon/app/app.hoon    # write
 ```
 
-The `app.hoon` you copied in Step 2 has five `::  nockup:*` marker comments at fixed structural points. `graft-inject` discovers every `<name>-graft.toml` under `hoon/lib/`, composes their per-marker blocks, and writes them into your kernel — imports, state fields, cause-union branches, `?-` poke arms, and a chained peek dispatcher. About 80 lines per graft, written for you. The tool is idempotent — run it twice and it skips anything already wired.
+The `app.hoon` you copied in Step 2 has five `::  nockup:*` marker comments at fixed structural points. `graft-inject` discovers every `<name>-graft.toml` under `hoon/lib/`, composes their per-marker blocks, and prints the result — imports, state fields, cause-union branches, `?-` poke arms, and a chained peek dispatcher. About 80 lines per graft, written for you. The tool is idempotent — re-running after `--apply` skips anything already wired.
 
-Bare invocation auto-discovers every installed graft. Selective composition:
+**Preview by default.** A bare invocation prints the composed kernel to stdout and a per-manifest sha256 summary to stderr. Nothing is written until you pass `--apply`. This keeps a compromised `hoon/lib/` — pulled by `sync.sh`, a bad `cp`, or a dependency bump — from silently composing hostile Hoon into your kernel source. See `docs/graft-manifest.md` for the trust model.
+
+Selective composition:
 
 ```bash
-graft-inject --list                                          # see what's available
-graft-inject --grafts settle-graft,mint-graft hoon/app/app.hoon # explicit subset
-graft-inject --exclude forge-graft hoon/app/app.hoon           # everything but forge
-graft-inject --dry-run hoon/app/app.hoon                     # preview; don't write
+graft-inject --list                                                    # see what's available
+graft-inject --grafts settle-graft,mint-graft --apply hoon/app/app.hoon # explicit subset
+graft-inject --exclude forge-graft --apply hoon/app/app.hoon            # everything but forge
 ```
 
-Expected output for an all-four compose:
+Expected output for an all-four compose (with `--apply`):
 
 ```
 graft-inject: hoon/app/app.hoon
-  settle-graft: injected 5/5 (imports, state, cause, poke, peek)
-  mint-graft:  injected 5/5 (imports, state, cause, poke, peek)
-  guard-graft: injected 5/5 (imports, state, cause, poke, peek)
-  forge-graft: injected 3/3 (imports, cause, poke)
+  settle-graft     sha256:a9c72bbe7dc1 injected 5/5 (imports, state, cause, poke, peek)
+  mint-graft       sha256:4b2e...       injected 5/5 (imports, state, cause, poke, peek)
+  guard-graft      sha256:c310...       injected 5/5 (imports, state, cause, poke, peek)
+  forge-graft      sha256:f721...       injected 3/3 (imports, cause, poke)
   markers present: 5 (imports, state, cause, poke, peek)
 ```
 
@@ -320,7 +322,7 @@ If you already have a working nockapp, skip Step 1. The rest applies, with one e
    - `::  nockup:peek` — inside your peek handler's `?+` default arm (or on the line above a bare `~` fallthrough)
 
    See `templates/app.hoon` for a reference placement. Two-space law applies — `::` followed by exactly two spaces, then `nockup:<name>`.
-3. `graft-inject hoon/app/app.hoon` — same as Step 3 above. Safe to run against a populated kernel; it only edits marker lines.
+3. `graft-inject --apply hoon/app/app.hoon` — same as Step 3 above. Safe to run against a populated kernel; it only edits marker lines. Bare invocation (no `--apply`) previews.
 4. Recompile (`hoonc hoon/app/app.hoon hoon/`) and rebuild (`cargo +nightly build`).
 5. Call `vesl_core::build_settle_register_poke`, `build_settle_note_poke`, `build_settle_verify_poke` from your existing `main.rs` alongside your domain pokes. No rewrite needed.
 
