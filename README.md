@@ -495,7 +495,7 @@ You edited `app.hoon` without the marker comments, or your spacing is off. Two-s
 Type error in the kernel. Most common cause: your `effect` type is narrower than the union the grafted arms produce. Use `+$  effect  *` unless you've explicitly constrained it.
 
 **`hoonc` fails with `mint-lost` / `-lost %<tag>` on a multi-graft compose**
-The composed `?-` over `-.u.act` isn't exhaustive. Usually this means one of the graft manifests is stale — re-install the vesl graft package (or re-run `sync.sh` in a dev checkout) to pick up the latest arm set. H-01 added `%settle-rotate-epoch` and pre-H-01 manifests will trip this.
+The composed `?-` over `-.u.act` isn't exhaustive. Usually this means one of the graft manifests is stale — re-install the vesl graft package (or re-run `sync.sh` in a dev checkout) to pick up the latest arm set. If the missing tag is `%settle-rotate-epoch`, your manifest predates the C-01 remediation that removed it; re-sync.
 
 **`hoonc` fails with `missing dependency /jams/constraints-0-1.jam`**
 Forge-graft pulls in the STARK prover tree, which depends on pre-jammed constraint tables. Copy `hoon/dat/` and `hoon/jams/` from `vesl-nockup/` into your project, or skip forge via `graft-inject --exclude forge-graft`.
