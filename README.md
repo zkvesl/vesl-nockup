@@ -4,10 +4,16 @@ Add vesl to a nockup project in 15 minutes.
 
 ## Prerequisites
 
-You need `hoonc`, `nockchain`, `nockup`, and Rust nightly on your PATH. All four ship from the [nockchain monorepo](https://github.com/nockchain/nockchain) — follow that repo's install instructions, then:
+You need `hoonc`, `nockchain`, `nockup`, and Rust nightly on your PATH. All four ship from the [nockchain monorepo](https://github.com/nockchain/nockchain) — follow that repo's install instructions, then install `graft-inject` from this repo:
 
 ```bash
-hoonc --version && nockchain --version && nockup --help >/dev/null && cargo +nightly --version
+cd tools/graft-inject && cargo install --path .
+```
+
+`cargo install --path .` drops the binary in `~/.cargo/bin/`, which is already on the Rust-nightly PATH. Verify the full toolchain:
+
+```bash
+hoonc --version && nockchain --version && nockup --help >/dev/null && cargo +nightly --version && graft-inject --version
 ```
 
 If those all resolve, you're ready.
@@ -58,7 +64,7 @@ The nockup `basic` template is generic and needs three one-time fixups before ve
 
    Adjust `../../` to wherever your `nockchain` and `vesl` checkouts live relative to the project. If `nockup package add` resolves `zkvesl/vesl-graft` for you (Step 2 below), the two `vesl-core` / `nock-noun-rs` lines will be written for you — leave them out of this block. Everything else stays.
 
-2. **`build.rs`** — the scaffold invokes a `hoonc --output <path>` flag that doesn't exist. Vesl compiles `out.jam` via `hoonc` in Step 4 directly, so collapse `build.rs` to a no-op:
+2. **`build.rs`** — Vesl compiles `out.jam` via an explicit `hoonc` call in Step 4, so `build.rs` doesn't need to invoke the compiler (and the scaffolded call wasn't producing a jam consumers could link against). Collapse it to a no-op that just declares the `out.jam` rebuild dependency:
 
    ```rust
    fn main() {
@@ -87,7 +93,15 @@ The `zkvesl/vesl-graft` package ships four composable primitives:
 
 Each graft ships its own `<name>-graft.hoon` library and a sibling `<name>-graft.toml` manifest that `graft-inject` consumes in Step 3. Install gives you all four by default; Step 3 picks which ones compose into your kernel.
 
-When the package resolves, `nockup package add` records the dep in `nockapp.toml` and installs on the next `nockup project init` / `nockup package install` — run from the **parent** of the project dir, not from inside (`nockup package install` walks `./<package-name>/` and will error `Project directory '<package-name>' not found. Run nockup project init first.` if you run it from within the project). A successful install drops eight Hoon files into `hoon/lib/` (the four `<name>-graft.hoon` libraries and their `.toml` manifests), plus `vesl-merkle.hoon` and — for forge — `vesl-prover.hoon` / `vesl-lower.hoon`. The tip5 hash tree lands in `hoon/common/` (`zeke.hoon`, `ztd/*.hoon`); forge additionally pulls in the STARK prover tree (`common/v2/`, `common/stark/`, `common/nock-common/`, `dat/softed-constraints.hoon`, and the pre-jammed constraint tables in `jams/`). Nothing touches your Rust `src/` or `hoon/app/app.hoon`. Confirm with `ls hoon/lib/settle-graft.hoon hoon/lib/mint-graft.toml` — nockup silently skips dependencies it can't resolve, so the absence of a warning does not mean it succeeded.
+When the package resolves, `nockup package add` records the dep in `nockapp.toml` and installs on the next `nockup project init` / `nockup package install` — run from the **parent** of the project dir, not from inside (`nockup package install` walks `./<package-name>/` and will error `Project directory '<package-name>' not found. Run nockup project init first.` if you run it from within the project). A successful install drops eight Hoon files into `hoon/lib/` (the four `<name>-graft.hoon` libraries and their `.toml` manifests), plus `vesl-merkle.hoon` and — for forge — `vesl-prover.hoon` / `vesl-lower.hoon`. The tip5 hash tree lands in `hoon/common/` (`zeke.hoon`, `ztd/*.hoon`); forge additionally pulls in the STARK prover tree (`common/v0-v1/`, `common/v2/`, `common/stark/`, `dat/softed-constraints.hoon`, and the pre-jammed constraint tables in `jams/`). Nothing touches your Rust `src/` or `hoon/app/app.hoon`.
+
+**Verify the install succeeded.** `nockup package install` silently skips dependencies it can't resolve, so a clean `✓ No dependencies to install` output does not mean vesl landed. Check that the expected graft files are on disk:
+
+```bash
+ls hoon/lib/settle-graft.hoon hoon/lib/settle-graft.toml hoon/lib/vesl-merkle.hoon
+```
+
+If any of those three paths are missing, the registry did not resolve `zkvesl/vesl-graft` — fall through to *If the registry hasn't resolved* below.
 
 Then copy the marker template over the scaffolded (and markerless) `app.hoon`:
 
@@ -118,9 +132,9 @@ cp <vesl-nockup>/hoon/lib/guard-graft.{hoon,toml}  hoon/lib/
 cp <vesl-nockup>/hoon/lib/forge-graft.{hoon,toml}  hoon/lib/
 cp <vesl-nockup>/hoon/lib/vesl-prover.hoon         hoon/lib/
 cp <vesl-nockup>/hoon/lib/vesl-lower.hoon          hoon/lib/
+cp -r <vesl-nockup>/hoon/common/v0-v1              hoon/common/
 cp -r <vesl-nockup>/hoon/common/v2                 hoon/common/
 cp -r <vesl-nockup>/hoon/common/stark              hoon/common/
-cp -r <vesl-nockup>/hoon/common/nock-common.hoon   hoon/common/
 cp -r <vesl-nockup>/hoon/dat                       hoon/
 cp -r <vesl-nockup>/hoon/jams                      hoon/
 ```
@@ -356,11 +370,75 @@ badges=(map @ud @ud)
 ~[[%badge-issued subject.u.act n]]
 ```
 
-Seven lines of custom Hoon total. Two of those (the state field and the cause variant) are pure type declarations; five are the arm itself. The arm's `:_ state(...)` / `^- (list effect)` / `~[[...]]` shape is NockApp's required `[effects state]` return — the same in any nockapp, graft or no graft.
+The Rust side needs three primitives the `build_*_poke` helpers hide for you — `NounSlab`, a long-tag builder, and a wide-atom builder:
+
+```rust
+use nockapp::{AtomExt, Bytes, NockApp, noun::slab::NounSlab, wire::{SystemWire, Wire}};
+use nockvm::noun::{Atom, T};
+use nock_noun_rs::atom_from_u64;
+
+async fn issue_badge(app: &mut NockApp, subject: u64) -> anyhow::Result<()> {
+    let mut slab = NounSlab::new();
+    let tag  = Atom::from_bytes(&mut slab, &Bytes::copy_from_slice(b"issue-badge")).as_noun();
+    let subj = atom_from_u64(&mut slab, subject);
+    let noun = T(&mut slab, &[tag, subj]);
+    slab.set_root(noun);
+    let _ = app.poke(SystemWire.to_wire(), slab).await?;
+    Ok(())
+}
+```
+
+Three rules the graft builders apply for you but that you inherit directly when you construct causes manually:
+
+- **Long tags** (> 8 bytes) can't go through `D(tas!(b"…"))` — it panics at compile time. Use `Atom::from_bytes(slab, &Bytes::copy_from_slice(b"…"))` for anything from `settle-register` upward.
+- **`AtomExt::from_bytes` takes `&bytes::Bytes`**, not `&[u8]`, via the `nockapp::Bytes` re-export.
+- **Wide `u64` values** (hashes, IDs where the top bit may be set) panic under `D(value)` with `Number is greater than DIRECT_MAX` — route them through `nock_noun_rs::atom_from_u64(slab, value)`. The Troubleshooting section covers the mechanism.
+
+The pattern generalizes to N arguments — construct one atom per cause field, then `T(&mut slab, &[tag, arg1, arg2, …])`. For a 3-arg `[%submit-artifact name=@t hash=@ submitter=@ux]`:
+
+```rust
+fn submit_artifact(name: &[u8], hash: u64, submitter: u64) -> NounSlab {
+    let mut slab = NounSlab::new();
+    let tag  = Atom::from_bytes(&mut slab, &Bytes::copy_from_slice(b"submit-artifact")).as_noun();
+    let nm   = Atom::from_bytes(&mut slab, &Bytes::copy_from_slice(name)).as_noun();
+    let h    = atom_from_u64(&mut slab, hash);
+    let s    = atom_from_u64(&mut slab, submitter);
+    let noun = T(&mut slab, &[tag, nm, h, s]);
+    slab.set_root(noun);
+    slab
+}
+```
+
+The rule of thumb: byte-strings and short tas-atoms go through `Atom::from_bytes`; any integer wider than `DIRECT_MAX` (hashes, hull-ids, submitter IDs with the top bit set) goes through `atom_from_u64`; direct atoms ≤ `DIRECT_MAX` can stay on `D(v)`. Order arguments in `T(&[...])` to match the cause tuple layout in your `app.hoon`.
+
+Seven lines of custom Hoon total for the 1-arg example, eleven for the 3-arg. Two of those (the state field and the cause variant) are pure type declarations; the rest is the arm itself. The arm's `:_ state(...)` / `^- (list effect)` / `~[[...]]` shape is NockApp's required `[effects state]` return — the same in any nockapp, graft or no graft.
 
 The vesl arms stay put. You're adding arms, not replacing them.
 
 Future direction: `graft-inject` is being rearchitected (see `.dev/PARAMETIZATION.md`) so that user-defined domains can ship as their own grafts with a TOML manifest — which will mechanize the state-field and cause-variant declarations. The arm body is the part that stays yours.
+
+### Add your own peek paths
+
+`graft-inject` wires each graft's peek handler into a chain: settle-peek, then mint-peek, then guard-peek, each one returning `~` to defer to the next. Your domain arm goes at the tail of that chain, below the last `?.  =(~ <graft>-res)  <graft>-res` line.
+
+Worked example — a **`[%artifact-by-name @t ~]` lookup** against a `artifacts=(map @t artifact-meta)` state field:
+
+```hoon
+::  inside ++peek, below the vesl peek chain:
+?.  ?=([%artifact-by-name @t ~] path)
+  ~
+=/  got  (~(get by artifacts.state) i.t.path)
+?~  got  [~ ~]
+``u.got
+```
+
+Five lines. `?=` pattern-matches the path shape; `i.t.path` is standard list traversal (`t.path` drops `%artifact-by-name`, `i.t.path` is the `@t` second element). The `(unit (unit *))` return-type convention has three shapes:
+
+- **`~`** — "this path is not for me, let the next arm try." Use this on any path your arm doesn't recognize.
+- **`[~ ~]`** — "I recognize this path, but there is no value here." The standard map-lookup miss.
+- **`` ``x ``** — shorthand for `[~ ~ x]`, "I recognize this path and the value is `x`." `x` must be a noun (`*`).
+
+The vesl peek chain follows the same convention — each graft's `<graft>-peek` returns `~` when the path is not for it, so composing arms is just a list of `?.  =(~ <res>)  <res>` guards. Put your arm at the tail; put the bare `~` fallthrough below it if nothing else matches.
 
 ### Replace the default verification gate
 
@@ -374,12 +452,12 @@ Inside each `%settle-*` arm, replace the gate body:
 
 ```hoon
 =/  hash-gate=verify-gate
-  |=  [data=* expected-root=@]
+  |=  [note-id=@ data=* expected-root=@]
   ^-  ?
-  (my-custom-verify data expected-root)
+  (my-custom-verify note-id data expected-root)
 ```
 
-`verify-gate` is `$-([data=* expected-root=@] ?)`. `data` is whatever your Rust side jammed into the `payload` atom; your gate casts it (`;;(manifest data)`, `;;(my-intent data)`, etc.) and returns a loobean. The caller decides what the data shape is — the graft doesn't care.
+`verify-gate` is `$-([note-id=@ data=* expected-root=@] ?)`. `note-id` is bound so domain gates can enforce `note-id == deterministic-fn(data)`, closing the pre-commit race (audit H-03). `data` is whatever your Rust side jammed into the `payload` atom; your gate casts it (`;;(manifest data)`, `;;(my-intent data)`, etc.) and returns a loobean. The caller decides what the data shape is — the graft doesn't care. The installed three-arg signature matches `hoon/lib/settle-graft.toml:34`.
 
 ## Testing with `vesl-test`
 
@@ -437,7 +515,7 @@ Settle-graft's peek paths are **namespaced**: `[%settle-registered hull ~]`, `[%
 ## Reference
 
 - Marker source-of-truth: `tools/graft-inject/src/main.rs`
-- Manifest schema: `<vesl>/docs/graft-manifest.md`
+- Manifest schema: `docs/graft-manifest.md`
 - Hoon grafts + manifests: `hoon/lib/{settle,mint,guard,forge}-graft.{hoon,toml}`
 - Merkle primitives: `hoon/lib/vesl-merkle.hoon`
 - STARK prover / lower (forge deps): `hoon/lib/vesl-prover.hoon`, `hoon/lib/vesl-lower.hoon`

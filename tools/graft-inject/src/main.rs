@@ -393,29 +393,51 @@ fn leading_whitespace(s: &str) -> &str {
     &s[..end]
 }
 
-/// Per-graft idempotence check: scan a window of lines after the marker
-/// for THIS graft's sentinel. Replaces the pre-Phase-4 single-sentinel
-/// `already_wired` so multiple grafts can share a marker without each
-/// other's sentinels triggering false positives.
+/// Per-graft idempotence check: scan from the marker for THIS graft's
+/// sentinel. Replaces the pre-Phase-4 single-sentinel `already_wired` so
+/// multiple grafts can share a marker without each other's sentinels
+/// triggering false positives.
+///
+/// `Poke` walks the entire `?-` switch body — from the marker down to
+/// its closing `==` — because the ?- block grows unboundedly as more
+/// grafts compose into it. A fixed window misses sentinels that land
+/// past the cutoff (e.g. forge's %forge-prove arm after settle's four
+/// arms pushed it past line 60), causing idempotence to falsely
+/// re-inject. Other markers stay on fixed windows since their bodies
+/// don't expand the same way.
 fn already_wired_for(lines: &[String], marker_idx: usize, marker: Marker, sentinel: &str) -> bool {
-    let window = match marker {
-        Marker::Poke => 60,
-        Marker::Imports => 10,
-        _ => 20,
-    };
-    let start = marker_idx + 1;
-    let end = (start + window).min(lines.len());
-    for line in &lines[start..end] {
-        if matches!(marker, Marker::State | Marker::Cause)
-            && line.trim_start().starts_with("::")
-        {
-            continue;
+    match marker {
+        Marker::Poke => {
+            for i in (marker_idx + 1)..lines.len() {
+                if lines[i].trim() == "==" {
+                    break;
+                }
+                if lines[i].contains(sentinel) {
+                    return true;
+                }
+            }
+            false
         }
-        if line.contains(sentinel) {
-            return true;
+        _ => {
+            let window = match marker {
+                Marker::Imports => 10,
+                _ => 20,
+            };
+            let start = marker_idx + 1;
+            let end = (start + window).min(lines.len());
+            for line in &lines[start..end] {
+                if matches!(marker, Marker::State | Marker::Cause)
+                    && line.trim_start().starts_with("::")
+                {
+                    continue;
+                }
+                if line.contains(sentinel) {
+                    return true;
+                }
+            }
+            false
         }
     }
-    false
 }
 
 fn find_bare_tilde(lines: &[String], from: usize) -> Option<usize> {
@@ -825,6 +847,59 @@ mod tests {
         let settle = &report.grafts[0];
         assert!(settle.injected.is_empty(), "no marker should re-inject");
         assert_eq!(settle.skipped.len(), 5, "all 5 markers should skip");
+    }
+
+    /// Regression: forge's poke sentinel (`%forge-prove`) landed past the
+    /// old 60-line window once settle+mint+guard had injected their arms
+    /// above it, so re-running graft-inject duplicated forge's poke block.
+    /// Walking the `?-` switch to its `==` cap fixes it — this test guards
+    /// the fix. It synthesizes four grafts with distinct, wide poke bodies
+    /// so real-manifest paths aren't a prerequisite.
+    #[test]
+    fn poke_idempotence_four_grafts() {
+        let grafts: Vec<Graft> = vec![
+            synthetic_graft("settle", 10),
+            synthetic_graft("mint", 20),
+            synthetic_graft("guard", 30),
+            synthetic_graft("forge", 40),
+        ];
+        let (first, first_report) = inject(BARE_SCAFFOLD, &grafts).unwrap();
+        for g in &first_report.grafts {
+            assert!(
+                !g.injected.is_empty(),
+                "pass 1: {} should inject at least one marker",
+                g.name
+            );
+        }
+        let (second, second_report) = inject(&first, &grafts).unwrap();
+        assert_eq!(
+            first, second,
+            "second inject must produce byte-identical output across all four grafts"
+        );
+        for g in &second_report.grafts {
+            assert!(
+                g.injected.is_empty(),
+                "pass 2: {} re-injected marker(s) {:?} — idempotence broken",
+                g.name,
+                g.injected
+            );
+        }
+        let forge = second_report
+            .grafts
+            .iter()
+            .find(|g| g.name == "forge")
+            .expect("forge graft present");
+        assert!(
+            forge.skipped.contains(&Marker::Poke),
+            "forge poke must be detected as already-wired on re-run"
+        );
+        let first_forge_count = first.matches("%forge-do").count();
+        let second_forge_count = second.matches("%forge-do").count();
+        assert_eq!(
+            first_forge_count, second_forge_count,
+            "forge sentinel count must not grow between runs (first={}, second={})",
+            first_forge_count, second_forge_count
+        );
     }
 
     #[test]

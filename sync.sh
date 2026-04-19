@@ -69,6 +69,28 @@ echo "  hoon jams (pre-jammed STARK constraint tables, ~16MB)"
 rm -rf "$here/hoon/jams"
 cp -rL "$vesl/hoon/jams" "$here/hoon/jams"
 
+# --- Docs ---
+# Manifest schema lives in vesl/docs/graft-manifest.md (canonical).
+# Mirror it into vesl-nockup so the README's Reference link resolves
+# without the consumer needing access to the private vesl repo.
+echo "  docs (manifest schema)"
+mkdir -p "$here/docs"
+cp "$vesl/docs/graft-manifest.md" "$here/docs/"
+
+# --- Templates ---
+# Mirror vesl/templates/ into vesl-nockup/templates/ so zkvesl-docs
+# Path 1 ("copy graft-scaffold") and anyone following the README's
+# template flow can reach them without access to the vesl repo.
+# app.hoon stays vesl-nockup canonical (marker reference, not synced).
+echo "  templates (graft-scaffold + domain templates)"
+for t in graft-scaffold graft-intent graft-mint graft-settle \
+         data-registry settle-report counter; do
+    if [[ -d "$vesl/templates/$t" ]]; then
+        rm -rf "$here/templates/$t"
+        cp -rL "$vesl/templates/$t" "$here/templates/$t"
+    fi
+done
+
 echo
 echo "sync complete. review with:"
 echo "  git status"
