@@ -47,8 +47,8 @@ The nockup `basic` template is generic and needs three one-time fixups before ve
    nockvm        = { path = "../../nockchain/crates/nockvm/rust/nockvm" }
    nockvm_macros = { path = "../../nockchain/crates/nockvm/rust/nockvm_macros" }
 
-   vesl-core    = { path = "../../vesl/crates/vesl-core" }
-   nock-noun-rs = { path = "../../vesl/crates/nock-noun-rs" }
+   vesl-core    = { path = "../../vesl-core/crates/vesl-core" }
+   nock-noun-rs = { path = "../../vesl-core/crates/nock-noun-rs" }
 
    tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 

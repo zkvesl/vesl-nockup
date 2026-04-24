@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sync.sh — copy Hoon libs and templates from ../vesl into this repo.
+# sync.sh — copy Hoon libs and templates from ../vesl-core into this repo.
 #
 # Phase 6.5b: the Rust crate stack (vesl-core, nock-noun-rs,
 # nockchain-tip5-rs, nockchain-client-rs) is no longer mirrored here.
@@ -12,11 +12,11 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-vesl="${1:-$HOME/projects/nockchain/vesl}"
+vesl="${1:-$HOME/projects/nockchain/vesl-core}"
 
 if [[ ! -d "$vesl" ]]; then
-    echo "vesl source not found at $vesl" >&2
-    echo "usage: sync.sh [path-to-vesl-repo]" >&2
+    echo "vesl-core source not found at $vesl" >&2
+    echo "usage: sync.sh [path-to-vesl-core-repo]" >&2
     exit 1
 fi
 
