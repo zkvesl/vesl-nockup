@@ -33,7 +33,6 @@ struct ManifestFile {
 #[derive(Debug, Clone, Deserialize)]
 struct Graft {
     name: String,
-    #[allow(dead_code)] // surfaced via --list in Phase 6
     version: String,
     priority: i32,
     #[serde(default)]
@@ -77,7 +76,6 @@ impl Block {
 
 impl Graft {
     /// Block for a marker, if the manifest declares one.
-    #[allow(dead_code)] // consumed by the data-driven inject() in Phase 4
     fn block(&self, marker: Marker) -> Option<&Block> {
         match marker {
             Marker::Imports => self.blocks.imports.as_ref(),
@@ -605,6 +603,10 @@ fn already_wired(lines: &[String], graft_name: &str, marker: Marker) -> bool {
 /// before the terminal fallback no matter how long the chain grows.
 fn find_last_bare_tilde(lines: &[String], marker_idx: usize) -> Option<usize> {
     let mut last = None;
+    // Index-based loop is the clearer shape here: we return `i` on match and
+    // break early on `==`. An iterator adapter would need `take_while` with a
+    // side effect, which reads worse than the straight range loop.
+    #[allow(clippy::needless_range_loop)]
     for i in (marker_idx + 1)..lines.len() {
         let trimmed = lines[i].trim();
         if trimmed == "==" {
@@ -1795,7 +1797,7 @@ body     = """
     #[test]
     fn peek_chain_seven_grafts_idempotent() {
         let grafts: Vec<Graft> = (0..7)
-            .map(|i| synthetic_graft(&format!("g{i}"), 10 + i as i32 * 10))
+            .map(|i| synthetic_graft(&format!("g{i}"), 10 + i * 10))
             .collect();
         let (first, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
         let (second, report) = inject(&first, &grafts).unwrap();

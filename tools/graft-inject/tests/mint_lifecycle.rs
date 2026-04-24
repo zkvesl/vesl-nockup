@@ -47,13 +47,13 @@ async fn mint_commit_two_hulls_then_peek() -> Result<()> {
 
     let got1 = fixtures::peek_hull_value(&mut harness, "mint-commit", 1).await?;
     assert_eq!(
-        got1.as_ref().map(Vec::as_slice),
+        got1.as_deref(),
         Some(tip5_to_atom_le_bytes(&root1).as_slice()),
         "peek for hull 1 should return root1",
     );
     let got2 = fixtures::peek_hull_value(&mut harness, "mint-commit", 2).await?;
     assert_eq!(
-        got2.as_ref().map(Vec::as_slice),
+        got2.as_deref(),
         Some(tip5_to_atom_le_bytes(&root2).as_slice()),
         "peek for hull 2 should return root2",
     );

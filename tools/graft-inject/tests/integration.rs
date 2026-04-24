@@ -82,7 +82,7 @@ async fn four_graft_end_to_end() -> Result<()> {
     let mint_peek =
         fixtures::peek_hull_value(&mut harness, "mint-commit", DOMAIN_HULL).await?;
     assert_eq!(
-        mint_peek.as_ref().map(Vec::as_slice),
+        mint_peek.as_deref(),
         Some(tip5_to_atom_le_bytes(&mint_root).as_slice()),
         "mint-commit peek for hull {DOMAIN_HULL} should return the committed root",
     );
@@ -112,7 +112,7 @@ async fn four_graft_end_to_end() -> Result<()> {
     let guard_peek =
         fixtures::peek_hull_value(&mut harness, "guard-root", DOMAIN_HULL).await?;
     assert_eq!(
-        guard_peek.as_ref().map(Vec::as_slice),
+        guard_peek.as_deref(),
         Some(tip5_to_atom_le_bytes(&mint_root).as_slice()),
         "guard-root peek for hull {DOMAIN_HULL} should return the same root mint committed",
     );

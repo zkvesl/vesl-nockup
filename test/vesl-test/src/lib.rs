@@ -230,8 +230,8 @@ fn effect_tags(effects: &[NounSlab]) -> Vec<String> {
     let mut out = Vec::new();
     for effect in effects {
         let noun = unsafe { effect.root() };
-        if let Ok(cell) = noun.as_cell() {
-            if let Ok(tag) = cell.head().as_atom() {
+        if let Ok(cell) = noun.as_cell()
+            && let Ok(tag) = cell.head().as_atom() {
                 let bytes = tag.as_ne_bytes();
                 let s = std::str::from_utf8(bytes)
                     .unwrap_or("?")
@@ -239,7 +239,6 @@ fn effect_tags(effects: &[NounSlab]) -> Vec<String> {
                     .to_string();
                 out.push(s);
             }
-        }
     }
     out
 }

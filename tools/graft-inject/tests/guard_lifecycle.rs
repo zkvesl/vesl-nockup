@@ -66,7 +66,7 @@ async fn guard_register_check_happy_and_error_paths() -> Result<()> {
 
     let got_root = fixtures::peek_hull_value(&mut harness, "guard-root", 1).await?;
     assert_eq!(
-        got_root.as_ref().map(Vec::as_slice),
+        got_root.as_deref(),
         Some(tip5_to_atom_le_bytes(&root).as_slice()),
         "guard-root peek for hull 1 should return the registered root",
     );
