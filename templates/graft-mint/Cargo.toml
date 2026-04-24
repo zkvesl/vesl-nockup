@@ -10,9 +10,9 @@ name = "graft-mint"
 path = "src/main.rs"
 
 [dependencies]
-nockapp = { git = "https://github.com/nockchain/nockchain.git", rev = "505c3ea586bacfece2d451fbd01dfa18105facea" }
-nockvm = { git = "https://github.com/nockchain/nockchain.git", rev = "505c3ea586bacfece2d451fbd01dfa18105facea" }
-nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "505c3ea586bacfece2d451fbd01dfa18105facea" }
+nockapp = { git = "https://github.com/nockchain/nockchain.git", rev = "c51f8040457de1c7d799de6024c4b22275371cf4" }
+nockvm = { git = "https://github.com/nockchain/nockchain.git", rev = "c51f8040457de1c7d799de6024c4b22275371cf4" }
+nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "c51f8040457de1c7d799de6024c4b22275371cf4" }
 
 # Vesl tentacles — Ink for commitment, Grip for verification
 vesl-core = { path = "../../crates/vesl-core" }

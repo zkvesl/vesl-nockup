@@ -19,11 +19,12 @@ toml = "0.8"
 
 [dev-dependencies]
 # Integration tests (mint_lifecycle etc.) boot a graft-composed kernel
-# and drive it via vesl-test's harness. Path deps mirror
-# test/vesl-test/Cargo.toml so the nockapp/nockvm graph stays single.
-vesl-core    = { path = "../../../vesl-core/crates/vesl-core" }
+# and drive it via vesl-test's harness. vesl-core crates come from the
+# bundled copy in vesl-nockup/crates/ (synced from upstream via sync.sh);
+# nockchain is the one legitimate external sibling.
+vesl-core    = { path = "../../crates/vesl-core" }
 vesl-test    = { path = "../../test/vesl-test" }
-nock-noun-rs = { path = "../../../vesl-core/crates/nock-noun-rs" }
+nock-noun-rs = { path = "../../crates/nock-noun-rs" }
 nockapp      = { path = "../../../nockchain/crates/nockapp", default-features = false }
 nockvm       = { path = "../../../nockchain/crates/nockvm/rust/nockvm" }
 tokio        = { version = "1", features = ["rt-multi-thread", "macros"] }

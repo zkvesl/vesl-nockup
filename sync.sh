@@ -1,15 +1,23 @@
 #!/usr/bin/env bash
-# sync.sh — copy Hoon libs and templates from ../vesl-core into this repo.
+# sync.sh — copy Hoon libs, the vesl-core crate stack, and templates from
+# ../vesl-core into this repo so vesl-nockup is self-contained post-sync.
 #
-# Phase 6.5b: the Rust crate stack (vesl-core, nock-noun-rs,
-# nockchain-tip5-rs, nockchain-client-rs) is no longer mirrored here.
-# Consumers (test/vesl-test) depend on vesl-core via path/git dep
-# directly; nothing for sync.sh to do on the Rust side.
+# vesl-core is canonical, optimized for local dev (path-deps to sibling
+# nockchain). vesl-nockup bundles vesl-core's extracted crate stack under
+# crates/ and rewrites template nockchain path-deps to git-deps on copy,
+# so shipped templates compile standalone when end-users pull them via
+# `nockup package add` or copy-and-build elsewhere.
 #
 # Run from the vesl-nockup repo root. Leaves changes staged for review;
 # does not commit.
 
 set -euo pipefail
+
+# Pin baked into shipped templates' nockchain git-deps. Bump when the
+# synced vesl-core crate stack moves to a new nockchain rev — typically
+# whatever sibling ../nockchain/ HEAD was when the crates were last built.
+# Overridable via env: NOCK_PIN=<sha> ./sync.sh
+NOCK_PIN="${NOCK_PIN:-c51f8040457de1c7d799de6024c4b22275371cf4}"
 
 here="$(cd "$(dirname "$0")" && pwd)"
 vesl="${1:-$HOME/projects/nockchain/vesl-core}"
@@ -99,6 +107,19 @@ echo "  docs (manifest schema)"
 mkdir -p "$here/docs"
 cp "$vesl/docs/graft-manifest.md" "$here/docs/"
 
+# --- Rust crate stack ---
+# Bundle vesl-core's extracted crate stack into vesl-nockup/crates/ so the
+# workspace (tools/, test/) and shipped templates resolve vesl-core path-deps
+# within vesl-nockup itself. `cp -rL` dereferences any symlinks for the same
+# reasons as the hoon tree copy above. nockchain stays external — the one
+# legitimate sibling dep.
+echo "  rust crates (vesl-core crate stack)"
+mkdir -p "$here/crates"
+for c in nock-noun-rs nockchain-tip5-rs nockchain-client-rs vesl-core; do
+    rm -rf "$here/crates/$c"
+    cp -rL "$vesl/crates/$c" "$here/crates/$c"
+done
+
 # --- Templates ---
 # Mirror vesl/templates/ into vesl-nockup/templates/ so zkvesl-docs
 # Path 1 ("copy graft-scaffold") and anyone following the README's
@@ -118,6 +139,20 @@ for t in graft-scaffold graft-hash-gate graft-intent graft-mint graft-settle \
     if [[ -d "$vesl/templates/$t" ]]; then
         rm -rf "$here/templates/$t"
         cp -rL "$vesl/templates/$t" "$here/templates/$t"
+        # Rewrite nockchain path-deps → git-deps at NOCK_PIN so shipped
+        # templates compile without a sibling nockchain/ clone. vesl-core
+        # path-deps (../../crates/…) stay — they resolve against the
+        # bundled crates/ when built in-place in vesl-nockup; end-users
+        # who copy templates out adjust per the graft-scaffold convention.
+        # graft-scaffold's own ../../nockchain/… paths are 2 levels up
+        # (not 3) and intentionally unrewritten — that template ships
+        # with "adjust paths to your clone" comments.
+        toml="$here/templates/$t/Cargo.toml"
+        if [[ -f "$toml" ]]; then
+            sed -i -E \
+                's|path = "\.\./\.\./\.\./nockchain/crates/[^"]*"|git = "https://github.com/nockchain/nockchain.git", rev = "'"$NOCK_PIN"'"|g' \
+                "$toml"
+        fi
     fi
 done
 

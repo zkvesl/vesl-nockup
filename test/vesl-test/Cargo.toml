@@ -6,16 +6,11 @@ description = "Test harness for grafted NockApp kernels — boot, poke, assert e
 license = "MIT"
 
 [dependencies]
-# Phase 6.5b: consume vesl-core (and transitively nock-noun-rs etc.) from
-# the upstream vesl-core repo, not from local mirrors. Path dep during
-# development; switches to a git dep on the published vesl-core branch at
-# plan merge (per .dev/00_PARAMETIZATION.md §"Merge order"):
-#   vesl-core    = { git = "https://github.com/zkvesl/vesl-core", branch = "dev" }
-#   nock-noun-rs = { git = "https://github.com/zkvesl/vesl-core", branch = "dev" }
-# Tip5Hash + tip5_to_atom_le_bytes flow through vesl-core's re-exports —
-# no direct nockchain-tip5-rs dep needed.
-vesl-core    = { path = "../../../vesl-core/crates/vesl-core" }
-nock-noun-rs = { path = "../../../vesl-core/crates/nock-noun-rs" }
+# vesl-core crates live inside vesl-nockup/crates/ (bundled copy synced
+# from upstream by sync.sh). Tip5Hash + tip5_to_atom_le_bytes flow through
+# vesl-core's re-exports — no direct nockchain-tip5-rs dep needed.
+vesl-core    = { path = "../../crates/vesl-core" }
+nock-noun-rs = { path = "../../crates/nock-noun-rs" }
 
 # nockchain monorepo crates: must use the same source as vesl-core's
 # transitive deps or we get duplicate `nockvm`/`nockapp` versions in the

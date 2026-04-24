@@ -1,0 +1,63 @@
+//! vesl-core — High-level Vesl SDK
+//!
+//! Four primitives, each a different weight class:
+//!
+//! - **Mint** — Data commitment. Pure math, zero async. Commit chunks, get a root.
+//! - **Guard** — Verification. Prove chunks and manifests against trusted roots.
+//! - **Settle** — Settlement. Kernel boot + chain access for note state transitions.
+//! - **Forge** — STARK proof. Everything Settle does, plus proof generation.
+//!
+//! Callers pick the primitive they need. Mint users never touch the kernel.
+//! Forge users get the full pipeline.
+
+pub mod settle;
+pub mod config;
+pub mod noun_builder;
+pub mod tx_builder;
+pub mod guard;
+pub mod mint;
+pub mod forge;
+pub mod graft_pokes;
+pub mod signing;
+pub mod types;
+
+// Top-level re-exports so callers can write:
+//   use vesl_core::{Mint, Guard, Tip5Hash, ProofNode};
+pub use mint::Mint;
+pub use guard::Guard;
+pub use settle::Settle;
+pub use forge::Forge;
+
+pub use types::{
+    Chunk, Manifest, Note, NockZkp, NoteState, Retrieval,
+    Tip5Hash, ProofNode, TIP5_ZERO, MerkleTree,
+    ChainClient, ChainConfig, WalletClient, WalletConfig,
+    format_tip5, hash_leaf, hash_pair, tip5_to_atom_le_bytes, verify_proof,
+    CommitmentVerifier, GraftPayload, NounSlab,
+    ForgePayload, LeafWithProof,
+};
+// Deprecated alias — remove in next minor release. Callers should migrate to CommitmentVerifier.
+#[allow(deprecated)]
+pub use types::IntentVerifier;
+pub use guard::GuardError;
+pub use mint::MintError;
+pub use settle::RagVerifier;
+pub use signing::{SigningError, derive_pubkey, pubkey_hash, sign, key_from_seed_phrase};
+pub use config::{SettlementMode, SettlementConfig, SettlementToml};
+
+// Graft poke builders — used by callers that compose grafted kernels via
+// `graft-inject` (in vesl-nockup). One submodule per primitive.
+//
+// Phase 12A renamed the settle helpers from `build_vesl_*_poke` to
+// `build_settle_*_poke` to match the `%settle-*` cause-tag rename.
+// Deprecated aliases are re-exported below for one release cycle.
+pub use graft_pokes::settle::{
+    build_settle_note_poke, build_settle_register_poke, build_settle_verify_poke,
+};
+#[allow(deprecated)]
+pub use graft_pokes::settle::{
+    build_vesl_register_poke, build_vesl_settle_poke, build_vesl_verify_poke,
+};
+pub use graft_pokes::mint::build_mint_commit_poke;
+pub use graft_pokes::guard::{build_guard_register_poke, build_guard_check_poke};
+pub use graft_pokes::forge::build_forge_prove_poke;

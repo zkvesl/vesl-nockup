@@ -42,6 +42,18 @@ protocol/lib/
 Flat — no per-graft directory. The manifest's `name` field, not its
 filename, is the canonical identifier the loader uses.
 
+**Symlink requirement.** `hoonc` resolves `/+ *foo` against the library
+root passed on its command line — in vesl, that's `hoon/`, which holds
+symlinks pointing at `protocol/lib/`. Dropping a new `.hoon` under
+`protocol/lib/` is not enough; add a matching symlink with
+`ln -s ../../protocol/lib/<name>.hoon hoon/lib/<name>.hoon` before the
+first compile. If the symlink is missing, hoonc exits 2, emits
+`[DIAG soft] DETERMINISTIC error mote=Exit`, and writes no `out.jam` —
+the trace blames hoonc internals rather than the new file, so check the
+symlink tree first. Downstream (`vesl-nockup`) skips this by copying
+both files into `hoon/lib/` via `sync.sh`; the symlink dance only
+matters inside the vesl repo.
+
 ## `[graft]` — top-level metadata
 
 | Field | Type | Required | Notes |
