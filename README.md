@@ -82,16 +82,17 @@ nockup package add zkvesl/vesl-graft -v latest
 
 (`-v latest` is required; nockup refuses a bare `add` without a version spec.)
 
-The `zkvesl/vesl-graft` package ships four composable primitives:
+The `zkvesl/vesl-graft` package ships the commitment family (family 1 in Vesl's 5-family graft catalog) — four composable primitives in priority band 10–40:
 
-| Graft | Priority | What it does |
-|---|---|---|
-| `settle-graft`| 10 | Register/verify/settle notes against a Merkle root, with replay protection and epoch rotation. |
-| `mint-graft`  | 20 | Commit a Merkle root to a `hull=@` trellis cell. Append-only. |
-| `guard-graft` | 30 | Register a root per hull, check leaves against it. Soft verify (ok=%.y/%.n). |
-| `forge-graft` | 40 | STARK-prove a Nock computation over jammed data, bound to a hull + note-id. |
+| Graft | Family | Priority | Status | What it does |
+|---|---|---|---|---|
+| `settle-graft`| 1 (commitment) | 10 | stable | Register/verify/settle notes against a Merkle root, with replay protection and epoch rotation. |
+| `mint-graft`  | 1 (commitment) | 20 | stable | Commit a Merkle root to a `hull=@` trellis cell. Append-only. |
+| `guard-graft` | 1 (commitment) | 30 | stable | Register a root per hull, check leaves against it. Soft verify (ok=%.y/%.n). |
+| `forge-graft` | 1 (commitment) | 40 | stable | STARK-prove a Nock computation over jammed data, bound to a hull + note-id. |
+| `intent-graft` | 5 (intent) | 200 | placeholder | Reserved slot for multi-party coordination (declare / match / cancel / expire). Crashes on invocation — swapped when canonical upstream lands. |
 
-Each graft ships its own `<name>-graft.hoon` library and a sibling `<name>-graft.toml` manifest that `graft-inject` consumes in Step 3. Install gives you all four by default; Step 3 picks which ones compose into your kernel.
+Each graft ships its own `<name>-graft.hoon` library and a sibling `<name>-graft.toml` manifest that `graft-inject` consumes in Step 3. Install gives you the shipped commitment family plus the intent-family placeholder; Step 3 picks which ones compose into your kernel. The full 5-family lattice — commitment, verification gates (library, not a graft), state (planned), behavior (planned), intent (placeholder) — lives in [`docs/graft-manifest.md`](docs/graft-manifest.md).
 
 When the package resolves, `nockup package add` records the dep in `nockapp.toml` and installs on the next `nockup project init` / `nockup package install` — run from the **parent** of the project dir, not from inside (`nockup package install` walks `./<package-name>/` and will error `Project directory '<package-name>' not found. Run nockup project init first.` if you run it from within the project). A successful install drops eight Hoon files into `hoon/lib/` (the four `<name>-graft.hoon` libraries and their `.toml` manifests), plus `vesl-merkle.hoon` and — for forge — `vesl-prover.hoon` / `vesl-lower.hoon`. The tip5 hash tree lands in `hoon/common/` (`zeke.hoon`, `ztd/*.hoon`); forge additionally pulls in the STARK prover tree (`common/v0-v1/`, `common/v2/`, `common/stark/`, `dat/softed-constraints.hoon`, and the pre-jammed constraint tables in `jams/`). Nothing touches your Rust `src/` or `hoon/app/app.hoon`.
 

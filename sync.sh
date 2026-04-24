@@ -20,6 +20,26 @@ if [[ ! -d "$vesl" ]]; then
     exit 1
 fi
 
+# AUDIT 2026-04-19 M-21: refuse to run when source and destination
+# resolve to the same real path. `rm -rf $here/hoon/common` followed
+# by `cp -rL` would otherwise self-nuke the repo. Cheap check; the
+# resolved paths are stable across the script's lifetime.
+if [[ "$(realpath "$here" 2>/dev/null)" == "$(realpath "$vesl" 2>/dev/null)" ]]; then
+    echo "sync.sh refuses to run: source and destination resolve to the same path" >&2
+    echo "  here: $here" >&2
+    echo "  vesl: $vesl" >&2
+    exit 1
+fi
+
+# AUDIT 2026-04-19 M-21: `cp -rL` dereferences symlinks by design —
+# vesl/hoon/common is a symlink into nockchain/hoon/common, and that
+# tree has nested symlinks into the hoonc crate source. Flattening is
+# the whole point of this script. It also means a compromised upstream
+# vesl checkout could plant a symlink to secrets (e.g. ~/.ssh/id_rsa)
+# and have them committed into vesl-nockup. The trust boundary is the
+# vesl checkout; operators should review incoming changes the way they
+# would any other supply-chain input before running sync.sh.
+
 echo "syncing from $vesl"
 
 # --- Hoon files ---
@@ -32,6 +52,8 @@ cp "$vesl/protocol/lib/guard-graft.hoon"  "$here/hoon/lib/"
 cp "$vesl/protocol/lib/guard-graft.toml"  "$here/hoon/lib/"
 cp "$vesl/protocol/lib/forge-graft.hoon"  "$here/hoon/lib/"
 cp "$vesl/protocol/lib/forge-graft.toml"  "$here/hoon/lib/"
+cp "$vesl/protocol/lib/intent-graft.hoon" "$here/hoon/lib/"
+cp "$vesl/protocol/lib/intent-graft.toml" "$here/hoon/lib/"
 cp "$vesl/protocol/lib/vesl-merkle.hoon"  "$here/hoon/lib/"
 cp "$vesl/protocol/lib/vesl-prover.hoon"  "$here/hoon/lib/"
 cp "$vesl/protocol/lib/vesl-lower.hoon"   "$here/hoon/lib/"
@@ -82,8 +104,16 @@ cp "$vesl/docs/graft-manifest.md" "$here/docs/"
 # Path 1 ("copy graft-scaffold") and anyone following the README's
 # template flow can reach them without access to the vesl repo.
 # app.hoon stays vesl-nockup canonical (marker reference, not synced).
-echo "  templates (graft-scaffold + domain templates)"
-for t in graft-scaffold graft-intent graft-mint graft-settle \
+#
+# 2026-04-23: graft-intent → graft-hash-gate rename. The old
+# graft-intent name is now reserved for the family-5 intent placeholder;
+# the pre-rename hash-gate demo moved to graft-hash-gate. Clean the stale
+# pre-rename directory if a previous sync left it behind so the loop can
+# recreate it from the (now-MOVED.md) canonical copy without drift.
+rm -rf "$here/templates/graft-intent"
+
+echo "  templates (graft-scaffold + domain templates + hash-gate demo)"
+for t in graft-scaffold graft-hash-gate graft-intent graft-mint graft-settle \
          data-registry settle-report counter; do
     if [[ -d "$vesl/templates/$t" ]]; then
         rm -rf "$here/templates/$t"

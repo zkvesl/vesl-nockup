@@ -166,6 +166,45 @@ fn discover_grafts(lib_dir: &Path) -> Result<Vec<Graft>> {
     Ok(grafts)
 }
 
+/// Atomic write: tempfile in the target's directory, fsync, rename.
+///
+/// AUDIT 2026-04-19 M-24: the prior direct `fs::write` left `app.hoon`
+/// zero-length or partial if the process died mid-write (SIGKILL, power
+/// loss, disk full). Tempfile + rename on the same filesystem gives
+/// us atomic replacement; an fsync between write and rename ensures
+/// the bytes are on disk before the directory entry flips.
+fn atomic_write(path: &Path, contents: &str) -> Result<()> {
+    use std::io::Write;
+
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow!("target has no parent dir: {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| anyhow!("target has no file name: {}", path.display()))?
+        .to_string_lossy();
+    let tmp_name = format!(".{}.graft-inject.{}.tmp", file_name, std::process::id());
+    let tmp_path = dir.join(&tmp_name);
+
+    // Best-effort cleanup of a stale tempfile from a previous aborted run.
+    let _ = fs::remove_file(&tmp_path);
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp_path)
+        .with_context(|| format!("creating tempfile {}", tmp_path.display()))?;
+    file.write_all(contents.as_bytes())
+        .with_context(|| format!("writing tempfile {}", tmp_path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("fsync tempfile {}", tmp_path.display()))?;
+    drop(file);
+
+    fs::rename(&tmp_path, path)
+        .with_context(|| format!("renaming tempfile into place: {}", path.display()))?;
+    Ok(())
+}
+
 /// Kebab-case validator. Names are interpolated into emitted banner
 /// comments and into filesystem paths elsewhere — rejecting `.`/`/` keeps
 /// a hostile manifest from injecting banner-collision or path-traversal
@@ -293,6 +332,9 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
                     Marker::Peek => {
                         emit_peek_chain(&mut lines, idx, &indent, &pending);
                     }
+                    Marker::Imports => {
+                        emit_imports_block(&mut lines, idx, &indent, &pending);
+                    }
                     _ => {
                         emit_block(&mut lines, idx, &indent, marker, &pending);
                     }
@@ -366,6 +408,80 @@ fn emit_block(
     for (offset, line) in indented.into_iter().enumerate() {
         lines.insert(marker_idx + 1 + offset, line);
     }
+}
+
+/// Imports-specific emission that dedupes `/+  *foo` / `/-  *foo`
+/// directives against what's already in the source file.
+///
+/// AUDIT 2026-04-19 M-22: four shipped grafts (settle/mint/guard/forge)
+/// each import `*vesl-merkle`, so composing all four with a plain
+/// concatenation produced four identical `/+  *vesl-merkle` lines.
+/// Hoonc tolerates the duplicates but the noise lets a malicious manifest
+/// hide an extra import in the dup-clutter during security review.
+/// Preserves banner comments, indentation, and non-import body lines;
+/// only skips `/+  *X` / `/-  *X` whose `X` was already imported by an
+/// earlier line in the target file.
+fn emit_imports_block(
+    lines: &mut Vec<String>,
+    marker_idx: usize,
+    indent: &str,
+    pending: &[&Graft],
+) {
+    let mut seen: HashSet<String> = lines
+        .iter()
+        .filter_map(|l| parse_glob_import(l).map(|s| s.to_string()))
+        .collect();
+
+    let mut composed: Vec<String> = Vec::new();
+    for g in pending.iter() {
+        composed.push(begin_banner(&g.name, Marker::Imports));
+        let body = g
+            .block(Marker::Imports)
+            .expect("emit_imports_block called with a graft missing imports")
+            .trimmed_body();
+        for line in body.lines() {
+            if let Some(name) = parse_glob_import(line) {
+                if !seen.insert(name.to_string()) {
+                    // Already imported — drop to keep the imports block
+                    // mirror-readable. A comment trail would restore the
+                    // audit-hide surface we're trying to close.
+                    continue;
+                }
+            }
+            composed.push(line.to_string());
+        }
+        composed.push(end_banner(&g.name, Marker::Imports));
+    }
+    let indented: Vec<String> = composed
+        .into_iter()
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("{}{}", indent, l)
+            }
+        })
+        .collect();
+    for (offset, line) in indented.into_iter().enumerate() {
+        lines.insert(marker_idx + 1 + offset, line);
+    }
+}
+
+/// Extract the glob-import target from a line like `/+  *foo` or `/-  *bar`.
+/// Returns None for any other shape (comments, plain `/+  bar`, body lines).
+fn parse_glob_import(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    let rest = trimmed
+        .strip_prefix("/+")
+        .or_else(|| trimmed.strip_prefix("/-"))?;
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix('*')?;
+    // Name is everything up to the first whitespace or end-of-line.
+    let name_end = rest
+        .find(|c: char| c.is_whitespace())
+        .unwrap_or(rest.len());
+    let name = &rest[..name_end];
+    if name.is_empty() { None } else { Some(name) }
 }
 
 /// Begin/end banner strings for per-graft-per-marker idempotence. Emitted
@@ -613,6 +729,22 @@ fn run(cli: Cli) -> Result<()> {
     let path = cli.path.as_ref().ok_or_else(|| {
         anyhow!("missing target path (or use --list to enumerate discovered grafts)")
     })?;
+    // AUDIT 2026-04-19 L-19: require the target to be a Hoon source
+    // file. A mistyped argument (e.g. `graft-inject README.md`) would
+    // otherwise inject Hoon into whatever happened to contain a marker
+    // pattern — useful only for shooting feet.
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("hoon") => {}
+        Some(other) => bail!(
+            "target {} has extension `.{}`; refusing to inject Hoon into a non-.hoon file",
+            path.display(),
+            other,
+        ),
+        None => bail!(
+            "target {} has no file extension; refusing to inject Hoon into a non-.hoon file",
+            path.display(),
+        ),
+    }
     let source = fs::read_to_string(path)
         .with_context(|| format!("reading {}", path.display()))?;
 
@@ -632,7 +764,7 @@ fn run(cli: Cli) -> Result<()> {
     // manifests produced it before any bytes hit disk.
     if cli.apply {
         if output != source {
-            fs::write(path, &output)
+            atomic_write(path, &output)
                 .with_context(|| format!("writing {}", path.display()))?;
         }
     } else {
@@ -659,6 +791,7 @@ fn select_grafts(cli: &Cli) -> Result<Vec<Graft>> {
             cli.lib_dir.display()
         );
     }
+    warn_if_lib_dir_out_of_tree(&cli.lib_dir);
     let mut discovered = discover_grafts(&cli.lib_dir)
         .with_context(|| format!("discovering grafts under {}", cli.lib_dir.display()))?;
     if discovered.is_empty() {
@@ -701,6 +834,41 @@ fn select_grafts(cli: &Cli) -> Result<Vec<Graft>> {
         }
     }
     Ok(discovered)
+}
+
+/// Warn loudly when `--lib-dir` points outside the project tree.
+///
+/// AUDIT 2026-04-19 L-21: a developer running `graft-inject --lib-dir
+/// /etc ...` (or any path without a `nockapp.toml` ancestor) is almost
+/// certainly not doing what they meant. The loader is content to parse
+/// any `*.toml` with a `[graft]` table — including ones from an
+/// attacker-controlled location. Warn rather than hard-fail so tests
+/// and other legitimate out-of-tree uses still run, but make the
+/// trust posture explicit.
+fn warn_if_lib_dir_out_of_tree(lib_dir: &Path) {
+    let canonical = match lib_dir.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    if !has_nockapp_toml_ancestor(&canonical) {
+        eprintln!(
+            "graft-inject: warning — --lib-dir {} is outside any \
+             project (no `nockapp.toml` ancestor). Manifests loaded \
+             from here are trusted as-is; ensure you trust their source.",
+            canonical.display()
+        );
+    }
+}
+
+fn has_nockapp_toml_ancestor(start: &Path) -> bool {
+    let mut cur = Some(start);
+    while let Some(dir) = cur {
+        if dir.join("nockapp.toml").is_file() {
+            return true;
+        }
+        cur = dir.parent();
+    }
+    false
 }
 
 fn emit_list(grafts: &[Graft], json: bool) {
