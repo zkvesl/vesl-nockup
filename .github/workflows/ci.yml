@@ -1,0 +1,105 @@
+name: CI
+
+# vesl-nockup bundles a synced copy of vesl-core's crates/ (maintained by
+# ./sync.sh). CI verifies the workspace builds and that the shipped templates
+# scaffold standalone via their git-deps.
+#
+# Bump NOCK_PIN in sync.sh when the sibling nockchain moves.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+env:
+  NOCK_PIN: c51f8040457de1c7d799de6024c4b22275371cf4
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout vesl-nockup
+        uses: actions/checkout@v4
+        with:
+          path: vesl-nockup
+
+      - name: Checkout nockchain (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: zorp-corp/nockchain
+          ref: ${{ env.NOCK_PIN }}
+          path: nockchain
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vesl-nockup
+
+      - name: cargo test (workspace)
+        working-directory: vesl-nockup
+        run: cargo test --workspace
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout vesl-nockup
+        uses: actions/checkout@v4
+        with:
+          path: vesl-nockup
+
+      - name: Checkout nockchain (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: zorp-corp/nockchain
+          ref: ${{ env.NOCK_PIN }}
+          path: nockchain
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vesl-nockup
+
+      - name: cargo clippy (workspace)
+        working-directory: vesl-nockup
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  templates-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout vesl-nockup
+        uses: actions/checkout@v4
+        with:
+          path: vesl-nockup
+
+      - name: Checkout nockchain (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: zorp-corp/nockchain
+          ref: ${{ env.NOCK_PIN }}
+          path: nockchain
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vesl-nockup/templates
+
+      - name: cargo check each template
+        working-directory: vesl-nockup
+        run: |
+          # Templates post-sync carry git-deps for nockchain and local path-deps
+          # for vesl-core crates bundled under vesl-nockup/crates. `cargo check`
+          # per template confirms they wire up without needing a full build.
+          set -e
+          for dir in templates/*/; do
+            if [ -f "$dir/Cargo.toml" ]; then
+              echo "::group::$dir"
+              (cd "$dir" && cargo check)
+              echo "::endgroup::"
+            fi
+          done
