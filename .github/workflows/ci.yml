@@ -27,7 +27,7 @@ jobs:
       - name: Checkout nockchain (sibling)
         uses: actions/checkout@v4
         with:
-          repository: zorp-corp/nockchain
+          repository: nockchain/nockchain
           ref: ${{ env.NOCK_PIN }}
           path: nockchain
 
@@ -52,7 +52,7 @@ jobs:
       - name: Checkout nockchain (sibling)
         uses: actions/checkout@v4
         with:
-          repository: zorp-corp/nockchain
+          repository: nockchain/nockchain
           ref: ${{ env.NOCK_PIN }}
           path: nockchain
 
@@ -79,7 +79,7 @@ jobs:
       - name: Checkout nockchain (sibling)
         uses: actions/checkout@v4
         with:
-          repository: zorp-corp/nockchain
+          repository: nockchain/nockchain
           ref: ${{ env.NOCK_PIN }}
           path: nockchain
 
