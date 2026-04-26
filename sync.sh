@@ -107,6 +107,15 @@ echo "  docs (manifest schema)"
 mkdir -p "$here/docs"
 cp "$vesl/docs/graft-manifest.md" "$here/docs/"
 
+# --- Intentionally NOT synced: vesl-core/scripts/ ---
+# vesl-core ships dev-only scripts (fakenet-harness.sh, check-jam.sh, etc.)
+# that drive a chain or compile kernels. vesl-nockup is a distribution
+# target — its consumers don't run a fakenet from this repo, and shipping
+# a harness here would be misleading. Do not add a `cp -rL "$vesl/scripts"`
+# step. If a script is genuinely useful for vesl-nockup users, port the
+# minimum surface area into vesl-nockup explicitly (separate file, not a
+# mirror).
+
 # --- Rust crate stack ---
 # Bundle vesl-core's extracted crate stack into vesl-nockup/crates/ so the
 # workspace (tools/, test/) and shipped templates resolve vesl-core path-deps
