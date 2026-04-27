@@ -67,6 +67,7 @@ struct GateSelection {
 /// Tier 1b additions extend this list as they land.
 const TIER_1A_GATES: &[&str] = &[
     "sig-verify-ed25519",
+    "sig-verify-schnorr",
     "manifest-verify",
     "set-membership-verify",
 ];
@@ -2163,7 +2164,7 @@ body     = """
     #[test]
     fn gate_name_must_be_in_catalog() {
         let err = settle_graft_with_gates(
-            "[graft.gates]\ngate = \"sig-verify-schnorr\"",
+            "[graft.gates]\ngate = \"threshold-sig-verify\"",
         )
         .expect_err("Tier 1b gate not yet shipping");
         let msg = format!("{err:#}");
