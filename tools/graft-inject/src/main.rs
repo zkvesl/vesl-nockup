@@ -38,6 +38,12 @@ struct Graft {
     #[serde(default)]
     after: Vec<String>,
     blocks: GraftBlocks,
+    /// Optional gate selection from `[graft.gates]`. EXPANSION Phase 01:
+    /// when set, the manifest's poke body has its default hash-gate
+    /// constructions rewritten to call into `vesl-gates`, and the imports
+    /// block gains a `/+  *vesl-gates` line. See `apply_gate_selection`.
+    #[serde(default)]
+    gates: Option<GateSelection>,
     /// Hex sha256 of the raw TOML bytes. Populated by `load_manifest` at
     /// discovery time so the composer can surface per-manifest digests
     /// in the preview report and `--list --json` output (AUDIT 2026-04-19
@@ -45,6 +51,25 @@ struct Graft {
     #[serde(skip, default)]
     sha256: String,
 }
+
+/// `[graft.gates]` selection. `gate` and `gate-chain` are mutually
+/// exclusive; both unset means the manifest keeps its default
+/// hash-gate. Names are validated against `TIER_1A_GATES` at discovery.
+#[derive(Debug, Clone, Deserialize)]
+struct GateSelection {
+    #[serde(default)]
+    gate: Option<String>,
+    #[serde(default, rename = "gate-chain")]
+    gate_chain: Option<Vec<String>>,
+}
+
+/// Allowlist of catalog gates currently shipped in `vesl-gates.hoon`.
+/// Tier 1b additions extend this list as they land.
+const TIER_1A_GATES: &[&str] = &[
+    "sig-verify-ed25519",
+    "manifest-verify",
+    "set-membership-verify",
+];
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct GraftBlocks {
@@ -117,6 +142,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// silently. Validates that every `after` hint names a discovered graft,
 /// rejects duplicate graft names (AUDIT 2026-04-19 H-11), and rejects
 /// graft names that don't match the kebab-case shape the schema documents.
+/// Also validates `[graft.gates]` (C2) and applies any gate selection to
+/// the manifest's poke + imports blocks (EXPANSION Phase 01).
 fn discover_grafts(lib_dir: &Path) -> Result<Vec<Graft>> {
     let mut grafts: Vec<Graft> = Vec::new();
     let mut seen: HashMap<String, PathBuf> = HashMap::new();
@@ -126,7 +153,7 @@ fn discover_grafts(lib_dir: &Path) -> Result<Vec<Graft>> {
         let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("toml") {
-            if let Some(g) = load_manifest(&path)? {
+            if let Some(mut g) = load_manifest(&path)? {
                 if !is_valid_graft_name(&g.name) {
                     bail!(
                         "invalid graft name `{}` in {}: expected kebab-case \
@@ -135,6 +162,8 @@ fn discover_grafts(lib_dir: &Path) -> Result<Vec<Graft>> {
                         path.display()
                     );
                 }
+                validate_gate_selection(&g, &path)?;
+                apply_gate_selection(&mut g, &path)?;
                 if let Some(prev) = seen.get(&g.name) {
                     bail!(
                         "duplicate graft name `{}` in {} and {}",
@@ -162,6 +191,158 @@ fn discover_grafts(lib_dir: &Path) -> Result<Vec<Graft>> {
         }
     }
     Ok(grafts)
+}
+
+/// Validate `[graft.gates]` per OVERVIEW.md C2: `gate` and `gate-chain`
+/// are mutually exclusive, names match kebab-case, names resolve against
+/// the catalog allowlist. `path` is reported in errors so authors can
+/// find the offending manifest without grep.
+fn validate_gate_selection(g: &Graft, path: &Path) -> Result<()> {
+    let Some(sel) = &g.gates else {
+        return Ok(());
+    };
+    if sel.gate.is_some() && sel.gate_chain.is_some() {
+        bail!(
+            "[graft.gates] in {} sets both `gate` and `gate-chain`; pick one or neither",
+            path.display()
+        );
+    }
+    if let Some(name) = &sel.gate {
+        validate_gate_name(name, path, "gate")?;
+    }
+    if let Some(chain) = &sel.gate_chain {
+        if chain.is_empty() {
+            bail!(
+                "[graft.gates].gate-chain in {} is empty; remove it or list at least one gate",
+                path.display()
+            );
+        }
+        for name in chain {
+            validate_gate_name(name, path, "gate-chain entry")?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_gate_name(name: &str, path: &Path, field: &str) -> Result<()> {
+    if !is_valid_graft_name(name) {
+        bail!(
+            "[graft.gates].{field} `{name}` in {}: expected kebab-case matching ^[a-z][a-z0-9-]*$",
+            path.display()
+        );
+    }
+    if !TIER_1A_GATES.contains(&name) {
+        bail!(
+            "[graft.gates].{field} `{name}` in {} is not a known catalog gate. \
+             Tier 1a (currently shipping): {}",
+            path.display(),
+            TIER_1A_GATES.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// Default hash-gate definition that ships in `settle-graft.toml`'s poke
+/// body. Each of the three `%settle-*` arms carries this exact 4-line
+/// block; gate selection rewrites every occurrence.
+const DEFAULT_HASH_GATE_BLOCK: &str = "\
+=/  hash-gate=verify-gate
+  |=  [note-id=@ data=* expected-root=@]
+  ^-  ?
+  =((hash-leaf ;;(@ data)) expected-root)";
+
+/// Rewrite a graft's poke body and imports body when `[graft.gates]` is
+/// set. The poke body's default hash-gate blocks are replaced with calls
+/// into `vesl-gates`; the imports body gains a `/+  *vesl-gates` line if
+/// it isn't already there.
+///
+/// `gate = "name"` produces a single-line direct binding:
+///
+///     =/  hash-gate=verify-gate  name:vesl-gates
+///
+/// `gate-chain = ["a", "b", ...]` produces an AND-fold:
+///
+///     =/  hash-gate=verify-gate
+///       |=  [note-id=@ data=* expected-root=@]
+///       ^-  ?
+///       ?&  (a:vesl-gates note-id data expected-root)
+///           (b:vesl-gates note-id data expected-root)
+///       ==
+///
+/// OVERVIEW.md §Out-of-scope keeps `gate-chain` AND-only in v1.
+///
+/// If the manifest declares `[graft.gates]` but the poke body doesn't
+/// contain the default hash-gate block, that's a mismatch worth flagging
+/// — the manifest author probably hand-wrote a custom gate and the
+/// catalog selection is a no-op or contradicts it.
+fn apply_gate_selection(g: &mut Graft, path: &Path) -> Result<()> {
+    let Some(sel) = g.gates.clone() else {
+        return Ok(());
+    };
+    let new_block = if let Some(name) = &sel.gate {
+        format!("=/  hash-gate=verify-gate  {name}:vesl-gates")
+    } else if let Some(chain) = &sel.gate_chain {
+        build_chain_block(chain)
+    } else {
+        // [graft.gates] table exists but neither field set — no-op,
+        // matches the documented "set one or neither" semantics.
+        return Ok(());
+    };
+
+    let Some(poke) = g.blocks.poke.as_mut() else {
+        bail!(
+            "[graft.gates] in {} selects a gate but the manifest has no [graft.blocks.poke]",
+            path.display()
+        );
+    };
+    if !poke.body.contains(DEFAULT_HASH_GATE_BLOCK) {
+        bail!(
+            "[graft.gates] in {} selects a gate but the poke body does not contain the \
+             default hash-gate block; gate selection only applies to manifests using the \
+             stock 4-line `=/  hash-gate=verify-gate  ...` shape",
+            path.display()
+        );
+    }
+    poke.body = poke.body.replace(DEFAULT_HASH_GATE_BLOCK, &new_block);
+
+    if let Some(imports) = g.blocks.imports.as_mut() {
+        if !imports.body.lines().any(|l| l.trim() == "/+  *vesl-gates") {
+            // Prepend so the gate import is visible at the top of the
+            // composed imports block — matches the pattern in
+            // settle-graft.toml where `*settle-graft` precedes
+            // `*vesl-merkle`.
+            imports.body = format!("/+  *vesl-gates\n{}", imports.body);
+        }
+    }
+    Ok(())
+}
+
+/// Build the AND-fold gate-chain Hoon block. Layout matches the rest of
+/// settle-graft.toml's poke body: `=/` at column 0, inner lines indented
+/// by 2 spaces, `?&` first-arg on the same line (Hoon tall-form style),
+/// continuation args aligned at column 6 (under `?& ` + space), `==` at
+/// column 2.
+///
+///     =/  hash-gate=verify-gate
+///       |=  [note-id=@ data=* expected-root=@]
+///       ^-  ?
+///       ?&  (a:vesl-gates note-id data expected-root)
+///           (b:vesl-gates note-id data expected-root)
+///       ==
+fn build_chain_block(chain: &[String]) -> String {
+    let mut out = String::from(
+        "=/  hash-gate=verify-gate\n  \
+         |=  [note-id=@ data=* expected-root=@]\n  \
+         ^-  ?\n  ?&",
+    );
+    for (i, name) in chain.iter().enumerate() {
+        let lead = if i == 0 { "  " } else { "\n      " };
+        out.push_str(&format!(
+            "{lead}({name}:vesl-gates note-id data expected-root)"
+        ));
+    }
+    out.push_str("\n  ==");
+    out
 }
 
 /// Atomic write: tempfile in the target's directory, fsync, rename.
@@ -1063,6 +1244,7 @@ mod tests {
                     body: format!("({name}-peek state path)"),
                 }),
             },
+            gates: None,
             sha256: String::new(),
         }
     }
@@ -1758,6 +1940,7 @@ body     = """
                 }),
                 peek: None,
             },
+            gates: None,
             sha256: String::new(),
         };
         let contaminant = synthetic_graft("contaminant", 20);
@@ -1855,6 +2038,7 @@ body     = """
                 }),
                 peek: None,
             },
+            gates: None,
             sha256: String::new(),
         };
         let (first, _) = inject(BARE_SCAFFOLD, &[nested.clone()]).unwrap();
@@ -1879,5 +2063,156 @@ body     = """
             "beta banner must survive a re-run with only alpha selected"
         );
         assert!(after_alpha_only.contains("/+  *beta"));
+    }
+
+    // ---------------------------------------------------------------
+    // [graft.gates] selection — EXPANSION Phase 01 / parametize_2
+    // ---------------------------------------------------------------
+
+    /// Load settle-graft.toml and inject a `[graft.gates]` selection by
+    /// re-parsing the TOML with an appended `[graft.gates]` table. Avoids
+    /// needing a separate fixture file per test case.
+    fn settle_graft_with_gates(extra_toml: &str) -> Result<Graft> {
+        let raw = fs::read_to_string(settle_graft_manifest_path())
+            .expect("read settle-graft.toml");
+        let merged = format!("{raw}\n{extra_toml}\n");
+        let value: toml::Value =
+            toml::from_str(&merged).expect("parse merged TOML");
+        let mut graft: Graft = ManifestFile::deserialize(value)
+            .expect("deserialize merged manifest")
+            .graft;
+        graft.sha256 = sha256_hex(merged.as_bytes());
+        let path = settle_graft_manifest_path();
+        validate_gate_selection(&graft, &path)?;
+        apply_gate_selection(&mut graft, &path)?;
+        Ok(graft)
+    }
+
+    #[test]
+    fn gate_selection_rewrites_poke_body_and_imports() {
+        let g = settle_graft_with_gates(
+            "[graft.gates]\ngate = \"sig-verify-ed25519\"",
+        )
+        .expect("ed25519 selection valid");
+        let poke = g.blocks.poke.as_ref().expect("settle has poke").body.clone();
+        let imports = g
+            .blocks
+            .imports
+            .as_ref()
+            .expect("settle has imports")
+            .body
+            .clone();
+        // Default block gone, three direct bindings present (one per arm).
+        assert!(
+            !poke.contains(DEFAULT_HASH_GATE_BLOCK),
+            "default hash-gate block must be replaced"
+        );
+        let occurrences = poke
+            .matches("=/  hash-gate=verify-gate  sig-verify-ed25519:vesl-gates")
+            .count();
+        assert_eq!(
+            occurrences, 3,
+            "expected 3 gate bindings (register/verify/note), got {occurrences}"
+        );
+        assert!(
+            imports.lines().any(|l| l.trim() == "/+  *vesl-gates"),
+            "imports body must gain /+  *vesl-gates"
+        );
+    }
+
+    #[test]
+    fn gate_chain_emits_and_fold() {
+        let g = settle_graft_with_gates(
+            "[graft.gates]\ngate-chain = [\"sig-verify-ed25519\", \"manifest-verify\"]",
+        )
+        .expect("gate-chain valid");
+        let poke = g.blocks.poke.as_ref().unwrap().body.clone();
+        let expected_chain = "?&  (sig-verify-ed25519:vesl-gates note-id data expected-root)\n      (manifest-verify:vesl-gates note-id data expected-root)\n  ==";
+        assert!(
+            poke.contains(expected_chain),
+            "AND-fold shape missing.  expected:\n{expected_chain}\n\nactual poke body:\n{poke}"
+        );
+    }
+
+    #[test]
+    fn gate_and_gate_chain_mutually_exclusive() {
+        let err = settle_graft_with_gates(
+            "[graft.gates]\ngate = \"sig-verify-ed25519\"\ngate-chain = [\"manifest-verify\"]",
+        )
+        .expect_err("must reject when both fields set");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("both `gate` and `gate-chain`"),
+            "error must explain mutual exclusion: {msg}"
+        );
+    }
+
+    #[test]
+    fn gate_name_must_be_kebab_case() {
+        let err = settle_graft_with_gates(
+            "[graft.gates]\ngate = \"Sig-Verify-Ed25519\"",
+        )
+        .expect_err("must reject capital letters");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("kebab-case"),
+            "error must mention kebab-case: {msg}"
+        );
+    }
+
+    #[test]
+    fn gate_name_must_be_in_catalog() {
+        let err = settle_graft_with_gates(
+            "[graft.gates]\ngate = \"sig-verify-schnorr\"",
+        )
+        .expect_err("Tier 1b gate not yet shipping");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not a known catalog gate"),
+            "error must mention catalog allowlist: {msg}"
+        );
+    }
+
+    #[test]
+    fn empty_gate_chain_rejected() {
+        let err = settle_graft_with_gates("[graft.gates]\ngate-chain = []")
+            .expect_err("empty chain must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("gate-chain") && msg.contains("empty"),
+            "error must mention empty gate-chain: {msg}"
+        );
+    }
+
+    #[test]
+    fn empty_gates_table_is_noop() {
+        // [graft.gates] table with no fields set leaves the manifest alone.
+        let g = settle_graft_with_gates("[graft.gates]").expect("empty table valid");
+        let poke = g.blocks.poke.as_ref().unwrap().body.clone();
+        assert!(
+            poke.contains(DEFAULT_HASH_GATE_BLOCK),
+            "default hash-gate must remain when no gate is selected"
+        );
+        let imports = g.blocks.imports.as_ref().unwrap().body.clone();
+        assert!(
+            !imports.contains("/+  *vesl-gates"),
+            "vesl-gates import must NOT land for a no-op gates table"
+        );
+    }
+
+    #[test]
+    fn gate_selection_idempotent_imports() {
+        // Running apply_gate_selection on a graft that already has
+        // `/+  *vesl-gates` in imports must not duplicate the line.
+        let g1 = settle_graft_with_gates(
+            "[graft.gates]\ngate = \"set-membership-verify\"",
+        )
+        .unwrap();
+        let imports = g1.blocks.imports.as_ref().unwrap().body.clone();
+        let count = imports
+            .lines()
+            .filter(|l| l.trim() == "/+  *vesl-gates")
+            .count();
+        assert_eq!(count, 1, "vesl-gates import must appear exactly once");
     }
 }

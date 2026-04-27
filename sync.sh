@@ -65,6 +65,7 @@ cp "$vesl/protocol/lib/intent-graft.toml" "$here/hoon/lib/"
 cp "$vesl/protocol/lib/vesl-merkle.hoon"  "$here/hoon/lib/"
 cp "$vesl/protocol/lib/vesl-prover.hoon"  "$here/hoon/lib/"
 cp "$vesl/protocol/lib/vesl-lower.hoon"   "$here/hoon/lib/"
+cp "$vesl/protocol/lib/vesl-gates.hoon"   "$here/hoon/lib/"
 
 # Phase 9b: forge-graft pulls in the STARK prover, which depends on
 # /common/v2/table/prover/{compute,memory}, /common/stark/prover,
