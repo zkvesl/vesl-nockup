@@ -70,6 +70,7 @@ const TIER_1A_GATES: &[&str] = &[
     "sig-verify-schnorr",
     "manifest-verify",
     "set-membership-verify",
+    "bounded-value-verify",
 ];
 
 #[derive(Debug, Clone, Default, Deserialize)]
