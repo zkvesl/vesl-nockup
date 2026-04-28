@@ -87,6 +87,8 @@ cp "$vesl/protocol/lib/clock-graft.hoon"    "$here/hoon/lib/"
 cp "$vesl/protocol/lib/clock-graft.toml"    "$here/hoon/lib/"
 cp "$vesl/protocol/lib/validate-graft.hoon" "$here/hoon/lib/"
 cp "$vesl/protocol/lib/validate-graft.toml" "$here/hoon/lib/"
+cp "$vesl/protocol/lib/batch-graft.hoon"    "$here/hoon/lib/"
+cp "$vesl/protocol/lib/batch-graft.toml"    "$here/hoon/lib/"
 
 # Phase 9b: forge-graft pulls in the STARK prover, which depends on
 # /common/v2/table/prover/{compute,memory}, /common/stark/prover,
