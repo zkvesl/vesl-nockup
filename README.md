@@ -310,6 +310,111 @@ Cost: 5–40 s per proof on a modern CPU, dominated by FRI commitments. The kern
 
 The STARK verifier lives on the Rust side; see `vesl-core`'s forge module for the `verify` entry point. Cross-VM prove→verify is the real test — run it once per deployment, then let the kernel handle the per-request proving.
 
+### State grafts: app-state primitives without writing Hoon
+
+Beyond the four commitment grafts, `graft-inject` ships off-the-shelf state grafts in the 50–99 priority band so apps don't need to write Hoon for generic app-state. Two grafts have landed so far.
+
+**`kv-graft` (priority 50)** — a loose key-value store keyed on `@t` cords with opaque atom values:
+
+```rust
+use vesl_core::{build_kv_set_poke, build_kv_delete_poke};
+
+poke(&mut app, build_kv_set_poke("greeting", b"hello")).await?;
+// → %kv-stored key='greeting'
+
+poke(&mut app, build_kv_set_poke("greeting", b"goodbye")).await?;
+// Overwrite is allowed (loose semantics). → %kv-stored
+
+poke(&mut app, build_kv_delete_poke("greeting")).await?;
+// → %kv-deleted (idempotent — missing keys also emit %kv-deleted)
+```
+
+Compose by listing the graft alongside the others: `graft-inject --grafts settle,mint,kv hoon/app/app.hoon`. Peek path is `[%kv-value key=@t]` returning the stored atom or `~`. The store is capped at 10M entries (`%kv-error 'capacity'` on overflow). Overwrite of an existing key bypasses the cap.
+
+`kv-graft` is the *loose* store: overwrite-on-set, noop on delete-missing. The strict counterpart (`registry-graft`) — error on overwrite, error on missing-update, structured `record=*` values — ships later in Phase 02. Pick by stance.
+
+**`counter-graft` (priority 60)** — named `@ud` counters, init on first touch, saturating at `2^64-1`:
+
+```rust
+use vesl_core::{
+    build_counter_increment_poke, build_counter_reset_poke, build_counter_set_poke,
+};
+
+// First increment of an unset name initializes to 1.
+poke(&mut app, build_counter_increment_poke("requests")).await?;
+// → %counter-incremented value=1
+
+// Set to an arbitrary value.
+poke(&mut app, build_counter_set_poke("requests", 1000)).await?;
+// → %counter-set
+
+// Reset to 0 (idempotent — also initializes unset names).
+poke(&mut app, build_counter_reset_poke("requests")).await?;
+// → %counter-reset
+```
+
+Peek path is `[%counter-value name=@t]`. Increments past `u64::MAX` return `%counter-error 'saturated'` and leave the counter unchanged so `u64` callers never encounter values they can't decode.
+
+**`queue-graft` (priority 70)** — FIFO job queue with monotonic IDs. Bodies are opaque (`*` on the Hoon side); callers pre-jam whatever shape they want:
+
+```rust
+use vesl_core::{
+    build_queue_clear_poke, build_queue_pop_poke, build_queue_push_poke,
+};
+
+let body_jammed: Vec<u8> = /* jam your domain payload here */;
+poke(&mut app, build_queue_push_poke(&body_jammed)).await?;
+// → %queue-pushed id=1
+
+poke(&mut app, build_queue_pop_poke()).await?;
+// → %queue-popped (job=~ on empty queue, [~ [id body]] otherwise)
+
+poke(&mut app, build_queue_clear_poke()).await?;
+// → %queue-cleared (next-id is preserved across clears)
+```
+
+Peek path is `[%queue-len ~]` — total pending jobs. `%queue-push` is the first state-graft poke that cue's caller-supplied bytes inside its body, so the kernel wraps the decode in `mule`: malformed jam surfaces as `%queue-error` rather than crashing the kernel (Safety Contract C1).
+
+**`rbac-graft` (priority 80)** — pubkey-keyed permission table. Causes carry perms as `(list @t)` so Rust callers hand a flat slice of perm names; the graft `silt`s into a `(set @t)` internally:
+
+```rust
+use vesl_core::{build_rbac_grant_poke, build_rbac_revoke_poke};
+
+poke(&mut app, build_rbac_grant_poke(1, &["read", "write"])).await?;
+// → %rbac-granted added=("read" "write")
+
+poke(&mut app, build_rbac_grant_poke(1, &["audit"])).await?;
+// Union with held → final perms = {read, write, audit}.
+// Effect surfaces only the diff: %rbac-granted added=("audit").
+
+poke(&mut app, build_rbac_revoke_poke(1, &["write", "ghost"])).await?;
+// "ghost" wasn't held — intersect-then-noop. Effect:
+// %rbac-revoked removed=("write"). Held perms = {read, audit}.
+```
+
+Two-level capacity (`roles-cap = 10M`, `perms-per-role-cap = 1k`) prevents both global fan-out and per-pubkey perm-set blow-up. Revoking the last permission auto-clears the pubkey from the `roles` map. Peek paths: `[%rbac-perm-count pubkey=@]` and `[%rbac-has-perm pubkey=@ perm=@t]`.
+
+**`registry-graft` (priority 90)** — strict structured registry. Strict put (error on overwrite), strict update (error on missing key, surfaces old + new), strict delete (error on missing key). Records are opaque `*` (any noun); pre-jam them on the Rust side:
+
+```rust
+use vesl_core::{
+    build_registry_del_poke, build_registry_put_poke, build_registry_update_poke,
+};
+
+let manifest_jammed = jam_to_bytes(&mut stack, my_manifest_noun);
+poke(&mut app, build_registry_put_poke(key_id, &manifest_jammed)).await?;
+// → %registry-stored. Re-put on existing key → %registry-error.
+
+poke(&mut app, build_registry_update_poke(key_id, &new_manifest_jammed)).await?;
+// → %registry-updated old=… new=… (audit-friendly diff).
+// Update on missing key → %registry-error.
+
+poke(&mut app, build_registry_del_poke(key_id)).await?;
+// → %registry-deleted. Del on missing key → %registry-error.
+```
+
+Peek path is `[%registry-entry key=@]`. Registry has the heaviest C1 surface in Phase 02 — both put and update cue caller-supplied bytes inside their poke arms under a `mule` guard, so malformed jam surfaces as `%registry-error` rather than crashing the kernel. `kv-graft` is the loose counterpart (overwrite-on-set, noop-on-missing-delete, atom values); pick by stance.
+
 ## Adding vesl to an existing nockup project
 
 If you already have a working nockapp, skip Step 1. The rest applies, with one extra step: you have an `app.hoon` already — you need to *annotate* it with markers rather than copy the template over it.

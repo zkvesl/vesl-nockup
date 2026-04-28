@@ -164,6 +164,73 @@ pub async fn peek_hull_value(
     hull: u64,
 ) -> Result<Option<Vec<u8>>> {
     let path = build_hull_peek_path(tag, hull);
+    unwrap_triple_unit_atom(harness, path).await
+}
+
+/// Build a `[%<tag> key=@t ~]` peek path slab.
+///
+/// State grafts (kv, counter, registry) key on `@t` cords rather
+/// than `u64` hulls; this is the cord-keyed analog of
+/// `build_hull_peek_path`.
+pub fn build_keyed_peek_path(tag: &str, key: &str) -> NounSlab {
+    let mut slab = NounSlab::new();
+    let tag_atom = make_tag_in(&mut slab, tag);
+    let key_atom = make_tag_in(&mut slab, key);
+    let path = T(&mut slab, &[tag_atom, key_atom, D(0)]);
+    slab.set_root(path);
+    slab
+}
+
+/// Peek `[%<tag> key ~]` on a state graft and extract the stored
+/// value (if any).
+///
+/// State grafts (kv, counter, registry) wrap `(~(get by …) key)`
+/// with `` `` `` `` so the peek result shape is the same triple-
+/// unit shape as the commitment grafts: `[~ [~ (unit @)]]`. This
+/// is the cord-keyed analog of `peek_hull_value`.
+pub async fn peek_keyed_value(
+    harness: &mut GraftTestHarness,
+    tag: &str,
+    key: &str,
+) -> Result<Option<Vec<u8>>> {
+    let path = build_keyed_peek_path(tag, key);
+    unwrap_triple_unit_atom(harness, path).await
+}
+
+/// Build a `[%<tag> ~]` peek path slab.
+///
+/// State grafts that expose tag-only peeks (e.g. `queue-len`) use
+/// this — there's no key to interpolate.
+pub fn build_keyless_peek_path(tag: &str) -> NounSlab {
+    let mut slab = NounSlab::new();
+    let tag_atom = make_tag_in(&mut slab, tag);
+    let path = T(&mut slab, &[tag_atom, D(0)]);
+    slab.set_root(path);
+    slab
+}
+
+/// Peek `[%<tag> ~]` on a state graft and extract the inner atom.
+///
+/// Grafts that always have a value (e.g. `queue-len`) wrap their
+/// peek body as `` ``[~ atom] `` so the inner cell branch is
+/// always taken — this avoids the atom-zero-is-None quirk that
+/// `peek_hull_value` and `peek_keyed_value` need for the genuine
+/// `(unit @)` map-get path.
+pub async fn peek_keyless_atom(
+    harness: &mut GraftTestHarness,
+    tag: &str,
+) -> Result<Option<Vec<u8>>> {
+    let path = build_keyless_peek_path(tag);
+    unwrap_triple_unit_atom(harness, path).await
+}
+
+/// Strip the triple-unit wrapper that mint/guard/settle/kv/etc.
+/// place around `(~(get by …) k)` peeks, returning the inner atom
+/// bytes if present.
+async fn unwrap_triple_unit_atom(
+    harness: &mut GraftTestHarness,
+    path: NounSlab,
+) -> Result<Option<Vec<u8>>> {
     let res = harness.peek_raw(path).await?;
     let noun = unsafe { *res.root() };
 
@@ -181,7 +248,7 @@ pub async fn peek_hull_value(
         if bytes.iter().all(|&b| b == 0) {
             return Ok(None);
         }
-        return Ok(Some(bytes.to_vec()));
+        return Ok(Some(trim_trailing_zeros(bytes)));
     }
 
     let value_cell = maybe_value
@@ -191,5 +258,15 @@ pub async fn peek_hull_value(
         .tail()
         .as_atom()
         .map_err(|e| anyhow!("root not an atom: {e:?}"))?;
-    Ok(Some(root_atom.as_ne_bytes().to_vec()))
+    Ok(Some(trim_trailing_zeros(root_atom.as_ne_bytes())))
+}
+
+/// Atoms are non-negative integers; their word-aligned byte
+/// representation pads with zeros that are semantically insignificant
+/// (the atom `0x6f6c6c6568` "hello" and its 8-byte padded form are
+/// identical Hoon values). Strip trailing zeros so callers can
+/// compare against canonical input bytes (e.g. the original cord).
+fn trim_trailing_zeros(bytes: &[u8]) -> Vec<u8> {
+    let len = bytes.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+    bytes[..len].to_vec()
 }
