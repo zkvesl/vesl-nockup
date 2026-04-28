@@ -76,14 +76,17 @@ cp "$vesl/protocol/lib/rbac-graft.hoon"   "$here/hoon/lib/"
 cp "$vesl/protocol/lib/rbac-graft.toml"   "$here/hoon/lib/"
 cp "$vesl/protocol/lib/registry-graft.hoon" "$here/hoon/lib/"
 cp "$vesl/protocol/lib/registry-graft.toml" "$here/hoon/lib/"
-# Phase 03 — behavior grafts (additive pilots). clock-graft and
-# log-graft are pure observers; the wrapping behavior grafts
-# (validate / fsm / index / batch) wait on the prelude/postlude
-# graft-inject extension landing under sub-phase 03b.
-cp "$vesl/protocol/lib/log-graft.hoon"    "$here/hoon/lib/"
-cp "$vesl/protocol/lib/log-graft.toml"    "$here/hoon/lib/"
-cp "$vesl/protocol/lib/clock-graft.hoon"  "$here/hoon/lib/"
-cp "$vesl/protocol/lib/clock-graft.toml"  "$here/hoon/lib/"
+# Phase 03 — behavior grafts. clock-graft and log-graft are the
+# additive pilots (Phase 03a); validate-graft is the first
+# consumer of the prelude marker landed in 03b (Phase 03c).
+# index/batch wait on follow-on sub-phases. fsm-graft deferred
+# until codegen lands.
+cp "$vesl/protocol/lib/log-graft.hoon"      "$here/hoon/lib/"
+cp "$vesl/protocol/lib/log-graft.toml"      "$here/hoon/lib/"
+cp "$vesl/protocol/lib/clock-graft.hoon"    "$here/hoon/lib/"
+cp "$vesl/protocol/lib/clock-graft.toml"    "$here/hoon/lib/"
+cp "$vesl/protocol/lib/validate-graft.hoon" "$here/hoon/lib/"
+cp "$vesl/protocol/lib/validate-graft.toml" "$here/hoon/lib/"
 
 # Phase 9b: forge-graft pulls in the STARK prover, which depends on
 # /common/v2/table/prover/{compute,memory}, /common/stark/prover,
