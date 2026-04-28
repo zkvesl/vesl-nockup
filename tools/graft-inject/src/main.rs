@@ -78,7 +78,22 @@ struct GraftBlocks {
     imports: Option<Block>,
     state: Option<Block>,
     cause: Option<Block>,
+    /// Phase 03b: code spliced ahead of the `?-  -.u.act` switch. Composes
+    /// as `?:` short-circuit guards (validate / fsm rejection paths) or as
+    /// `=/  pre-snapshot` bindings that scope through the rest of the gate
+    /// (index-graft pre-state capture). Multiple preludes stack in priority
+    /// order; the first to short-circuit ends the gate before the switch
+    /// runs. See docs/graft-manifest.md §poke-prelude.
+    #[serde(rename = "poke-prelude")]
+    poke_prelude: Option<Block>,
     poke: Option<Block>,
+    /// Phase 03b: code spliced after the `?-  -.u.act` switch. The switch's
+    /// `[(list effect) _state]` result is bound to `out`; postludes rebind
+    /// `out` (e.g. `=/  out  (transform out)`) and the gate returns the
+    /// final `out`. Multiple postludes compose left-to-right in priority
+    /// order. See docs/graft-manifest.md §poke-postlude.
+    #[serde(rename = "poke-postlude")]
+    poke_postlude: Option<Block>,
     peek: Option<Block>,
 }
 
@@ -108,7 +123,9 @@ impl Graft {
             Marker::Imports => self.blocks.imports.as_ref(),
             Marker::State => self.blocks.state.as_ref(),
             Marker::Cause => self.blocks.cause.as_ref(),
+            Marker::PokePrelude => self.blocks.poke_prelude.as_ref(),
             Marker::Poke => self.blocks.poke.as_ref(),
+            Marker::PokePostlude => self.blocks.poke_postlude.as_ref(),
             Marker::Peek => self.blocks.peek.as_ref(),
         }
     }
@@ -404,16 +421,24 @@ enum Marker {
     Imports,
     State,
     Cause,
+    /// Phase 03b: spliced before the poke `?-` switch — guards (`?:`
+    /// short-circuits) and pre-state captures (`=/  pre-X`).
+    PokePrelude,
     Poke,
+    /// Phase 03b: spliced after the `?-` switch — `out` rebinds that
+    /// transform the switch's `[(list effect) _state]` result.
+    PokePostlude,
     Peek,
 }
 
 impl Marker {
-    const ALL: [Marker; 5] = [
+    const ALL: [Marker; 7] = [
         Marker::Imports,
         Marker::State,
         Marker::Cause,
+        Marker::PokePrelude,
         Marker::Poke,
+        Marker::PokePostlude,
         Marker::Peek,
     ];
 
@@ -423,7 +448,9 @@ impl Marker {
             "imports" => Some(Self::Imports),
             "state" => Some(Self::State),
             "cause" => Some(Self::Cause),
+            "poke-prelude" => Some(Self::PokePrelude),
             "poke" => Some(Self::Poke),
+            "poke-postlude" => Some(Self::PokePostlude),
             "peek" => Some(Self::Peek),
             _ => None,
         }
@@ -434,7 +461,9 @@ impl Marker {
             Self::Imports => "imports",
             Self::State => "state",
             Self::Cause => "cause",
+            Self::PokePrelude => "poke-prelude",
             Self::Poke => "poke",
+            Self::PokePostlude => "poke-postlude",
             Self::Peek => "peek",
         }
     }
@@ -1196,10 +1225,14 @@ mod tests {
     ^-  [(list effect) _state]
     =/  act  ((soft cause) cause.input.ovum)
     ?~  act  [~ state]
-    ?-  -.u.act
-        %cause  [~ state]
-      ::  nockup:poke
-    ==
+    ::  nockup:poke-prelude
+    =/  out=[efx=(list effect) new=_state]
+      ?-  -.u.act
+          %cause  [~ state]
+        ::  nockup:poke
+      ==
+    ::  nockup:poke-postlude
+    out
   --
 --
 ((moat |) inner)
@@ -1235,12 +1268,14 @@ mod tests {
                     sentinel: format!("{name}-cause"),
                     body: format!("{name}-cause"),
                 }),
+                poke_prelude: None,
                 poke: Some(Block {
                     sentinel: format!("%{name}-do"),
                     body: format!(
                         "  %{name}-do\n=/  lc=cause  [%{name}-do ~]\n[~ state]"
                     ),
                 }),
+                poke_postlude: None,
                 peek: Some(Block {
                     sentinel: format!("{name}-peek"),
                     body: format!("({name}-peek state path)"),
@@ -1284,10 +1319,11 @@ mod tests {
         assert!(out.contains("=/  settle-res  (settle-peek settle.state path)"));
         assert!(out.contains("?.  =(~ settle-res)  settle-res"));
 
-        assert_eq!(report.markers_in_source.len(), 5);
+        assert_eq!(report.markers_in_source.len(), 7);
         assert!(report.markers_missing.is_empty());
         let settle = &report.grafts[0];
         assert_eq!(settle.name, "settle-graft");
+        // settle-graft contributes 5 of the 7 markers (no prelude / postlude).
         assert_eq!(settle.injected.len(), 5);
         assert!(settle.skipped.is_empty());
     }
@@ -1393,7 +1429,7 @@ mod tests {
         let result = inject(src, &grafts);
         assert!(result.is_ok());
         let (_, report) = result.unwrap();
-        assert_eq!(report.markers_missing.len(), 5);
+        assert_eq!(report.markers_missing.len(), Marker::ALL.len());
         assert!(report.markers_in_source.is_empty());
     }
 
@@ -1402,7 +1438,7 @@ mod tests {
         let grafts = settle_only_grafts();
         let src = "::  nockup:pokemon\n";
         let (_, report) = inject(src, &grafts).unwrap();
-        assert_eq!(report.markers_missing.len(), 5);
+        assert_eq!(report.markers_missing.len(), Marker::ALL.len());
         assert!(report.markers_in_source.is_empty());
     }
 
@@ -1417,8 +1453,16 @@ mod tests {
     }
 
     #[test]
-    fn marker_parse_covers_five() {
-        for name in ["imports", "state", "cause", "poke", "peek"] {
+    fn marker_parse_covers_all() {
+        for name in [
+            "imports",
+            "state",
+            "cause",
+            "poke-prelude",
+            "poke",
+            "poke-postlude",
+            "peek",
+        ] {
             assert!(Marker::parse(name).is_some(), "expected Some for {name}");
         }
         assert!(Marker::parse("load").is_none());
@@ -1440,7 +1484,17 @@ mod tests {
             let needle = format!("::  nockup:{}", marker.label());
             let marker_idx = lines
                 .iter()
-                .position(|l| l.trim_start().starts_with(&needle))
+                .position(|l| {
+                    let t = l.trim_start();
+                    if !t.starts_with(&needle) {
+                        return false;
+                    }
+                    // Word-boundary guard: `nockup:poke` must not match
+                    // `nockup:poke-prelude` / `nockup:poke-postlude` —
+                    // mirrors find_marker's tail check.
+                    let tail = &t[needle.len()..];
+                    tail.is_empty() || tail.chars().all(|c| c.is_whitespace())
+                })
                 .unwrap_or_else(|| panic!("marker `{}` missing from output", marker.label()));
             let marker_indent = leading_whitespace(lines[marker_idx]).to_string();
             let body = graft
@@ -1936,10 +1990,12 @@ body     = """
                 }),
                 state: None,
                 cause: None,
+                poke_prelude: None,
                 poke: Some(Block {
                     sentinel: "%poison-do".to_string(),
                     body: "  %poison-do\n::  references %contaminant-do elsewhere\n[~ state]".to_string(),
                 }),
+                poke_postlude: None,
                 peek: None,
             },
             gates: None,
@@ -2034,10 +2090,12 @@ body     = """
                 imports: None,
                 state: None,
                 cause: None,
+                poke_prelude: None,
                 poke: Some(Block {
                     sentinel: "%nested-do".to_string(),
                     body: "  %nested-do\n?-  +.state\n  [%foo ~]  [~ state]\n  [%bar ~]  [~ state]\n==\n[~ state]".to_string(),
                 }),
+                poke_postlude: None,
                 peek: None,
             },
             gates: None,

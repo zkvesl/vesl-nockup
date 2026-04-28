@@ -54,12 +54,16 @@
       :_  state
       ^-  (list effect)
       ~[[%effect 'Invalid cause format']]
-    ?-    -.u.act
-        %cause
-      ~>  %slog.[1 'poked']
-      [~ state]
-      ::  nockup:poke
-    ==
+    ::  nockup:poke-prelude
+    =/  out=[efx=(list effect) new=_state]
+      ?-    -.u.act
+          %cause
+        ~>  %slog.[1 'poked']
+        [~ state]
+        ::  nockup:poke
+      ==
+    ::  nockup:poke-postlude
+    out
   --
 --
 ((moat |) inner)

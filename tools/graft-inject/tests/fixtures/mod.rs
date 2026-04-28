@@ -75,6 +75,36 @@ pub fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
 /// `hoonc` must be on `PATH` — same pre-req as every other build
 /// route in this repo.
 pub fn compose_and_compile(scratch_subdir: &str, grafts: &[&str]) -> Result<PathBuf> {
+    compose_and_compile_with_extras(scratch_subdir, grafts, &[])
+}
+
+/// Synthetic graft fixture inlined into a test's scratch hoon/lib/.
+///
+/// Phase 03b prelude/postlude integration tests need synthetic grafts
+/// that exist only for the duration of the test — writing them into
+/// the shared `vesl-nockup/hoon/lib/` would pollute the discovery tree
+/// for every other test. This struct lets a test ship its own
+/// `(name, hoon_body, toml_body)` triples that get written into the
+/// scratch before graft-inject runs.
+pub struct SyntheticGraft<'a> {
+    pub name: &'a str,
+    pub hoon: &'a str,
+    pub toml: &'a str,
+}
+
+/// Compose a graft-injected kernel with extra synthetic grafts written
+/// into the scratch's `hoon/lib/`, then hoonc-compile it.
+///
+/// Use this when a test needs a graft that doesn't (and shouldn't)
+/// live in the shared discovery tree — e.g. the Phase 03b prelude /
+/// postlude tests, which exercise the new graft-inject markers via
+/// minimal synthetic grafts rather than waiting on real Phase 03c
+/// consumers (validate / fsm) to land.
+pub fn compose_and_compile_with_extras(
+    scratch_subdir: &str,
+    grafts: &[&str],
+    extras: &[SyntheticGraft<'_>],
+) -> Result<PathBuf> {
     let repo_root = repo_root();
     let scratch = repo_root.join("target").join(scratch_subdir);
 
@@ -106,6 +136,16 @@ pub fn compose_and_compile(scratch_subdir: &str, grafts: &[&str]) -> Result<Path
     copy_dir_contents(&repo_root.join("hoon/common"), &hoon_common)?;
     copy_dir_contents(&repo_root.join("hoon/dat"), &hoon_dat)?;
     copy_dir_contents(&repo_root.join("hoon/jams"), &hoon_jams)?;
+
+    // Write any synthetic graft fixtures into the scratch's hoon/lib/
+    // before graft-inject discovers manifests. These exist only for
+    // this test run.
+    for extra in extras {
+        fs::write(hoon_lib.join(format!("{}.hoon", extra.name)), extra.hoon)
+            .with_context(|| format!("writing synthetic {}.hoon", extra.name))?;
+        fs::write(hoon_lib.join(format!("{}.toml", extra.name)), extra.toml)
+            .with_context(|| format!("writing synthetic {}.toml", extra.name))?;
+    }
 
     let graft_inject = graft_inject_bin();
     let status = Command::new(&graft_inject)
