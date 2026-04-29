@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
-# sync.sh — copy Hoon libs, the vesl-core crate stack, and templates from
-# ../vesl-core into this repo so vesl-nockup is self-contained post-sync.
+# sync.sh — copy Hoon libs, the vesl-core crate stack, the vesl-identity
+# bundle (vesl-signing now; vesl-wallet-spec at W5, vesl-wallet at W8),
+# and templates from sibling repos into this repo so vesl-nockup is
+# self-contained post-sync.
 #
 # vesl-core is canonical, optimized for local dev (path-deps to sibling
-# nockchain). vesl-nockup bundles vesl-core's extracted crate stack under
-# crates/ and rewrites template nockchain path-deps to git-deps on copy,
-# so shipped templates compile standalone when end-users pull them via
-# `nockup package add` or copy-and-build elsewhere.
+# nockchain). vesl-identity is the github.com/zkvesl/vesl-identity
+# workspace bundle introduced in Phase 0 W1-3
+# (per vesl-labs/docs/plans/shared-infrastructure/10-PHASE-0-NOW.md).
+# vesl-nockup bundles both crate stacks under crates/ and rewrites
+# template nockchain path-deps to git-deps on copy, so shipped templates
+# compile standalone when end-users pull them via `nockup package add`
+# or copy-and-build elsewhere.
 #
 # Run from the vesl-nockup repo root. Leaves changes staged for review;
 # does not commit.
@@ -21,21 +26,35 @@ NOCK_PIN="${NOCK_PIN:-c51f8040457de1c7d799de6024c4b22275371cf4}"
 
 here="$(cd "$(dirname "$0")" && pwd)"
 vesl="${1:-$HOME/projects/nockchain/vesl-core}"
+vesl_identity="${2:-$HOME/projects/nockchain/vesl-identity}"
 
 if [[ ! -d "$vesl" ]]; then
     echo "vesl-core source not found at $vesl" >&2
-    echo "usage: sync.sh [path-to-vesl-core-repo]" >&2
+    echo "usage: sync.sh [path-to-vesl-core-repo] [path-to-vesl-identity-repo]" >&2
+    exit 1
+fi
+
+if [[ ! -d "$vesl_identity" ]]; then
+    echo "vesl-identity source not found at $vesl_identity" >&2
+    echo "usage: sync.sh [path-to-vesl-core-repo] [path-to-vesl-identity-repo]" >&2
     exit 1
 fi
 
 # AUDIT 2026-04-19 M-21: refuse to run when source and destination
 # resolve to the same real path. `rm -rf $here/hoon/common` followed
 # by `cp -rL` would otherwise self-nuke the repo. Cheap check; the
-# resolved paths are stable across the script's lifetime.
+# resolved paths are stable across the script's lifetime. Apply the
+# same check to the vesl-identity arg added in Phase 7.
 if [[ "$(realpath "$here" 2>/dev/null)" == "$(realpath "$vesl" 2>/dev/null)" ]]; then
     echo "sync.sh refuses to run: source and destination resolve to the same path" >&2
     echo "  here: $here" >&2
     echo "  vesl: $vesl" >&2
+    exit 1
+fi
+if [[ "$(realpath "$here" 2>/dev/null)" == "$(realpath "$vesl_identity" 2>/dev/null)" ]]; then
+    echo "sync.sh refuses to run: source and destination resolve to the same path" >&2
+    echo "  here: $here" >&2
+    echo "  vesl_identity: $vesl_identity" >&2
     exit 1
 fi
 
@@ -151,6 +170,22 @@ mkdir -p "$here/crates"
 for c in nock-noun-rs nockchain-tip5-rs nockchain-client-rs vesl-core; do
     rm -rf "$here/crates/$c"
     cp -rL "$vesl/crates/$c" "$here/crates/$c"
+done
+
+# --- vesl-identity bundle (Phase 0 W1-3, OD#10) ---
+# Mirror the vesl-identity workspace's crate stack into vesl-nockup/crates/
+# alongside the vesl-core stack. Currently only `vesl-signing` exists
+# (W1-3 lift target); `vesl-wallet-spec` lands at W5 and `vesl-wallet` at
+# W8 — the loop here is future-proofed for both. Crates that don't yet
+# exist in the source are silently skipped so this script doesn't break
+# when run against a partial bundle.
+echo "  rust crates (vesl-identity bundle)"
+for c in vesl-signing vesl-wallet-spec vesl-wallet; do
+    src="$vesl_identity/crates/$c"
+    if [[ -d "$src" ]]; then
+        rm -rf "$here/crates/$c"
+        cp -rL "$src" "$here/crates/$c"
+    fi
 done
 
 # --- Templates ---

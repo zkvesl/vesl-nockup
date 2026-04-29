@@ -1,0 +1,14 @@
+[package]
+name = "vesl-wallet-spec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "BIP44 5-level wallet layout convention for the Vesl/Nockchain ecosystem. Doc-only crate (placeholder Rust types + SPEC.md)."
+readme = "README.md"
+keywords = ["nockchain", "vesl", "bip44", "wallet"]
+categories = ["cryptography"]
+
+[dependencies]
+# Doc-only crate. Will export role constants + DerivationPath types in W4-5.
