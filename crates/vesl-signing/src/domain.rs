@@ -50,17 +50,13 @@ pub mod domain_separators {
     /// intent-signing surface.
     pub const VESL_INTENT: &str = "vesl-intent-v1";
 
-    /// vesl receipt outer-proof binding separator. Reserved for the
-    /// receipt-schema v2 `nock-zkp` work scheduled in
-    /// `10-PHASE-0-NOW.md` Engineer 1 Weeks 9-10. Bound to the outer
+    /// vesl receipt outer-proof binding separator. Bound to the outer
     /// proof of any inner system (zkML, zkTLS, agent trace, foreign
     /// STARK).
     pub const VESL_RECEIPT: &str = "vesl-receipt-v1";
 
-    /// vesl authority signed-statement separator. Reserved for the
-    /// trust-anchor architecture work scheduled in
-    /// `10-PHASE-0-NOW.md` Engineer 1 Weeks 11-12 (signed-statement
-    /// format consumes vesl-signing for crypto).
+    /// vesl authority signed-statement separator. Reserved for
+    /// trust-anchor signed statements (consume vesl-signing for crypto).
     pub const VESL_AUTHORITY: &str = "vesl-authority-v1";
 
     /// All reserved domain separators known to this codebase. Callers
@@ -77,13 +73,13 @@ pub mod domain_separators {
 }
 
 /// Re-export of [`domain_separators::X402`] under the pre-R1.2 name. Kept
-/// for x402-nockchain source-compat during the W3 lift; new callers
-/// should import [`domain_separators::X402`] directly.
+/// for x402-nockchain source-compat; new callers should import
+/// [`domain_separators::X402`] directly.
 pub use domain_separators::X402 as X402_DOMAIN_SEPARATOR;
 
 /// Re-export of [`domain_separators::SIWN`] under the pre-R1.2 name. Kept
-/// for x402-nockchain source-compat during the W3 lift; new callers
-/// should import [`domain_separators::SIWN`] directly.
+/// for x402-nockchain source-compat; new callers should import
+/// [`domain_separators::SIWN`] directly.
 pub use domain_separators::SIWN as SIWN_DOMAIN_SEPARATOR;
 
 /// Hash `domain || bytes` under Tip5 and return the 5-Belt digest.

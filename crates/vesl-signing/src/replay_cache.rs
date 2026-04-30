@@ -2,7 +2,7 @@
 //! SIWN middleware and the §6.6 authorization-nonce check in the
 //! facilitator's `verify_envelope`.
 //!
-//! Persistence is deliberately out of scope for Phase 3 — the in-memory
+//! Persistence is deliberately out of scope here — the in-memory
 //! cache is acceptable because facilitator state is not yet durable;
 //! ADR-0010 (deferred) tracks the persistence question.
 //!

@@ -8,9 +8,7 @@
 //!
 //! Run with: `cargo run --example mock_trust_anchor`.
 //!
-//! Future Vesl Labs trust-anchor service work (Phase 0 W11-12, see
-//! `vesl-labs/docs/plans/shared-infrastructure/10-PHASE-0-NOW.md`) will
-//! follow this exact pattern.
+//! Future Vesl Labs trust-anchor service work follows this exact pattern.
 
 use chrono::{Duration, Utc};
 use ibig::UBig;

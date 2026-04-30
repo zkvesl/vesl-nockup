@@ -4,9 +4,8 @@
 //! and the Tip5 sponge hash (`tip5`).
 //!
 //! Constants and algorithms mirror `nockchain/crates/nockchain-math` at
-//! the SHA recorded in `vesl-signing`'s parity-vector fixtures (W3 rev:
-//! the lift inherits the SHA from x402-nockchain-crypto's port; future
-//! refreshes via the parity-regen workflow).
+//! the SHA recorded in `vesl-signing`'s parity-vector fixtures; refreshes
+//! happen via the parity-regen workflow.
 //!
 //! Lints suppressed across the module because the port is intentionally
 //! verbatim:
@@ -18,8 +17,8 @@
 //! - `clippy::wrong_self_convention`: methods like `CheetahPoint::into_base58(&self)`
 //!   and `CheetahPoint::to_bytes(&self)` use the original Hoon-derived
 //!   naming. Renaming would break source-compat for x402-nockchain
-//!   consumers during the W3 lift; the math surface is `pub(crate)` so
-//!   the lint's external-API rationale doesn't apply here.
+//!   consumers; the math surface is `pub(crate)` so the lint's
+//!   external-API rationale doesn't apply here.
 #![allow(dead_code, clippy::wrong_self_convention)]
 
 pub mod belt;

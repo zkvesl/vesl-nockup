@@ -14,5 +14,5 @@ categories = ["cryptography"]
 # Bundle entry point. Will depend on:
 # - vesl-signing (path = "../vesl-signing")          — canonical signing
 # - vesl-wallet-spec (path = "../vesl-wallet-spec")  — derivation-path constants
-# - bip39 + custom Cheetah-BIP32 layer               — pure-Rust HD (W6-8 plan)
+# - bip39 + custom Cheetah-BIP32 layer               — pure-Rust HD
 # Per architectural decision 2026-04-29: NO `nockchain-wallet` dep.

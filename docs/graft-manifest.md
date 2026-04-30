@@ -100,27 +100,10 @@ Grafts fall into five families. The priority number both orders injection and la
 
 ## `[graft.blocks.*]` — injection blocks
 
-A graft contributes one block per marker it claims. Seven markers exist:
-`imports`, `state`, `cause`, `poke-prelude`, `poke`, `poke-postlude`,
-`peek`. A block omitted from the manifest is not injected for that
-marker — the marker is left untouched (or, for `peek`, joins the chain
-only if other grafts contribute).
-
-The `poke-prelude` and `poke-postlude` markers (Phase 03b) bracket the
-kernel's `?-  -.u.act` cause-switch. They exist so behavior grafts can
-wrap or observe poke flow without modifying any other graft's arms:
-
-- **Prelude** runs *before* the switch. Grafts contribute either `?:`
-  short-circuits (validate / fsm rejection paths) or `=/  pre-X`
-  bindings (index-graft pre-state captures). A short-circuit returns
-  `[(list effect) _state]` directly, ending the gate before the switch
-  runs. A `=/` binding scopes through the rest of the gate, including
-  the postlude.
-- **Postlude** runs *after* the switch. The switch's
-  `[(list effect) _state]` result is bound to `out`. Postludes rebind
-  `out` (e.g. `=/  out  out(efx [[%my-effect ~] efx.out])`) and the
-  gate returns the final `out`. Multiple postludes compose left-to-
-  right in priority order; each rebind shadows the previous.
+A graft contributes one block per marker it claims. Five markers exist
+in Stage 1: `imports`, `state`, `cause`, `poke`, `peek`. A block omitted
+from the manifest is not injected for that marker — the marker is left
+untouched (or, for `peek`, joins the chain only if other grafts contribute).
 
 Each present block is a TOML sub-table with two fields:
 
@@ -140,9 +123,7 @@ Conventional sentinels:
 - `imports`: `*<graft-name>` (e.g., `*mint-graft`) — the import directive.
 - `state`: `<field>=<type-name>` (e.g., `mint=mint-state`).
 - `cause`: `<graft>-cause` (e.g., `mint-cause`) — the embedded cause union.
-- `poke-prelude`: short rule label (e.g. `validate-rules`, `fsm-transition-check`) — describes what the prelude enforces.
 - `poke`: `%<graft>-<verb>` of the first arm (e.g., `%mint-commit`).
-- `poke-postlude`: short transform label (e.g. `index-reconcile`, `log-tail-emit`).
 - `peek`: `<graft>-peek` (e.g., `mint-peek`) — the helper arm name.
 
 ### Body rules
@@ -161,24 +142,9 @@ Conventional sentinels:
   - `state`: a single `field=type` pair to splice into the kernel's
     `versioned-state $:` block.
   - `cause`: a single bare type name to splice into the `cause $%` union.
-  - `poke-prelude`: Hoon spliced before the `?-  -.u.act` switch.
-    Two shapes are valid: (1) a `?:` short-circuit that returns
-    `[(list effect) _state]` from its true branch, ending the gate
-    early; (2) a `=/  pre-X` binding that scopes through the rest of
-    the gate (including postludes). Multiple preludes stack in
-    priority order. The first short-circuit ends the gate; subsequent
-    preludes (and the switch) do not run. See `phase03_prelude.rs`
-    for a worked example using a `?:` guard.
   - `poke`: arm bodies for the kernel's `?-` switch, with internal `::`
     separators between arms. Bodies start with `::` to separate from
     any pre-existing arm in the user's switch.
-  - `poke-postlude`: Hoon spliced after the `?-` switch. The switch's
-    result is bound to `out=[efx=(list effect) new=_state]`. Bodies
-    typically rebind `out` to transform either field — e.g.
-    `=/  out  out(efx [[%my-effect ~] efx.out])` to prepend an
-    effect, or `=.  efx.out  ...` to mutate via the irregular form.
-    Multiple postludes compose left-to-right in priority order.
-    See `phase03_postlude.rs` for a worked example.
   - `peek`: a single Hoon expression that returns `(unit (unit *))`.
     Returns `~` for non-matching paths. The composer wraps each peek
     body into a chain — see Composition below.

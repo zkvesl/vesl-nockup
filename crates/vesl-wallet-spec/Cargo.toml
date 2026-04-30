@@ -5,10 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "BIP44 5-level wallet layout convention for the Vesl/Nockchain ecosystem. Doc-only crate (placeholder Rust types + SPEC.md)."
-readme = "README.md"
-keywords = ["nockchain", "vesl", "bip44", "wallet"]
+description = "Vesl wallet derivation spec — BIP44 5-level layout, role assignments, doc-only canonical reference."
+readme = "../../README.md"
+keywords = ["nockchain", "vesl", "bip44", "wallet", "hd"]
 categories = ["cryptography"]
 
 [dependencies]
-# Doc-only crate. Will export role constants + DerivationPath types in W4-5.
+# Doc-only crate by design. Role constants + DerivationPath ship in lib.rs;
+# the normative spec is SPEC.md at the crate root.
+

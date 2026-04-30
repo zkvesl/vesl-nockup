@@ -10,9 +10,7 @@ use ibig::UBig;
 use thiserror::Error;
 
 use crate::math::belt::Belt;
-use crate::math::cheetah::{
-    ch_add, ch_neg, ch_scal_big, trunc_g_order, A_GEN, F6_ZERO, G_ORDER,
-};
+use crate::math::cheetah::{ch_add, ch_neg, ch_scal_big, trunc_g_order, A_GEN, F6_ZERO, G_ORDER};
 use crate::math::tip5::hash_varlen;
 
 // Re-export the public-key types so downstream consumers (e.g.,

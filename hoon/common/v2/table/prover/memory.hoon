@@ -553,33 +553,40 @@
       %+  reap  (sub len (lent annotated))
       ^-  [memory-bank-ex pelt]
       [*memory-bank-ex pzero]
-    %-  zing-bpolys
-    %+  turn  build-and-bft
-    |=  [mb=memory-bank-ex inp=pelt]
-    %-  init-bpoly
-    %+  pr  inp
-    %+  pr  size.parent.mb
-    %+  pr  dyck.parent.mb
-    %+  pr  leaf.parent.mb
-    %+  pr  size.left.mb
-    %+  pr  dyck.left.mb
-    %+  pr  leaf.left.mb
-    %+  pr  size.right.mb
-    %+  pr  dyck.right.mb
-    %+  pr  leaf.right.mb
-    %+  pr
-      %-  pinv
-      ;:  pmul
-        (psub size.parent.mb pone)
-        (psub size.left.mb pone)
-        (psub size.right.mb pone)
-      ==
-    ~
+    ~&  ['extend-build-and-bft-len' (lent build-and-bft)]
+    =/  result
+      %-  zing-bpolys
+      %+  turn  build-and-bft
+      |=  [mb=memory-bank-ex inp=pelt]
+      %-  init-bpoly
+      %+  pr  inp
+      %+  pr  size.parent.mb
+      %+  pr  dyck.parent.mb
+      %+  pr  leaf.parent.mb
+      %+  pr  size.left.mb
+      %+  pr  dyck.left.mb
+      %+  pr  leaf.left.mb
+      %+  pr  size.right.mb
+      %+  pr  dyck.right.mb
+      %+  pr  leaf.right.mb
+      %+  pr
+        %-  pinv
+        ;:  pmul
+          (psub size.parent.mb pone)
+          (psub size.left.mb pone)
+          (psub size.right.mb pone)
+        ==
+      ~
+    ~&  %extend-iteration-done
+    result
   ::
   ++  mega-extend
-    ~/  %mega-extend
+    ::  jet hint removed: column layout changed (input-idx added at 14,
+    ::  shifting all subsequent indices by +3).  Old jet produces output
+    ::  with stale header widths, causing weld-exts header mismatch.
     |=  [table=table-mary all-chals=(list belt) return=fock-return]
     ^-  table-mary
+    ~&  %mega-extend-entered
     :-  header
     %-  zing-bpolys
     =/  pr  print-pelt

@@ -19,10 +19,8 @@
 //! The Goldilocks `Belt`, Tip5 sponge hash, F6 sextic extension, and Cheetah
 //! curve primitives are vendored under [`math`] (private to the crate) and
 //! tested for parity with `nockchain-math`. This makes vesl-signing
-//! adoptable without a Nockchain monorepo checkout — see the README and
-//! [10-PHASE-0-NOW.md][plan] for the architectural rationale.
-//!
-//! [plan]: https://github.com/zkvesl/vesl-labs/blob/main/docs/plans/shared-infrastructure/10-PHASE-0-NOW.md
+//! adoptable without a Nockchain monorepo checkout — see the README for
+//! the architectural rationale.
 
 pub mod domain;
 pub mod prelude;
