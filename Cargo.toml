@@ -2,12 +2,11 @@
 resolver = "2"
 # vesl-nockup is self-contained post-sync: the vesl-core crate stack
 # (vesl-core, nock-noun-rs, nockchain-tip5-rs, nockchain-client-rs) and
-# the vesl-identity bundle (vesl-signing now; vesl-wallet-spec at W5,
-# vesl-wallet at W8) live under crates/ as bundled copies refreshed by
-# sync.sh. Workspace members (tools/, test/) path-dep into that local
-# crates/ directory; nockchain is the only legitimate external sibling.
-# Templates are independent projects under templates/, not workspace
-# members.
+# the vesl-wallet workspace (vesl-signing + vesl-wallet-spec + vesl-wallet)
+# live under crates/ as bundled copies refreshed by sync.sh. Workspace
+# members (tools/, test/) path-dep into that local crates/ directory;
+# nockchain is the only legitimate external sibling. Templates are
+# independent projects under templates/, not workspace members.
 members = [
     "tools/graft-inject",
     "test/vesl-test",
@@ -26,7 +25,7 @@ nockchain-math  = { path = "../nockchain/crates/nockchain-math" }
 nockchain-types = { path = "../nockchain/crates/nockchain-types" }
 noun-serde      = { path = "../nockchain/crates/noun-serde" }
 
-# vesl-signing (Phase 0 W3 lift, github.com/zkvesl/vesl-identity) declares
+# vesl-signing (workspace member of github.com/zkvesl/vesl-wallet) declares
 # `ibig = "0.3"` from crates.io. vesl-core uses the nockchain-vendored
 # ibig at ../nockchain/crates/nockvm/rust/ibig — same upstream
 # (tczajka/ibig-rs v0.3.6), but Cargo treats path-dep and crates.io as

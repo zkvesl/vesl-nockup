@@ -10,7 +10,7 @@ use ibig::UBig;
 use thiserror::Error;
 
 use crate::math::belt::Belt;
-use crate::math::cheetah::{ch_add, ch_neg, ch_scal_big, trunc_g_order, A_GEN, F6_ZERO, G_ORDER};
+use crate::math::cheetah::{ch_add, ch_neg, ch_scal_big, A_GEN, F6_ZERO};
 use crate::math::tip5::hash_varlen;
 
 // Re-export the public-key types so downstream consumers (e.g.,
@@ -19,7 +19,12 @@ use crate::math::tip5::hash_varlen;
 // math`. `F6lt` is needed alongside `CheetahPoint` so shim crates
 // can construct points from raw coordinate Belts (matching the
 // `CheetahPoint { x: F6lt(...), y: F6lt(...), inf }` literal form).
-pub use crate::math::cheetah::{CheetahError, CheetahPoint, F6lt};
+//
+// `G_ORDER` and `trunc_g_order` are re-exported so the vesl-wallet HD
+// layer (or any other consumer that derives Cheetah scalars from a
+// hash transcript) can reduce arbitrary digest output into a valid
+// scalar without re-vendoring the curve constants.
+pub use crate::math::cheetah::{trunc_g_order, CheetahError, CheetahPoint, F6lt, G_ORDER};
 
 // ---------------------------------------------------------------------------
 // Errors

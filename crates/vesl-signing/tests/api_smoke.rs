@@ -20,14 +20,35 @@ use vesl_signing::schnorr::{
 };
 
 #[test]
-fn the_five_reserved_separators_are_distinct() {
+fn the_reserved_separators_are_distinct() {
     let dseps = domain_separators::ALL;
-    assert_eq!(dseps.len(), 5);
+    assert_eq!(dseps.len(), 6);
     assert!(dseps.contains(&domain_separators::X402));
     assert!(dseps.contains(&domain_separators::SIWN));
     assert!(dseps.contains(&domain_separators::VESL_INTENT));
     assert!(dseps.contains(&domain_separators::VESL_RECEIPT));
     assert!(dseps.contains(&domain_separators::VESL_AUTHORITY));
+    assert!(dseps.contains(&domain_separators::VESL_HD));
+}
+
+#[test]
+fn vesl_hd_separator_is_isolated_from_signing_separators() {
+    // VESL_HD is reserved for the wallet's BIP32-analog derivation
+    // transcript. It must produce digests distinct from every signing
+    // separator so a derivation transcript can never be confused for a
+    // signed message.
+    let bytes = b"sample-derivation-input";
+    let dhd = tip5_with_domain(domain_separators::VESL_HD, bytes);
+    for tag in domain_separators::ALL {
+        if *tag == domain_separators::VESL_HD {
+            continue;
+        }
+        assert_ne!(
+            dhd,
+            tip5_with_domain(tag, bytes),
+            "VESL_HD digest must differ from {tag}",
+        );
+    }
 }
 
 #[test]

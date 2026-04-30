@@ -1,5 +1,9 @@
 //! `vesl-signing` — Schnorr-over-Cheetah signing, Tip5 domain separators,
-//! SIWN (CAIP-122) for the Vesl/Nockchain identity bundle.
+//! SIWN (CAIP-122). The foundation primitive of the `vesl-wallet`
+//! workspace; usable independently by any consumer that needs
+//! Schnorr-over-Cheetah signing without a wallet (hardware-wallet
+//! vendors, light-clients, oracle services, trust-anchor signed
+//! statements).
 //!
 //! ## API tiers
 //!

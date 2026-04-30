@@ -5,14 +5,33 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Ergonomic Hull-author wallet API bundling vesl-wallet-spec + vesl-signing + pure-Rust HD derivation over Cheetah."
+description = "High-level Hull-author wallet API bundling vesl-wallet-spec + vesl-signing + pure-Rust BIP39 + Cheetah-BIP32-over-Tip5 HD derivation."
 readme = "README.md"
 keywords = ["nockchain", "vesl", "wallet", "schnorr", "bip44"]
 categories = ["cryptography"]
 
 [dependencies]
-# Bundle entry point. Will depend on:
-# - vesl-signing (path = "../vesl-signing")          — canonical signing
-# - vesl-wallet-spec (path = "../vesl-wallet-spec")  — derivation-path constants
-# - bip39 + custom Cheetah-BIP32 layer               — pure-Rust HD
-# Per architectural decision 2026-04-29: NO `nockchain-wallet` dep.
+# Core: signing primitive + curve scalar arithmetic.
+vesl-signing = { path = "../vesl-signing", version = "0.0.0", default-features = false }
+# Reserved BIP44 layout: role constants + DerivationPath type.
+vesl-wallet-spec = { path = "../vesl-wallet-spec", version = "0.0.0" }
+# BIP39 mnemonic <-> seed via PBKDF2-HMAC-SHA512 (the one piece that has
+# to follow the BIP-39 specification verbatim so 12/24-word mnemonics
+# stay portable across implementations).
+bip39 = { workspace = true, features = ["std"] }
+# Big-integer arithmetic shared with vesl-signing (G_ORDER is UBig).
+ibig = { workspace = true }
+# Lazy statics used to memoize the bip39 -> seed PBKDF2 result in the
+# wallet's master-derivation path.
+once_cell = { workspace = true }
+# Zeroize key material on drop.
+zeroize = { workspace = true }
+# Structured error types.
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Integration tests need the full schnorr signing surface (default
+# features include `json`, used by `hash_canonical` in the round-trip
+# tests).
+vesl-signing = { path = "../vesl-signing", version = "0.0.0" }
+serde_json = { workspace = true }

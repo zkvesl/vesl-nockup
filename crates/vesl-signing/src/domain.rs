@@ -59,11 +59,26 @@ pub mod domain_separators {
     /// trust-anchor signed statements (consume vesl-signing for crypto).
     pub const VESL_AUTHORITY: &str = "vesl-authority-v1";
 
+    /// vesl HD derivation separator. Bound to the BIP32-analog tree
+    /// that derives child scalars and chain codes from a BIP39 master
+    /// seed under Tip5 (rather than HMAC-SHA512). Used by the vesl
+    /// wallet's pure-Rust Cheetah-BIP32 layer; segregated from the
+    /// signing-side separators so a derivation transcript can never be
+    /// confused for a signed message.
+    pub const VESL_HD: &str = "vesl-hd-v1";
+
     /// All reserved domain separators known to this codebase. Callers
     /// that want to assert non-collision against every reserved tag
     /// can iterate this slice rather than hard-coding individual
     /// constants.
-    pub const ALL: &[&str] = &[X402, SIWN, VESL_INTENT, VESL_RECEIPT, VESL_AUTHORITY];
+    pub const ALL: &[&str] = &[
+        X402,
+        SIWN,
+        VESL_INTENT,
+        VESL_RECEIPT,
+        VESL_AUTHORITY,
+        VESL_HD,
+    ];
 
     /// Returns `true` iff `s` matches one of the reserved separator
     /// strings in [`ALL`].

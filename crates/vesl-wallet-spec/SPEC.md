@@ -1,7 +1,7 @@
 # vesl-wallet-spec — BIP44 5-level wallet layout
 
 **Status:** v0.1 (held-pre-tag, alongside `vesl-signing` v0.1.0)
-**Crate:** `vesl-wallet-spec` (workspace member of [`vesl-identity`](https://github.com/zkvesl/vesl-identity))
+**Crate:** `vesl-wallet-spec` (workspace member of [`vesl-wallet`](https://github.com/zkvesl/vesl-wallet))
 **Depends on:** [`vesl-signing`](../vesl-signing/) for domain separators
 **Closes:** OD#1 (BIP44 layout for x402 — `role=4` reservation)
 **Open:** OD#11 (SLIP-44 coin_type registration — see §4)
@@ -151,7 +151,7 @@ This spec follows BIP-style amendment conventions:
 - **Non-breaking clarifications** (typo fixes, expanded prose, new examples) ship as in-place edits and are reflected in the crate's `CHANGELOG.md`.
 - **The Rust constant set is append-only.** New roles add new `pub const ROLE_*` constants; no constant value ever changes once shipped.
 
-The crate version (`vesl-wallet-spec` package version in `Cargo.toml`) tracks documentation revisions and any additive Rust-surface changes. The first published version will be `v0.1.0`, minted alongside `vesl-signing` v0.1.0 once end-to-end verification across `vesl-identity` / `vesl-core` / `vesl-nockup` / `x402-nockchain` completes.
+The crate version (`vesl-wallet-spec` package version in `Cargo.toml`) tracks documentation revisions and any additive Rust-surface changes. The first published version will be `v0.1.0`, minted alongside `vesl-signing` v0.1.0 once end-to-end verification across `vesl-wallet` / `vesl-core` / `vesl-nockup` / `x402-nockchain` completes.
 
 ---
 

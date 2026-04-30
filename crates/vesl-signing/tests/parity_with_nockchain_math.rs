@@ -11,21 +11,21 @@
 //!    `nockchain-math` (path-dep to the local nockchain checkout) and
 //!    generates `tests/fixtures/parity_vectors_<sha>.json` containing
 //!    100+ random (scalar, point) and (input, output) pairs.
-//! 2. The fixture is committed into vesl-identity. Filename includes the
-//!    nockchain SHA it was generated against.
+//! 2. The fixture is committed into the vesl-wallet workspace. Filename
+//!    includes the nockchain SHA it was generated against.
 //! 3. This test reads the fixture and runs vesl-signing's vendored math
 //!    against each pair, asserting byte-equality.
 //!
 //! The regen pipeline is deferred to v0.2.0 because (a) `nockchain-math`
 //! requires nightly Rust (`#![feature(cold_path)]`) which contaminates
-//! vesl-identity's stable-pinned toolchain unless the regen example is
-//! built out-of-tree, and (b) the existing inline tests in
+//! the vesl-wallet workspace's stable-pinned toolchain unless the regen
+//! example is built out-of-tree, and (b) the existing inline tests in
 //! `crate::math::cheetah::tests` and `crate::math::tip5::tests` already
 //! exercise the algorithms against known reference values from
 //! nockchain-math's own test suite — drift would surface there first.
 //!
 //! v0.1.0 ships the test file as a placeholder so future work has a clear
-//! landing spot. Tracked in `vesl-identity/CHANGELOG.md` Pending section.
+//! landing spot. Tracked in `CHANGELOG.md` Pending section.
 
 #[test]
 fn parity_pipeline_documented() {
