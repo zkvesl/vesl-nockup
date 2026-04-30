@@ -3,7 +3,7 @@ name = "vesl-test"
 version = "0.1.0"
 edition = "2024"
 description = "Test harness for grafted NockApp kernels — boot, poke, assert effects"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 # vesl-core crates live inside vesl-nockup/crates/ (bundled copy synced
