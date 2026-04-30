@@ -158,8 +158,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 /// Scan `lib_dir` for `*.toml` files and return loaded grafts in priority
 /// order, ties broken by name. Files lacking a `[graft]` table are skipped
-/// silently. Validates that every `after` hint names a discovered graft,
-/// rejects duplicate graft names (AUDIT 2026-04-19 H-11), and rejects
+/// silently. `after` hints are soft: a hint to a graft that isn't in the
+/// discovered set is logged on stderr and ignored (priority-based ordering
+/// still applies); see `cli.md` §"Priority lattice" for the contract.
+/// Rejects duplicate graft names (AUDIT 2026-04-19 H-11), and rejects
 /// graft names that don't match the kebab-case shape the schema documents.
 /// Also validates `[graft.gates]` (C2) and applies any gate selection to
 /// the manifest's poke + imports blocks (EXPANSION Phase 01).
@@ -201,10 +203,9 @@ fn discover_grafts(lib_dir: &Path) -> Result<Vec<Graft>> {
     for g in &grafts {
         for hint in &g.after {
             if !names.contains(hint.as_str()) {
-                bail!(
-                    "graft `{}` declares after = [\"{}\"], but no such graft was discovered",
-                    g.name,
-                    hint
+                eprintln!(
+                    "graft-inject: note — ignoring after-hint to `{}` from `{}` (not in cp set), proceeding with priority order",
+                    hint, g.name
                 );
             }
         }
