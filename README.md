@@ -587,14 +587,14 @@ let pk_bytes = pubkey_canonical_bytes(&pubkey);
 let leaf_root = Mint::new().commit(&[&pk_bytes]); // hull commits to the pubkey
 poke(&mut app, build_settle_register_poke(1, &leaf_root)).await?;
 
-let message: &[u8] = b"\x01\x02\x03";              // belt-sized; see size note below
+let message: &[u8] = b"attest: 32-byte hash fingerprint"; // arbitrary &[u8]
 let digest = schnorr_message_digest_for_data(message);
 let sig    = sign(&sk, &digest)?;
 let slab   = build_settle_note_schnorr_poke(101, 1, &leaf_root, message, &sig, &pubkey);
 poke(&mut app, slab).await?;                       // -> %settle-noted
 ```
 
-`pack_schnorr_signature` and `pubkey_canonical_bytes` produce the exact wire shapes `sig-verify-schnorr` expects (`(chal << 256) | s` and the 97-byte `ser-a-pt:cheetah` encoding); `schnorr_message_digest_for_data` mirrors the gate's `(hash-hashable:tip5 leaf+data)` reduction so the signature you produce verifies.
+`pack_schnorr_signature` and `pubkey_canonical_bytes` produce the exact wire shapes `sig-verify-schnorr` expects (`(chal << 256) | s` and the 97-byte `ser-a-pt:cheetah` encoding); `schnorr_message_digest_for_data` mirrors the gate's `(hash-leaf-digest data)` reduction (chunked tip5 over arbitrary `&[u8]`) so the signature you produce verifies.
 
 The other catalog gates each ship a parallel builder:
 
@@ -621,8 +621,6 @@ let slab = build_settle_note_poke_with_data(note_id, hull, &root, |slab| {
     T(slab, &[a, b])
 });
 ```
-
-**Belt-size constraint on Schnorr `data`.** `sig-verify-schnorr` reduces its message digest through `hash-hashable:tip5 leaf+data`, which asserts every leaf belt is `< Goldilocks prime` (≈ 2^64). For a flat-atom `data`, that means **at most 7 bytes**. Larger payloads must be condensed externally (e.g., to a 64-bit fingerprint) before signing. `schnorr_message_digest_for_data` panics on oversized input rather than producing a digest the gate cannot reproduce.
 
 ## Testing with `vesl-test`
 
