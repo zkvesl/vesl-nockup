@@ -12,11 +12,12 @@
 
 mod fixtures;
 
-use anyhow::{anyhow, Result};
-use nock_noun_rs::{atom_from_u64, make_tag_in};
-use nockapp::noun::slab::NounSlab;
+use anyhow::Result;
+use nock_noun_rs::{atom_from_u64, make_tag_in, NounSlab};
 use nockvm::noun::{D, T};
-use vesl_core::{build_rbac_grant_poke, build_rbac_revoke_poke};
+use vesl_core::{
+    build_rbac_grant_poke, build_rbac_revoke_poke, peek_loobean, unwrap_triple_unit_atom,
+};
 use vesl_test::GraftTestHarness;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -106,7 +107,8 @@ async fn rbac_grant_revoke_auto_clear_paths() -> Result<()> {
 /// Decode `[%rbac-perm-count pubkey=@ ~]` as `u64`.
 async fn perm_count(harness: &mut GraftTestHarness, pubkey: u64) -> Result<u64> {
     let path = build_pubkey_peek_path("rbac-perm-count", pubkey);
-    let bytes = unwrap_keyed_atom(harness, path).await?.unwrap_or_default();
+    let result = harness.peek_raw(path).await?;
+    let bytes = unwrap_triple_unit_atom(&result).unwrap_or_default();
     let mut buf = [0u8; 8];
     for (i, byte) in bytes.iter().take(8).enumerate() {
         buf[i] = *byte;
@@ -115,20 +117,10 @@ async fn perm_count(harness: &mut GraftTestHarness, pubkey: u64) -> Result<u64> 
 }
 
 /// Decode `[%rbac-has-perm pubkey=@ perm=@t ~]` as a loobean.
-///
-/// Hoon's `?` is `0` for `%.y` (true) / `1` for `%.n` (false). After
-/// the canonical trim_trailing_zeros pass, true round-trips as an
-/// empty byte vec (atom 0), false as `[1]`.
 async fn has_perm(harness: &mut GraftTestHarness, pubkey: u64, perm: &str) -> Result<bool> {
     let path = build_pubkey_perm_peek_path("rbac-has-perm", pubkey, perm);
-    let bytes = unwrap_keyed_atom(harness, path).await?.unwrap_or_default();
-    if bytes.is_empty() {
-        Ok(true)
-    } else if bytes == [1] {
-        Ok(false)
-    } else {
-        Err(anyhow!("unexpected has-perm bytes: {bytes:?}"))
-    }
+    let result = harness.peek_raw(path).await?;
+    Ok(peek_loobean(&result).unwrap_or(false))
 }
 
 fn build_pubkey_peek_path(tag: &str, pubkey: u64) -> NounSlab {
@@ -148,45 +140,4 @@ fn build_pubkey_perm_peek_path(tag: &str, pubkey: u64, perm: &str) -> NounSlab {
     let path = T(&mut slab, &[tag_atom, pk_atom, perm_atom, D(0)]);
     slab.set_root(path);
     slab
-}
-
-/// Mirror of `fixtures::unwrap_triple_unit_atom` for paths that
-/// the fixtures helpers don't have a one-key/zero-key shape for.
-async fn unwrap_keyed_atom(
-    harness: &mut GraftTestHarness,
-    path: NounSlab,
-) -> Result<Option<Vec<u8>>> {
-    let res = harness.peek_raw(path).await?;
-    let noun = unsafe { *res.root() };
-
-    let outer = noun
-        .as_cell()
-        .map_err(|e| anyhow!("peek outer not a cell: {e:?}"))?;
-    let inner_unit = outer.tail();
-    let inner_cell = inner_unit
-        .as_cell()
-        .map_err(|e| anyhow!("peek inner-unit not a cell: {e:?}"))?;
-    let maybe_value = inner_cell.tail();
-
-    if let Ok(atom) = maybe_value.as_atom() {
-        let bytes = atom.as_ne_bytes();
-        if bytes.iter().all(|&b| b == 0) {
-            return Ok(None);
-        }
-        return Ok(Some(trim_trailing_zeros(bytes)));
-    }
-
-    let value_cell = maybe_value
-        .as_cell()
-        .map_err(|e| anyhow!("maybe-value not a cell: {e:?}"))?;
-    let inner_atom = value_cell
-        .tail()
-        .as_atom()
-        .map_err(|e| anyhow!("inner not an atom: {e:?}"))?;
-    Ok(Some(trim_trailing_zeros(inner_atom.as_ne_bytes())))
-}
-
-fn trim_trailing_zeros(bytes: &[u8]) -> Vec<u8> {
-    let len = bytes.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
-    bytes[..len].to_vec()
 }

@@ -12,12 +12,12 @@
 
 mod fixtures;
 
-use anyhow::{anyhow, Result};
-use nock_noun_rs::{atom_from_u64, jam_to_bytes, make_atom_in, make_tag_in, new_stack};
-use nockapp::noun::slab::NounSlab;
+use anyhow::Result;
+use nock_noun_rs::{atom_from_u64, jam_to_bytes, make_atom_in, make_tag_in, new_stack, NounSlab};
 use nockvm::noun::{D, T};
 use vesl_core::{
     build_registry_del_poke, build_registry_put_poke, build_registry_update_poke,
+    unwrap_triple_unit_atom,
 };
 use vesl_test::GraftTestHarness;
 
@@ -158,34 +158,8 @@ async fn peek_entry(
     key: u64,
 ) -> Result<Option<Vec<u8>>> {
     let path = build_key_peek_path("registry-entry", key);
-    let res = harness.peek_raw(path).await?;
-    let noun = unsafe { *res.root() };
-
-    let outer = noun
-        .as_cell()
-        .map_err(|e| anyhow!("peek outer not a cell: {e:?}"))?;
-    let inner_unit = outer.tail();
-    let inner_cell = inner_unit
-        .as_cell()
-        .map_err(|e| anyhow!("peek inner-unit not a cell: {e:?}"))?;
-    let maybe_value = inner_cell.tail();
-
-    if let Ok(atom) = maybe_value.as_atom() {
-        let bytes = atom.as_ne_bytes();
-        if bytes.iter().all(|&b| b == 0) {
-            return Ok(None);
-        }
-        return Ok(Some(trim_trailing_zeros(bytes)));
-    }
-
-    let value_cell = maybe_value
-        .as_cell()
-        .map_err(|e| anyhow!("maybe-value not a cell: {e:?}"))?;
-    let inner_atom = value_cell
-        .tail()
-        .as_atom()
-        .map_err(|e| anyhow!("inner not an atom: {e:?}"))?;
-    Ok(Some(trim_trailing_zeros(inner_atom.as_ne_bytes())))
+    let result = harness.peek_raw(path).await?;
+    Ok(unwrap_triple_unit_atom(&result))
 }
 
 fn build_key_peek_path(tag: &str, key: u64) -> NounSlab {
@@ -195,9 +169,4 @@ fn build_key_peek_path(tag: &str, key: u64) -> NounSlab {
     let path = T(&mut slab, &[tag_atom, key_atom, D(0)]);
     slab.set_root(path);
     slab
-}
-
-fn trim_trailing_zeros(bytes: &[u8]) -> Vec<u8> {
-    let len = bytes.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
-    bytes[..len].to_vec()
 }
