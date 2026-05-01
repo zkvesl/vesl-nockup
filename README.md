@@ -375,6 +375,8 @@ poke(&mut app, build_queue_clear_poke()).await?;
 
 Peek path is `[%queue-len ~]` — total pending jobs. `%queue-push` is the first state-graft poke that cue's caller-supplied bytes inside its body, so the kernel wraps the decode in `mule`: malformed jam surfaces as `%queue-error` rather than crashing the kernel (Safety Contract C1).
 
+When the body originates as an in-process noun, `build_queue_push_poke_from_noun(slab)` jams internally and skips the manual jam dance. For pipelines that forward bytes pulled from a cue-emitting source (e.g., `%queue-popped` body) into another cue-consuming graft (`%batch-add`, `%log-append`, `%registry-put`), pair the byte-taking builder with `vesl_core::rejam_atom` — the popped bytes are atom representation, not jam, and feeding them straight in fails (or hangs `cue` on pathological back-refs). See the "Cross-graft pipelines" subsection of `vesl-core`'s `reference/sdk.md`.
+
 **`rbac-graft` (priority 80)** — pubkey-keyed permission table. Causes carry perms as `(list @t)` so Rust callers hand a flat slice of perm names; the graft `silt`s into a `(set @t)` internally:
 
 ```rust
