@@ -15,8 +15,8 @@
 //! two synthetic manifests:
 //!   - alpha-graft (priority 50, no `after`)
 //!   - beta-graft  (priority 60, `after = ["nonexistent-graft"]`)
-//! Asserts: exit 0, stderr carries the ignore note, stdout JSON lists
-//! both grafts in priority order (alpha before beta).
+//!
+//! Asserts: exit 0, stderr carries the ignore note, stdout JSON lists both grafts in priority order (alpha before beta).
 
 use std::fs;
 use std::path::PathBuf;

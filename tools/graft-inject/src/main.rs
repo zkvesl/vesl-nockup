@@ -2011,7 +2011,7 @@ body     = """
         };
         let contaminant = synthetic_graft("contaminant", 20);
 
-        let (after_poison, _) = inject(BARE_SCAFFOLD, &[poison.clone()]).unwrap();
+        let (after_poison, _) = inject(BARE_SCAFFOLD, std::slice::from_ref(&poison)).unwrap();
         // Pre-condition: poison's body literally contains the contaminant sentinel.
         assert!(after_poison.contains("%contaminant-do"));
 
@@ -2109,7 +2109,7 @@ body     = """
             gates: None,
             sha256: String::new(),
         };
-        let (first, _) = inject(BARE_SCAFFOLD, &[nested.clone()]).unwrap();
+        let (first, _) = inject(BARE_SCAFFOLD, std::slice::from_ref(&nested)).unwrap();
         assert!(first.lines().any(|l| l.trim() == "=="), "inner == present");
         let (second, report) = inject(&first, &[nested]).unwrap();
         assert_eq!(first, second, "inner == must not re-trigger inject");
