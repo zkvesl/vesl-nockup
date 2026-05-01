@@ -567,6 +567,63 @@ Inside each `%settle-*` arm, replace the gate body:
 
 `verify-gate` is `$-([note-id=@ data=* expected-root=@] ?)`. `note-id` is bound so domain gates can enforce `note-id == deterministic-fn(data)`, closing the pre-commit race (audit H-03). `data` is whatever your Rust side jammed into the `payload` atom; your gate casts it (`;;(manifest data)`, `;;(my-intent data)`, etc.) and returns a loobean. The caller decides what the data shape is — the graft doesn't care. The installed three-arg signature matches `hoon/lib/settle-graft.toml:34`.
 
+### Drive a catalog gate from Rust
+
+When your manifest selects one of the Tier 1a catalog gates via `[graft.gates]` (`sig-verify-schnorr`, `sig-verify-ed25519`, `manifest-verify`, `set-membership-verify`, `bounded-value-verify`), the gate's `data` field is no longer a flat byte slice — it's a structured cell. `vesl-core` ships per-gate poke builders that thread the right cell shape; pick the one matching your gate. Worked Schnorr example, end-to-end:
+
+```rust
+use vesl_core::{
+    Mint, build_settle_register_poke, build_settle_note_schnorr_poke,
+    derive_pubkey, sign,
+    pubkey_canonical_bytes, pack_schnorr_signature, schnorr_message_digest_for_data,
+};
+use nockchain_math::belt::Belt;
+
+let mut sk = [Belt(0); 8];
+sk[0] = Belt(0xabad_f00d);                       // your real key, not this fixture
+let pubkey = derive_pubkey(&sk);
+
+let pk_bytes = pubkey_canonical_bytes(&pubkey);
+let leaf_root = Mint::new().commit(&[&pk_bytes]); // hull commits to the pubkey
+poke(&mut app, build_settle_register_poke(1, &leaf_root)).await?;
+
+let message: &[u8] = b"\x01\x02\x03";              // belt-sized; see size note below
+let digest = schnorr_message_digest_for_data(message);
+let sig    = sign(&sk, &digest)?;
+let slab   = build_settle_note_schnorr_poke(101, 1, &leaf_root, message, &sig, &pubkey);
+poke(&mut app, slab).await?;                       // -> %settle-noted
+```
+
+`pack_schnorr_signature` and `pubkey_canonical_bytes` produce the exact wire shapes `sig-verify-schnorr` expects (`(chal << 256) | s` and the 97-byte `ser-a-pt:cheetah` encoding); `schnorr_message_digest_for_data` mirrors the gate's `(hash-hashable:tip5 leaf+data)` reduction so the signature you produce verifies.
+
+The other catalog gates each ship a parallel builder:
+
+```rust
+use vesl_core::{
+    build_settle_note_ed25519_poke,
+    build_settle_note_membership_poke,
+    build_settle_note_bounded_poke,
+    build_settle_note_manifest_poke,
+};
+```
+
+For a future gate not yet covered by a convenience builder, drop down to the closure escape hatch:
+
+```rust
+use vesl_core::{build_settle_note_poke_with_data, NounSlab};
+use nock_noun_rs::make_atom_in;
+use nockvm::noun::T;
+
+let slab = build_settle_note_poke_with_data(note_id, hull, &root, |slab| {
+    // Construct whatever cell shape your gate's ;; cast expects.
+    let a = make_atom_in(slab, b"...");
+    let b = make_atom_in(slab, b"...");
+    T(slab, &[a, b])
+});
+```
+
+**Belt-size constraint on Schnorr `data`.** `sig-verify-schnorr` reduces its message digest through `hash-hashable:tip5 leaf+data`, which asserts every leaf belt is `< Goldilocks prime` (≈ 2^64). For a flat-atom `data`, that means **at most 7 bytes**. Larger payloads must be condensed externally (e.g., to a 64-bit fingerprint) before signing. `schnorr_message_digest_for_data` panics on oversized input rather than producing a digest the gate cannot reproduce.
+
 ## Testing with `vesl-test`
 
 Add to `[dev-dependencies]`:
