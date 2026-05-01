@@ -75,7 +75,7 @@ pub fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
 /// `hoonc` must be on `PATH` — same pre-req as every other build
 /// route in this repo.
 pub fn compose_and_compile(scratch_subdir: &str, grafts: &[&str]) -> Result<PathBuf> {
-    compose_and_compile_with_extras(scratch_subdir, grafts, &[])
+    compose_and_compile_inner(scratch_subdir, grafts, &[], &[])
 }
 
 /// Synthetic graft fixture inlined into a test's scratch hoon/lib/.
@@ -92,6 +92,20 @@ pub struct SyntheticGraft<'a> {
     pub toml: &'a str,
 }
 
+/// Replacement TOML manifest for an existing graft already in the
+/// scratch hoon/lib/.
+///
+/// Used by tests that need to inject manifest-level toggles
+/// (e.g. `[graft.gates]`) into a stock manifest without modifying
+/// the shared `vesl-nockup/hoon/lib/` tree. The override writes
+/// `<name>.toml` after `copy_dir_contents` runs, so the canonical
+/// file is overwritten rather than duplicated. Only the TOML is
+/// replaced — the matching `<name>.hoon` library stays as-is.
+pub struct ManifestOverride<'a> {
+    pub name: &'a str,
+    pub toml: String,
+}
+
 /// Compose a graft-injected kernel with extra synthetic grafts written
 /// into the scratch's `hoon/lib/`, then hoonc-compile it.
 ///
@@ -104,6 +118,30 @@ pub fn compose_and_compile_with_extras(
     scratch_subdir: &str,
     grafts: &[&str],
     extras: &[SyntheticGraft<'_>],
+) -> Result<PathBuf> {
+    compose_and_compile_inner(scratch_subdir, grafts, extras, &[])
+}
+
+/// Compose a graft-injected kernel after replacing one or more
+/// canonical manifest TOMLs in the scratch hoon/lib/.
+///
+/// Use this when a test needs to exercise a manifest-level toggle
+/// — e.g. `[graft.gates] gate = "..."` on settle-graft — without
+/// committing the toggle to `vesl-nockup/hoon/lib/` (which would
+/// affect every other test that consumes the same stock manifest).
+pub fn compose_and_compile_with_manifest_overrides(
+    scratch_subdir: &str,
+    grafts: &[&str],
+    overrides: &[ManifestOverride<'_>],
+) -> Result<PathBuf> {
+    compose_and_compile_inner(scratch_subdir, grafts, &[], overrides)
+}
+
+fn compose_and_compile_inner(
+    scratch_subdir: &str,
+    grafts: &[&str],
+    extras: &[SyntheticGraft<'_>],
+    overrides: &[ManifestOverride<'_>],
 ) -> Result<PathBuf> {
     let repo_root = repo_root();
     let scratch = repo_root.join("target").join(scratch_subdir);
@@ -145,6 +183,13 @@ pub fn compose_and_compile_with_extras(
             .with_context(|| format!("writing synthetic {}.hoon", extra.name))?;
         fs::write(hoon_lib.join(format!("{}.toml", extra.name)), extra.toml)
             .with_context(|| format!("writing synthetic {}.toml", extra.name))?;
+    }
+
+    // Manifest overrides land last so they win over any cp'd or
+    // synthetic file with the same name.
+    for ov in overrides {
+        fs::write(hoon_lib.join(format!("{}.toml", ov.name)), &ov.toml)
+            .with_context(|| format!("writing manifest override {}.toml", ov.name))?;
     }
 
     let graft_inject = graft_inject_bin();

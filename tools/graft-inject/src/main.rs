@@ -41,7 +41,7 @@ struct Graft {
     /// Optional gate selection from `[graft.gates]`. EXPANSION Phase 01:
     /// when set, the manifest's poke body has its default hash-gate
     /// constructions rewritten to call into `vesl-gates`, and the imports
-    /// block gains a `/+  *vesl-gates` line. See `apply_gate_selection`.
+    /// block gains a `/+  vesl-gates` line. See `apply_gate_selection`.
     #[serde(default)]
     gates: Option<GateSelection>,
     /// Hex sha256 of the raw TOML bytes. Populated by `load_manifest` at
@@ -273,8 +273,14 @@ const DEFAULT_HASH_GATE_BLOCK: &str = "\
 
 /// Rewrite a graft's poke body and imports body when `[graft.gates]` is
 /// set. The poke body's default hash-gate blocks are replaced with calls
-/// into `vesl-gates`; the imports body gains a `/+  *vesl-gates` line if
+/// into `vesl-gates`; the imports body gains a `/+  vesl-gates` line if
 /// it isn't already there.
+///
+/// The import is non-splat (no `*`) on purpose: the rewritten body uses
+/// the qualified `name:vesl-gates` form, which requires `vesl-gates` to
+/// be a namespace identifier. A splat-import would import the arms into
+/// the current scope as bare names AND drop the `vesl-gates` identifier,
+/// so the qualified body would fail to resolve (`find . vesl-gates`).
 ///
 /// `gate = "name"` produces a single-line direct binding:
 ///
@@ -326,12 +332,13 @@ fn apply_gate_selection(g: &mut Graft, path: &Path) -> Result<()> {
     poke.body = poke.body.replace(DEFAULT_HASH_GATE_BLOCK, &new_block);
 
     if let Some(imports) = g.blocks.imports.as_mut() {
-        if !imports.body.lines().any(|l| l.trim() == "/+  *vesl-gates") {
+        if !imports.body.lines().any(|l| l.trim() == "/+  vesl-gates") {
             // Prepend so the gate import is visible at the top of the
             // composed imports block — matches the pattern in
             // settle-graft.toml where `*settle-graft` precedes
-            // `*vesl-merkle`.
-            imports.body = format!("/+  *vesl-gates\n{}", imports.body);
+            // `*vesl-merkle`. Non-splat: see the apply_gate_selection
+            // rustdoc above for why.
+            imports.body = format!("/+  vesl-gates\n{}", imports.body);
         }
     }
     Ok(())
@@ -2176,8 +2183,8 @@ body     = """
             "expected 3 gate bindings (register/verify/note), got {occurrences}"
         );
         assert!(
-            imports.lines().any(|l| l.trim() == "/+  *vesl-gates"),
-            "imports body must gain /+  *vesl-gates"
+            imports.lines().any(|l| l.trim() == "/+  vesl-gates"),
+            "imports body must gain /+  vesl-gates"
         );
     }
 
@@ -2256,7 +2263,7 @@ body     = """
         );
         let imports = g.blocks.imports.as_ref().unwrap().body.clone();
         assert!(
-            !imports.contains("/+  *vesl-gates"),
+            !imports.contains("/+  vesl-gates"),
             "vesl-gates import must NOT land for a no-op gates table"
         );
     }
@@ -2264,7 +2271,7 @@ body     = """
     #[test]
     fn gate_selection_idempotent_imports() {
         // Running apply_gate_selection on a graft that already has
-        // `/+  *vesl-gates` in imports must not duplicate the line.
+        // `/+  vesl-gates` in imports must not duplicate the line.
         let g1 = settle_graft_with_gates(
             "[graft.gates]\ngate = \"set-membership-verify\"",
         )
@@ -2272,7 +2279,7 @@ body     = """
         let imports = g1.blocks.imports.as_ref().unwrap().body.clone();
         let count = imports
             .lines()
-            .filter(|l| l.trim() == "/+  *vesl-gates")
+            .filter(|l| l.trim() == "/+  vesl-gates")
             .count();
         assert_eq!(count, 1, "vesl-gates import must appear exactly once");
     }
