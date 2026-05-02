@@ -412,6 +412,8 @@ poke(&mut app, build_registry_del_poke(key_id)).await?;
 
 Peek path is `[%registry-entry key=@]`. Registry has the heaviest C1 surface in Phase 02 — both put and update cue caller-supplied bytes inside their poke arms under a `mule` guard, so malformed jam surfaces as `%registry-error` rather than crashing the kernel. `kv-graft` is the loose counterpart (overwrite-on-set, noop-on-missing-delete, atom values); pick by stance.
 
+> **Pre-jam payloads in custom domain arms.** If you delegate to `%registry-put` from your own kernel arm, jam the payload first (`(jam payload)` in Hoon, or pre-jam on the Rust side via `vesl_core::jam_to_bytes`). Registry's `mule (cue payload)` reads the bytes as jam — passing a raw atom may emit `%registry-stored` with garbage state OR `%registry-error 'cue failure'`, depending on what bits the atom happens to contain. The same constraint applies at the queue-pop → batch-add cross-graft seam (use `vesl_core::rejam_atom` between the two pokes).
+
 ## Adding vesl to an existing nockup project
 
 If you already have a working nockapp, skip Step 1. The rest applies, with one extra step: you have an `app.hoon` already — you need to *annotate* it with markers rather than copy the template over it.
@@ -635,6 +637,21 @@ let slab = build_settle_note_poke_with_data(note_id, hull, &root, |slab| {
     T(slab, &[a, b])
 });
 ```
+
+### Operator triage: distinguishing denial paths
+
+A write that doesn't land emits `Ok(vec![])` from `app.poke().await?` — and that surface is shared across four distinct denial paths. Picking the right remediation requires reading more than the effect list.
+
+| Denial path | Where it fires | Effect list | Stderr | Recovery |
+|---|---|---|---|---|
+| Gate clean-deny | Hoon `?>` deterministic Exit (e.g. `set-membership-verify` returns `%.n`, `sig-verify-schnorr` finds an invalid signature) | `vec![]` | `mule`-trace dump (~30 lines) starting at `<gate-graft>.hoon::[…]` | The cause was rejected by policy; user must re-submit with valid input. |
+| Gate crash | Gate panicked inside `mule`; settle-graft wraps the crash | `[%settle-error msg='settle-graft: verify gate crashed']` | (no extra) | The gate has a bug; investigate the gate body or the data shape. |
+| Pre-gate failure | Replay (note-id reused) or root mismatch | `[%settle-error msg='<reason>']` | (silent) | The poke was rejected before reaching the gate; check note-id uniqueness or registered-root match. |
+| Rbac denial | Orchestrator-side: `[%rbac-has-perm pubkey perm ~]` peek returned `false`; the poke was never sent | `vec![]` (driver-side) | (silent) | The acting pubkey lacks the required perm; grant first or reject the request. |
+
+**Driver-side discipline:** log every rbac decision before the poke split so post-hoc audit shows which layer denied. Stderr alone distinguishes gate-deny from rbac-deny; only the driver knows whether the poke was sent at all.
+
+**Multi-graft caveat (Profile J observation).** In kernels with ≥10 grafts, the `mule`-trace dump on gate clean-deny can be large enough to terminate the driver process after the poke returns. Treat gate clean-deny as TERMINAL for the kernel session in multi-graft deployments — restart the kernel rather than continuing.
 
 ## Testing with `vesl-test`
 
