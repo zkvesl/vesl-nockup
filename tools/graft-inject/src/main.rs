@@ -930,6 +930,7 @@ impl<'a> GraftSummary<'a> {
 }
 
 fn main() -> ExitCode {
+    warn_if_stale();
     let cli = Cli::parse();
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
@@ -938,6 +939,55 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// One-line stderr warning when the binary's source SHA (captured at
+/// build time by `build.rs`) doesn't match the latest commit touching
+/// `src/` in the manifest dir. Catches the dogfood case where a global
+/// `cargo install --path tools/graft-inject` ran weeks ago and has
+/// fallen behind source.
+///
+/// Silent when:
+/// - The build SHA is `unknown` (no git context at build time).
+/// - The manifest dir from build time no longer exists on this
+///   machine (binary was moved, or the source checkout was deleted).
+/// - `git` isn't on PATH or `git log` fails.
+/// - The current source SHA matches the build SHA (binary is current).
+///
+/// Suppress entirely with `GRAFT_INJECT_NO_STALENESS_WARNING=1` for
+/// CI runs that don't want the noise.
+fn warn_if_stale() {
+    if std::env::var("GRAFT_INJECT_NO_STALENESS_WARNING").is_ok() {
+        return;
+    }
+    let build_sha = env!("GRAFT_INJECT_BUILD_SRC_SHA");
+    if build_sha == "unknown" {
+        return;
+    }
+    let manifest_dir = env!("GRAFT_INJECT_MANIFEST_DIR");
+    if !Path::new(manifest_dir).exists() {
+        return;
+    }
+    let Ok(output) = std::process::Command::new("git")
+        .args(["-C", manifest_dir, "log", "-1", "--format=%H", "--", "src"])
+        .output()
+    else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    let current_sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if current_sha.is_empty() || current_sha == build_sha {
+        return;
+    }
+    let short = |s: &str| s.chars().take(8).collect::<String>();
+    eprintln!(
+        "graft-inject: warning — binary built from {} but tools/graft-inject/src/ \
+         is now at {}. Rebuild: cargo install --path tools/graft-inject --force",
+        short(build_sha),
+        short(&current_sha),
+    );
 }
 
 fn run(cli: Cli) -> Result<()> {
