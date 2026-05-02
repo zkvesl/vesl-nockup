@@ -12,6 +12,8 @@
 
 mod fixtures;
 
+use std::time::{Duration, Instant};
+
 use anyhow::Result;
 use nock_noun_rs::{atom_from_u64, make_tag_in, NounSlab};
 use nockvm::noun::{D, T};
@@ -19,6 +21,12 @@ use vesl_core::{
     build_rbac_grant_poke, build_rbac_revoke_poke, peek_loobean, unwrap_triple_unit_atom,
 };
 use vesl_test::GraftTestHarness;
+
+// Regression fence for R3/02 §B: pre-fix, %rbac-revoke's `(~(int in asked)
+// held)` allocated unboundedly under interpretation and hung the kernel
+// >5 min. The skim-based fix lands each revoke in single-digit ms — a 2 s
+// ceiling catches any future regression long before the friction-log threshold.
+const REVOKE_BUDGET: Duration = Duration::from_secs(2);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rbac_grant_revoke_auto_clear_paths() -> Result<()> {
@@ -59,8 +67,15 @@ async fn rbac_grant_revoke_auto_clear_paths() -> Result<()> {
     assert_eq!(perm_count(&mut harness, 1).await?, 3);
     assert!(has_perm(&mut harness, 1, "audit").await?);
 
-    // Revoke {write}: count drops to 2.
+    // Revoke {write}: count drops to 2. Time the poke — pre-R3/02 §B fix this
+    // was the int:in livelock site (asked ∩ held non-empty).
+    let revoke_start = Instant::now();
     let tags = harness.poke_slab(build_rbac_revoke_poke(1, &["write"])).await?;
+    let revoke_elapsed = revoke_start.elapsed();
+    assert!(
+        revoke_elapsed < REVOKE_BUDGET,
+        "revoke (intersect path) took {revoke_elapsed:?}; budget {REVOKE_BUDGET:?} (R3/02 §B regression?)",
+    );
     assert!(
         tags.iter().any(|t| t == "rbac-revoked"),
         "expected %rbac-revoked; got {tags:?}",
@@ -69,7 +84,13 @@ async fn rbac_grant_revoke_auto_clear_paths() -> Result<()> {
     assert!(!has_perm(&mut harness, 1, "write").await?);
 
     // Revoke an unheld perm — must noop, not error.
+    let revoke_start = Instant::now();
     let tags = harness.poke_slab(build_rbac_revoke_poke(1, &["never-held"])).await?;
+    let revoke_elapsed = revoke_start.elapsed();
+    assert!(
+        revoke_elapsed < REVOKE_BUDGET,
+        "revoke-unheld took {revoke_elapsed:?}; budget {REVOKE_BUDGET:?} (R3/02 §B regression?)",
+    );
     assert!(
         tags.iter().any(|t| t == "rbac-revoked"),
         "revoke-unheld must emit %rbac-revoked (noop), not %rbac-error; got {tags:?}",
@@ -80,10 +101,18 @@ async fn rbac_grant_revoke_auto_clear_paths() -> Result<()> {
     );
     assert_eq!(perm_count(&mut harness, 1).await?, 2);
 
-    // Revoke remaining perms: pubkey must auto-clear from roles map.
+    // Revoke remaining perms: pubkey must auto-clear from roles map. This is
+    // the empty-remaining → del:by branch — also fenced for timing per §B
+    // hypothesis (A) (del:by interpreted-allocation canary).
+    let revoke_start = Instant::now();
     let _ = harness
         .poke_slab(build_rbac_revoke_poke(1, &["read", "audit"]))
         .await?;
+    let revoke_elapsed = revoke_start.elapsed();
+    assert!(
+        revoke_elapsed < REVOKE_BUDGET,
+        "revoke (auto-clear path) took {revoke_elapsed:?}; budget {REVOKE_BUDGET:?} (R3/02 §B regression?)",
+    );
     assert_eq!(
         perm_count(&mut harness, 1).await?,
         0,
