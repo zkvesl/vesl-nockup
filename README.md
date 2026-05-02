@@ -595,6 +595,22 @@ poke(&mut app, slab).await?;                       // -> %settle-noted
 
 `pack_schnorr_signature` and `pubkey_canonical_bytes` produce the exact wire shapes `sig-verify-schnorr` expects (`(chal << 256) | s` and the 97-byte `ser-a-pt:cheetah` encoding); `schnorr_message_digest_for_data` mirrors the gate's `(hash-leaf-digest data)` reduction (chunked tip5 over arbitrary `&[u8]`) so the signature you produce verifies.
 
+**Register the cheetah curve jets, or each verify takes seconds-to-minutes.** `sig-verify-schnorr` calls `verify:affine:schnorr:cheetah`, whose two 255-bit scalar multiplications are jetted in `zkvm-jetpack` but only run as native Rust if you wire the jet table into `boot::setup`. With Step 6's `&[]` hot-state, the same poke spends ~17 s per single-signature verify under the Hoon interpreter (and grew unboundedly for the early-2026 `>5 min` friction-log scenario); with the jets registered the same poke returns in ~13 ms (R3/02 §A measurement, May 2026). Two edits to make schnorr usable:
+
+```toml
+# Step 1 Cargo.toml — add to [dependencies]
+zkvm-jetpack = { path = "../../nockchain/crates/zkvm-jetpack" }
+```
+
+```rust
+// Step 6 src/main.rs — replace boot::setup's `&[]` argument
+use zkvm_jetpack::hot::produce_prover_hot_state;
+let mut app: NockApp =
+    boot::setup(&kernel, cli, &produce_prover_hot_state(), "my-app", None).await?;
+```
+
+The other catalog gates (`set-membership-verify`, `manifest-verify`, `bounded-value-verify`) verify in milliseconds without jets — only the cheetah-curve gates (`sig-verify-schnorr` today, ed25519 if/when its jet ships) need this.
+
 The other catalog gates each ship a parallel builder:
 
 ```rust
