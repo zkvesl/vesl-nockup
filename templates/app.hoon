@@ -61,9 +61,7 @@
     =/  act  ((soft cause) cause.input.ovum)
     ?~  act
       ~>  %slog.[3 (crip "invalid cause {<cause.input.ovum>}")]
-      :_  state
-      ^-  (list effect)
-      ~[[%effect 'Invalid cause format']]
+      [~ state]
     ::  nockup:poke-prelude
     =/  out=[efx=(list effect) new=_state]
       ?-    -.u.act
