@@ -44,6 +44,14 @@ struct Graft {
     /// block gains a `/+  vesl-gates` line. See `apply_gate_selection`.
     #[serde(default)]
     gates: Option<GateSelection>,
+    /// Optional `[graft.types]` table. Phase 03f Lever 1 (typed effect
+    /// union codegen): names the per-graft `effect` and `cause` types
+    /// so `graft-inject` can emit a typed `+$ effect $%(...)` union at
+    /// the `nockup:effect-union` marker. `cause` is read forward-compat
+    /// for Lever 3 (cause destructuring); current codegen reads only
+    /// `effect`. Manifests without this table parse with `types == None`.
+    #[serde(default)]
+    types: Option<GraftTypes>,
     /// Hex sha256 of the raw TOML bytes. Populated by `load_manifest` at
     /// discovery time so the composer can surface per-manifest digests
     /// in the preview report and `--list --json` output (AUDIT 2026-04-19
@@ -61,6 +69,21 @@ struct GateSelection {
     gate: Option<String>,
     #[serde(default, rename = "gate-chain")]
     gate_chain: Option<Vec<String>>,
+}
+
+/// `[graft.types]` declarations. Phase 03f Lever 1: lets the codegen
+/// pass emit a typed effect union without parsing Hoon. `effect` is the
+/// bare type name the graft exports for its effect variant (e.g.
+/// `settle-effect`); the codegen splats it into the `+$ effect $%(...)`
+/// union at the `nockup:effect-union` marker. `cause` is parsed for
+/// forward-compat with Lever 3 (cause destructuring) and currently
+/// unused.
+#[derive(Debug, Clone, Deserialize)]
+struct GraftTypes {
+    #[serde(default)]
+    effect: Option<String>,
+    #[serde(default)]
+    cause: Option<String>,
 }
 
 /// Allowlist of catalog gates currently shipped in `vesl-gates.hoon`.
@@ -185,6 +208,7 @@ fn discover_grafts(lib_dir: &Path) -> Result<Vec<Graft>> {
                 }
                 validate_gate_selection(&g, &path)?;
                 apply_gate_selection(&mut g, &path)?;
+                validate_types(&g, &path)?;
                 if let Some(prev) = seen.get(&g.name) {
                     bail!(
                         "duplicate graft name `{}` in {} and {}",
@@ -239,6 +263,33 @@ fn validate_gate_selection(g: &Graft, path: &Path) -> Result<()> {
         }
         for name in chain {
             validate_gate_name(name, path, "gate-chain entry")?;
+        }
+    }
+    Ok(())
+}
+
+/// Validate `[graft.types]`: each declared name must be a kebab-case
+/// identifier, since the codegen pass splices the bare name directly
+/// into Hoon source. A garbage type name would surface as a hoonc
+/// `find . X` failure with no path back to the offending manifest.
+fn validate_types(g: &Graft, path: &Path) -> Result<()> {
+    let Some(types) = &g.types else {
+        return Ok(());
+    };
+    if let Some(name) = &types.effect {
+        if !is_valid_graft_name(name) {
+            bail!(
+                "[graft.types].effect `{name}` in {}: expected kebab-case matching ^[a-z][a-z0-9-]*$",
+                path.display()
+            );
+        }
+    }
+    if let Some(name) = &types.cause {
+        if !is_valid_graft_name(name) {
+            bail!(
+                "[graft.types].cause `{name}` in {}: expected kebab-case matching ^[a-z][a-z0-9-]*$",
+                path.display()
+            );
         }
     }
     Ok(())
@@ -907,6 +958,20 @@ struct GraftSummary<'a> {
     /// H-10: lets supply-chain reviewers pin expected digests without
     /// re-reading the file.
     sha256: &'a str,
+    /// Phase 03f Lever 1: per-graft `[graft.types]` table contents,
+    /// surfaced for tooling that wants to know which grafts contribute
+    /// to the typed effect union. `null` when the manifest omits the
+    /// table.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    types: Option<GraftTypesSummary<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct GraftTypesSummary<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effect: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cause: Option<&'a str>,
 }
 
 impl<'a> GraftSummary<'a> {
@@ -917,6 +982,10 @@ impl<'a> GraftSummary<'a> {
             .map(|m| m.label())
             .collect();
         let applicable = blocks.len();
+        let types = g.types.as_ref().map(|t| GraftTypesSummary {
+            effect: t.effect.as_deref(),
+            cause: t.cause.as_deref(),
+        });
         Self {
             name: &g.name,
             version: &g.version,
@@ -925,6 +994,7 @@ impl<'a> GraftSummary<'a> {
             applicable,
             deferred: false,
             sha256: &g.sha256,
+            types,
         }
     }
 }
@@ -1352,6 +1422,7 @@ mod tests {
                 }),
             },
             gates: None,
+            types: None,
             sha256: String::new(),
         }
     }
@@ -2069,6 +2140,7 @@ body     = """
                 peek: None,
             },
             gates: None,
+            types: None,
             sha256: String::new(),
         };
         let contaminant = synthetic_graft("contaminant", 20);
@@ -2169,6 +2241,7 @@ body     = """
                 peek: None,
             },
             gates: None,
+            types: None,
             sha256: String::new(),
         };
         let (first, _) = inject(BARE_SCAFFOLD, std::slice::from_ref(&nested)).unwrap();
