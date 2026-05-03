@@ -609,6 +609,8 @@ struct InjectReport {
     grafts: Vec<GraftReport>,
     /// Phase 03f Lever 1: outcome of the typed effect-union codegen pass.
     codegen: CodegenReport,
+    /// Phase 03f Lever 1.5: weld-friction lint findings in domain code.
+    weld_lint: WeldLint,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -631,6 +633,39 @@ struct CodegenReport {
     /// Variant list spliced into `+$ effect $%(...)`. Empty when status
     /// is Skipped.
     variants: Vec<String>,
+}
+
+/// Phase 03f Lever 1.5: weld-friction lint.
+///
+/// R5 dogfood (Profile G HULL_KEYED_KV) confirmed that the typed effect
+/// union does NOT auto-fix the cross-graft `weld` friction when the
+/// developer's domain arm binds narrowly:
+///
+///     =/  [efx-c=(list counter-effect) new-counter=counter-state]   :: NARROW
+///       (counter-poke counter.state ...)
+///     (weld efx-c efx-k)                                            :: nest-fail
+///
+/// The fix is Pattern B: widen each binding to `(list effect)`. The
+/// lint scans developer code (outside `graft-inject:<X>:begin/:end`
+/// banner regions) for narrow bindings and surfaces a stderr note
+/// pointing at the zkvesl-docs §"Composing two graft arms in one
+/// domain cause" so the developer has a searchable handle.
+///
+/// Findings are advisory — Pattern A (R4 backtick casts at the weld
+/// site) still works as an escape hatch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct WeldLintFinding {
+    /// 1-indexed line number of the offending narrow binding.
+    line: usize,
+    /// Trimmed line text — short enough to copy-paste into a search.
+    text: String,
+    /// The narrow type referenced, e.g., `counter-effect`.
+    narrow_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+struct WeldLint {
+    findings: Vec<WeldLintFinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -716,6 +751,12 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
     // with the current graft set on every rerun.
     let codegen = emit_effect_union(&mut lines, grafts)?;
 
+    // Phase 03f Lever 1.5: weld-friction lint scans developer code
+    // (outside graft-inject banners) for narrow effect bindings that
+    // will nest-fail at any cross-graft `(weld a b)` site. Advisory
+    // only; surfaces in the stderr report.
+    let weld_lint = lint_weld_friction(&lines, &codegen.variants);
+
     // Preserve graft order in the report (per_graft is a HashMap).
     let grafts_reports: Vec<GraftReport> = grafts
         .iter()
@@ -733,6 +774,7 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
             markers_missing,
             grafts: grafts_reports,
             codegen,
+            weld_lint,
         },
     ))
 }
@@ -959,6 +1001,60 @@ fn codegen_end_banner(marker: Marker) -> String {
 fn is_bare_effect_open_type(s: &str) -> bool {
     let parts: Vec<&str> = s.split_whitespace().collect();
     parts.len() == 3 && parts[0] == "+$" && parts[1] == "effect" && parts[2] == "*"
+}
+
+/// Phase 03f Lever 1.5: scan domain code for narrow `(list <X>-effect)`
+/// bindings that will nest-fail at a cross-graft `weld`. Skips lines
+/// inside `graft-inject:<...>:begin / :end` banner regions (those are
+/// graft-injected bodies, not user code; the narrow types are correct
+/// there). Skips entirely when codegen status is Skipped or the variant
+/// list is empty — there's no typed union to widen toward.
+fn lint_weld_friction(lines: &[String], variants: &[String]) -> WeldLint {
+    let effect_variants: HashSet<&str> = variants
+        .iter()
+        .filter(|v| v.ends_with("-effect") && v.as_str() != "domain-effect")
+        .map(String::as_str)
+        .collect();
+
+    if effect_variants.is_empty() {
+        return WeldLint::default();
+    }
+
+    let mut findings = Vec::new();
+    let mut in_banner = false;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        // Banner detection: any `graft-inject:<X>:<Y>:begin/:end` line
+        // toggles the in_banner state. Codegen banner pairs
+        // (`graft-inject:effect-union:...`) are also skipped — those
+        // bodies are synthesized, not user-written.
+        if trimmed.starts_with("::") && trimmed.contains("graft-inject:") {
+            if trimmed.ends_with(":begin") {
+                in_banner = true;
+                continue;
+            }
+            if trimmed.ends_with(":end") {
+                in_banner = false;
+                continue;
+            }
+        }
+        if in_banner {
+            continue;
+        }
+
+        for variant in &effect_variants {
+            let needle = format!("(list {variant})");
+            if line.contains(&needle) {
+                findings.push(WeldLintFinding {
+                    line: i + 1,
+                    text: trimmed.to_string(),
+                    narrow_type: (*variant).to_string(),
+                });
+                break; // one finding per line is enough
+            }
+        }
+    }
+    WeldLint { findings }
 }
 
 /// Outcome of `migrate_legacy_effect`. Surfaced to stderr so reviewers
@@ -1744,9 +1840,36 @@ fn print_report(path: &Path, report: &InjectReport, grafts: &[Graft], applied: b
         );
     }
     print_codegen_line(&report.codegen);
+    print_weld_lint(&report.weld_lint);
     if !applied {
         eprintln!("  (preview only — pass --apply to write {})", path.display());
     }
+}
+
+/// Stderr surface for the weld-friction lint. Each finding gets its
+/// own line so reviewers can grep / copy. The closing pointer to the
+/// zkvesl-docs anchor uses a stable heading slug so the developer can
+/// search the docs site without needing to remember the URL.
+fn print_weld_lint(lint: &WeldLint) {
+    if lint.findings.is_empty() {
+        return;
+    }
+    let n = lint.findings.len();
+    eprintln!(
+        "  weld-friction lint: {n} narrow effect binding{} found in domain code",
+        if n == 1 { "" } else { "s" },
+    );
+    for f in &lint.findings {
+        eprintln!("    line {}: {}", f.line, f.text);
+    }
+    eprintln!(
+        "    cross-graft `(weld a b)` over these bindings will nest-fail. \
+         widen each to `(list effect)` so the typed union absorbs each graft's effect."
+    );
+    eprintln!(
+        "    see zkvesl-docs §\"Composing two graft arms in one domain cause\" \
+         (/guides/grafting#composing-two-graft-arms-in-one-domain-cause)"
+    );
 }
 
 /// One-line stderr surface for the typed effect-union codegen pass.
@@ -3151,6 +3274,103 @@ body     = """
         assert!(out.contains("+$  effect\n  $%  alpha-effect\n  ==\n"));
         // The bare `+$  effect  *` line must be gone.
         assert!(!out.lines().any(|l| l.trim() == "+$  effect  *"));
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 03f Lever 1.5: weld-friction lint
+    // ---------------------------------------------------------------
+
+    /// Scaffold + a domain `%set` arm that binds narrowly. Used to
+    /// exercise the weld-friction lint on developer code outside any
+    /// graft-inject banner region.
+    const SCAFFOLD_NARROW_BINDING: &str = "\
+::  test scaffold with narrow effect bindings
+::
+::  nockup:domain-effect
++$  domain-effect
+  $%  [%set-done ~]
+  ==
+::
+::  nockup:effect-union
++$  effect  *
+::
++$  cause
+  $%  [%cause ~]
+      [%set name=@t value=@]
+      ::  nockup:cause
+  ==
+::
+=/  [efx-c=(list counter-effect) new-counter=counter-state]
+  (counter-poke counter.state [%counter-increment name.u.act])
+=/  [efx-k=(list kv-effect) new-kv=kv-state]
+  (kv-poke kv.state [%kv-set name.u.act value.u.act])
+(weld efx-c efx-k)
+--
+";
+
+    #[test]
+    fn weld_lint_flags_narrow_bindings_in_domain_code() {
+        let counter = synthetic_graft_with_effect("counter", 60);
+        let kv = synthetic_graft_with_effect("kv", 50);
+        let (_, report) = inject(SCAFFOLD_NARROW_BINDING, &[kv, counter]).unwrap();
+        assert_eq!(
+            report.weld_lint.findings.len(),
+            2,
+            "two narrow bindings should be flagged: {:#?}",
+            report.weld_lint.findings,
+        );
+        let narrow_types: Vec<&str> = report
+            .weld_lint
+            .findings
+            .iter()
+            .map(|f| f.narrow_type.as_str())
+            .collect();
+        assert!(narrow_types.contains(&"counter-effect"));
+        assert!(narrow_types.contains(&"kv-effect"));
+    }
+
+    #[test]
+    fn weld_lint_skips_graft_injected_bodies() {
+        // Graft poke bodies legitimately contain `(list <graft>-effect)`.
+        // The lint must only fire on developer code, not on graft-injected
+        // regions between :begin/:end banners. Re-injecting the same
+        // kernel keeps banner regions intact and asserts the lint count
+        // doesn't grow with each graft's body.
+        let counter = synthetic_graft_with_effect("counter", 60);
+        let kv = synthetic_graft_with_effect("kv", 50);
+        let (out, _) = inject(SCAFFOLD_NARROW_BINDING, &[kv.clone(), counter.clone()]).unwrap();
+        let (_, report) = inject(&out, &[kv, counter]).unwrap();
+        // Still 2 — the graft poke bodies inside :begin/:end banners are
+        // ignored, only the developer's domain bindings count.
+        assert_eq!(report.weld_lint.findings.len(), 2);
+    }
+
+    #[test]
+    fn weld_lint_silent_on_widened_bindings() {
+        // Pattern B: bindings widen to `(list effect)`. No findings.
+        let widened = SCAFFOLD_NARROW_BINDING
+            .replace("(list counter-effect)", "(list effect)")
+            .replace("(list kv-effect)", "(list effect)");
+        let counter = synthetic_graft_with_effect("counter", 60);
+        let kv = synthetic_graft_with_effect("kv", 50);
+        let (_, report) = inject(&widened, &[kv, counter]).unwrap();
+        assert!(
+            report.weld_lint.findings.is_empty(),
+            "Pattern B widening must not trip the lint: {:#?}",
+            report.weld_lint.findings,
+        );
+    }
+
+    #[test]
+    fn weld_lint_silent_when_codegen_skipped() {
+        // No nockup:effect-union marker → codegen Skipped → empty
+        // variant list → lint short-circuits. Domain code is left
+        // alone whatever it does; we don't have a typed union to
+        // recommend widening toward.
+        let g = synthetic_graft_with_effect("alpha", 10);
+        let (_, report) = inject(BARE_SCAFFOLD, &[g]).unwrap();
+        assert_eq!(report.codegen.status, CodegenStatus::Skipped);
+        assert!(report.weld_lint.findings.is_empty());
     }
 
     // ---------------------------------------------------------------
