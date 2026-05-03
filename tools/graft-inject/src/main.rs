@@ -226,6 +226,7 @@ fn discover_grafts(lib_dir: &Path) -> Result<Vec<Graft>> {
         }
     }
     grafts.sort_by(|a, b| a.priority.cmp(&b.priority).then(a.name.cmp(&b.name)));
+    validate_unique_type_names(&grafts, &seen)?;
     let names: HashSet<&str> = grafts.iter().map(|g| g.name.as_str()).collect();
     for g in &grafts {
         for hint in &g.after {
@@ -266,6 +267,53 @@ fn validate_gate_selection(g: &Graft, path: &Path) -> Result<()> {
         }
         for name in chain {
             validate_gate_name(name, path, "gate-chain entry")?;
+        }
+    }
+    Ok(())
+}
+
+/// Cross-graft uniqueness check on `[graft.types].effect` and `.cause`.
+/// Two manifests claiming the same effect or cause type name would
+/// produce a Hoon `$%` with two arms named the same — hoonc surfaces
+/// it as `not a fork`, with no path back to the offending pair. Mirror
+/// the existing duplicate-graft-name guard so the failure has both
+/// manifest paths in the error.
+///
+/// `seen` is the discovery-time graft-name → path map; we re-derive
+/// type-name → graft-name maps here so the error message can name both
+/// the type collision and the manifest paths.
+fn validate_unique_type_names(
+    grafts: &[Graft],
+    seen: &HashMap<String, PathBuf>,
+) -> Result<()> {
+    for field in ["effect", "cause"] {
+        let mut by_type: HashMap<&str, &str> = HashMap::new();
+        for g in grafts {
+            let Some(types) = g.types.as_ref() else { continue };
+            let name = match field {
+                "effect" => types.effect.as_deref(),
+                "cause" => types.cause.as_deref(),
+                _ => unreachable!(),
+            };
+            let Some(name) = name else { continue };
+            if let Some(prev_graft) = by_type.get(name) {
+                let prev_path = seen
+                    .get(*prev_graft)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| (*prev_graft).to_string());
+                let cur_path = seen
+                    .get(g.name.as_str())
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| g.name.clone());
+                bail!(
+                    "duplicate [graft.types].{field} `{name}` in {} and {}: \
+                     two grafts cannot export the same type name (Hoon's $% would \
+                     reject as `not a fork`)",
+                    prev_path,
+                    cur_path,
+                );
+            }
+            by_type.insert(name, g.name.as_str());
         }
     }
     Ok(())
@@ -2348,6 +2396,44 @@ body     = """
         .unwrap();
     }
 
+    /// Like `write_manifest` but adds a `[graft.types]` table with the
+    /// caller-supplied effect/cause names. Used by the cross-graft type
+    /// uniqueness tests.
+    fn write_manifest_with_types(
+        dir: &Path,
+        file_name: &str,
+        name: &str,
+        effect: &str,
+        cause: &str,
+    ) {
+        fs::write(
+            dir.join(file_name),
+            format!(
+                r#"[graft]
+name     = "{name}"
+version  = "0.1.0"
+priority = 50
+after    = []
+
+[graft.types]
+effect = "{effect}"
+cause  = "{cause}"
+
+[graft.blocks.imports]
+sentinel = "*{name}"
+body     = "/+  *{name}"
+
+[graft.blocks.poke]
+sentinel = "%{name}-do"
+body     = """
+  %{name}-do
+[~ state]"""
+"#,
+            ),
+        )
+        .unwrap();
+    }
+
     /// H-11: two manifests claiming the same `name` must hard-error at
     /// discovery time, naming both source paths. The pre-audit loader let
     /// both through and panicked downstream with `expect("seeded above")`.
@@ -2917,6 +3003,48 @@ body     = """
         assert!(out.contains("+$  effect\n  $%  alpha-effect\n  ==\n"));
         // The bare `+$  effect  *` line must be gone.
         assert!(!out.lines().any(|l| l.trim() == "+$  effect  *"));
+    }
+
+    #[test]
+    fn duplicate_effect_type_bails() {
+        let dir = tempdir_for_test("duplicate_effect_type");
+        write_manifest_with_types(&dir, "a.toml", "alpha", "shared-effect", "alpha-cause");
+        write_manifest_with_types(&dir, "b.toml", "beta", "shared-effect", "beta-cause");
+        let err = discover_grafts(&dir).expect_err("duplicate type must bail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate [graft.types].effect `shared-effect`"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("a.toml"), "missing path a in: {msg}");
+        assert!(msg.contains("b.toml"), "missing path b in: {msg}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_cause_type_bails() {
+        let dir = tempdir_for_test("duplicate_cause_type");
+        write_manifest_with_types(&dir, "a.toml", "alpha", "alpha-effect", "shared-cause");
+        write_manifest_with_types(&dir, "b.toml", "beta", "beta-effect", "shared-cause");
+        let err = discover_grafts(&dir).expect_err("duplicate type must bail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate [graft.types].cause `shared-cause`"),
+            "got: {msg}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn distinct_effect_types_ok() {
+        // Sanity: different effect names across two manifests must NOT
+        // bail. Guards against an over-zealous uniqueness check.
+        let dir = tempdir_for_test("distinct_effect_types");
+        write_manifest_with_types(&dir, "a.toml", "alpha", "alpha-effect", "alpha-cause");
+        write_manifest_with_types(&dir, "b.toml", "beta", "beta-effect", "beta-cause");
+        let grafts = discover_grafts(&dir).expect("distinct types must load");
+        assert_eq!(grafts.len(), 2);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
