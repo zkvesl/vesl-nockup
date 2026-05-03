@@ -1221,10 +1221,22 @@ fn print_report(path: &Path, report: &InjectReport, grafts: &[Graft], applied: b
         .iter()
         .map(|m| m.label())
         .collect();
+    // Use `applicable` (not `injected`) so the count is stable across `--apply` reruns.
+    let populated_labels: Vec<&str> = report
+        .markers_in_source
+        .iter()
+        .filter(|m| report.grafts.iter().any(|g| g.applicable.contains(m)))
+        .map(|m| m.label())
+        .collect();
     eprintln!(
-        "  markers present: {} ({})",
+        "  markers in source: {} ({})",
         present_labels.len(),
         present_labels.join(", ")
+    );
+    eprintln!(
+        "  markers populated: {} ({})",
+        populated_labels.len(),
+        populated_labels.join(", ")
     );
     if !missing_labels.is_empty() {
         eprintln!(

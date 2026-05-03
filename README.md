@@ -39,7 +39,7 @@ cd my-app
 
 The nockup `basic` template is generic and needs three one-time fixups before vesl deps will compile. Apply these inside `my-app/`:
 
-1. **`Cargo.toml`** — the scaffolded nockchain deps carry empty git revisions (`rev = ""`). Replace them with path deps (or pinned revs). As of Phase 6.5b the `vesl-core` / `nock-noun-rs` crates live in the main `vesl` repo, not `vesl-nockup`; point the project at them there. For a local dev checkout of the nockchain monorepo, replace the whole `[dependencies]` section and add a `[patch]` block so vesl-core's transitive git deps resolve to the same checkout:
+1. **`Cargo.toml`** — the scaffolded nockchain deps git-pin a specific upstream rev (under nockup 1.0.0, `rev = "485e914b389a1e518d4aaaa24f5f079d0ad894be"` for `nockapp` / `nockvm` / `nockvm_macros`). When you're working from a local nockchain checkout, replace them with path deps so vesl-core's transitive git deps resolve against the same source tree. As of Phase 6.5b the `vesl-core` / `nock-noun-rs` crates live in the main `vesl` repo, not `vesl-nockup`; point the project at them there. For a local dev checkout of the nockchain monorepo, replace the whole `[dependencies]` section and add a `[patch]` block so vesl-core's transitive git deps resolve to the same checkout:
 
    ```toml
    [dependencies]
@@ -164,7 +164,8 @@ graft-inject: hoon/app/app.hoon
   mint-graft       sha256:4b2e...       injected 5/5 (imports, state, cause, poke, peek)
   guard-graft      sha256:c310...       injected 5/5 (imports, state, cause, poke, peek)
   forge-graft      sha256:f721...       injected 3/3 (imports, cause, poke)
-  markers present: 7 (imports, state, cause, poke-prelude, poke, poke-postlude, peek)
+  markers in source: 7 (imports, state, cause, poke-prelude, poke, poke-postlude, peek)
+  markers populated: 5 (imports, state, cause, poke, peek)
 ```
 
 `forge-graft` ships three blocks (no state, no peek — forge is stateless). The denominator is per-graft: each graft reports against the blocks *it* declares, not a fixed 7.
