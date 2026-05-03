@@ -150,6 +150,9 @@ impl Graft {
             Marker::Poke => self.blocks.poke.as_ref(),
             Marker::PokePostlude => self.blocks.poke_postlude.as_ref(),
             Marker::Peek => self.blocks.peek.as_ref(),
+            // Codegen markers — synthesized by the inject pass, not
+            // contributed per-graft.
+            Marker::DomainEffect | Marker::EffectUnion => None,
         }
     }
 }
@@ -488,10 +491,22 @@ enum Marker {
     /// transform the switch's `[(list effect) _state]` result.
     PokePostlude,
     Peek,
+    /// Phase 03f Lever 1: anchor for the developer's
+    /// `+$ domain-effect $%(...)` declaration. Marker only — grafts do
+    /// not contribute a block here. The codegen pass reads its presence
+    /// to decide whether to splat `domain-effect` into the union.
+    DomainEffect,
+    /// Phase 03f Lever 1: REPLACE-IF-PRESENT codegen target for the
+    /// typed effect union `+$ effect $%(<graft-effects> domain-effect ==)`.
+    /// Marker only — grafts do not contribute a block here. The
+    /// codegen pass synthesizes the union body from each graft's
+    /// `[graft.types].effect` plus `domain-effect` if DomainEffect is
+    /// present.
+    EffectUnion,
 }
 
 impl Marker {
-    const ALL: [Marker; 7] = [
+    const ALL: [Marker; 9] = [
         Marker::Imports,
         Marker::State,
         Marker::Cause,
@@ -499,6 +514,8 @@ impl Marker {
         Marker::Poke,
         Marker::PokePostlude,
         Marker::Peek,
+        Marker::DomainEffect,
+        Marker::EffectUnion,
     ];
 
     #[cfg(test)]
@@ -511,6 +528,8 @@ impl Marker {
             "poke" => Some(Self::Poke),
             "poke-postlude" => Some(Self::PokePostlude),
             "peek" => Some(Self::Peek),
+            "domain-effect" => Some(Self::DomainEffect),
+            "effect-union" => Some(Self::EffectUnion),
             _ => None,
         }
     }
@@ -524,6 +543,8 @@ impl Marker {
             Self::Poke => "poke",
             Self::PokePostlude => "poke-postlude",
             Self::Peek => "peek",
+            Self::DomainEffect => "domain-effect",
+            Self::EffectUnion => "effect-union",
         }
     }
 }
@@ -1460,11 +1481,18 @@ mod tests {
         assert!(out.contains("=/  settle-res  (settle-peek settle.state path)"));
         assert!(out.contains("?.  =(~ settle-res)  settle-res"));
 
+        // BARE_SCAFFOLD ships with the seven non-codegen markers (imports,
+        // state, cause, poke-prelude, poke, poke-postlude, peek). The two
+        // codegen markers (domain-effect, effect-union) land via commit 7
+        // auto-migration and the commit 8 template refresh, so they are
+        // expected to be missing here.
         assert_eq!(report.markers_in_source.len(), 7);
-        assert!(report.markers_missing.is_empty());
+        assert_eq!(report.markers_missing.len(), 2);
         let settle = &report.grafts[0];
         assert_eq!(settle.name, "settle-graft");
-        // settle-graft contributes 5 of the 7 markers (no prelude / postlude).
+        // settle-graft contributes 5 of the 7 non-codegen markers
+        // (no prelude / postlude). Codegen markers contribute no per-graft
+        // blocks.
         assert_eq!(settle.injected.len(), 5);
         assert!(settle.skipped.is_empty());
     }
@@ -1603,6 +1631,8 @@ mod tests {
             "poke",
             "poke-postlude",
             "peek",
+            "domain-effect",
+            "effect-union",
         ] {
             assert!(Marker::parse(name).is_some(), "expected Some for {name}");
         }
