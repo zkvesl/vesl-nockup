@@ -527,6 +527,54 @@ The vesl arms stay put. You're adding arms, not replacing them.
 
 Future direction: `graft-inject` is being rearchitected (see `.dev/PARAMETIZATION.md`) so that user-defined domains can ship as their own grafts with a TOML manifest — which will mechanize the state-field and cause-variant declarations. The arm body is the part that stays yours.
 
+### Coordinating multiple grafts in one arm
+
+When your domain arm threads state through more than one graft — increment a counter, write to a `kv` slot, append to the audit log, all in one poke — the hand-coded shape gets repetitive fast. Each graft poke is the same three lines (`=/  cause`, `=/  [efx state]  (graft-poke …)`, then a state-field update at the bottom), then a `(weld …)` to fold the effect lists together.
+
+`vesl-core` ships a small library, `domain-patterns`, that bundles those shapes into one-line helpers. Import it manually (it has no graft manifest, so `graft-inject` doesn't auto-wire it):
+
+```hoon
+::  near the top of your app.hoon, alongside the other /+ lines:
+/+  *domain-patterns
+```
+
+Two helper families:
+
+- **`apply-<graft>`** — one wet-gate per shipped data/behavior graft (`apply-counter`, `apply-kv`, `apply-queue`, `apply-rbac`, `apply-registry`, `apply-log`, `apply-clock`, `apply-validate`, `apply-batch`). Each takes the graft's cause + your `versioned-state`, calls the underlying `<graft>-poke`, and returns `[(list <graft>-effect) versioned-state]` suitable for `=^` binding.
+- **`audit-write`** — bundles "delegate to a storage graft (kv / registry / queue) + append to the log graft + return combined effects." Takes `log-tag` and `log-body` separately so the write payload and the audit-log payload can differ (e.g., `%revoke-license` writes a key delete but logs the human-readable name).
+
+Worked example — an **`%audited-set` arm** that increments a per-key request counter, writes to the `kv` store, audit-logs the write, then emits a domain effect:
+
+```hoon
+::  in the cause $% union, alongside the graft-injected variants:
+[%audited-set key=@t value=@]
+```
+
+```hoon
+::  in the domain-effect $% union, alongside any other domain tags:
+[%set-audited key=@t]
+```
+
+```hoon
+::  inside ?-, alongside the graft-injected arms. The kernel must
+::  carry counter=counter-state, kv=kv-state, log=log-state in its
+::  versioned-state — the convention every shipped graft documents
+::  in its `Usage:` block.
+::
+  %audited-set
+=^  efx-c  state  (apply-counter [%counter-increment key.u.act] state)
+=^  efx-aw  state
+  (audit-write state [%kv-set key.u.act value.u.act] %set (jam value.u.act))
+:_  state
+(welp efx-c (welp efx-aw ~[[%set-audited key.u.act]]))
+```
+
+Five lines for three graft pokes plus a domain effect — the same arm written without the helpers runs to twelve lines (each graft poke gets its own `=/ cause`, `=/ [efx state]  (poke …)`, and the `state(counter …, kv …, log …)` update threads three field-updates on the bottom line). The R6 dogfood log measures a 6-line saving on this single arm; multi-arm domains scale that linearly.
+
+The convention `apply-<graft>` relies on: each graft's state lives at the field named after the graft (`counter.state`, `kv.state`, …). Every shipped template + the `graft-inject` codegen emits state fields with these names already, so the helpers compose with anything `graft-inject` produces. If your kernel renames the field (`cnt.state` instead of `counter.state`), `hoonc` rejects with `find . counter` at the `apply-counter` call site — loud, attributable.
+
+The full helper surface and the kernel-composite scope decisions live in `docs/graft-manifest.md` §"Library helpers — domain-patterns".
+
 ### Add your own peek paths
 
 `graft-inject` wires each graft's peek handler into a chain: settle-peek, then mint-peek, then guard-peek, each one returning `~` to defer to the next. Your domain arm goes at the tail of that chain, below the last `?.  =(~ <graft>-res)  <graft>-res` line.
