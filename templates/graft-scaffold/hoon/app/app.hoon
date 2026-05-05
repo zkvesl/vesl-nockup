@@ -28,19 +28,6 @@
       item-count=@ud
   ==
 ::
-::  domain-effect is your app's effect union. Add variants here as
-::  your app emits them. The codegen-generated `+$ effect` below
-::  splats domain-effect into a typed union with all graft effects.
-::
-::  nockup:domain-effect
-+$  domain-effect
-  $%  [%domain-placeholder ~]
-  ==
-::
-::  graft-inject codegen replaces the open `+$ effect *` below with a
-::  typed union. Do not edit the codegen banner block by hand.
-::
-::  nockup:effect-union
 +$  effect  *
 ::
 +$  cause
