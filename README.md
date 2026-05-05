@@ -575,6 +575,30 @@ The convention `apply-<graft>` relies on: each graft's state lives at the field 
 
 The full helper surface and the kernel-composite scope decisions live in `docs/graft-manifest.md` §"Library helpers — domain-patterns".
 
+### Without the helpers — manual cross-graft widening
+
+When you want to understand what `domain-patterns` does under the hood (or, rarely, when a project drops the library entirely), the multi-graft arm has to be hand-written with explicit `(list effect)` widening at each `=/` binding. Hoonc rejects a bare `weld` over heterogeneous `(list X-effect)` lists with a `nest-fail`; the widening cast at the binder bridges them. Copy this shape:
+
+```hoon
+  %audited-set
+=/  [efx-r=(list effect) new-registry=registry-state]
+  (registry-poke registry.state [%registry-put key.u.act value.u.act])
+=/  [efx-l=(list effect) new-log=log-state]
+  (log-poke log.state [%log-append %set (jam value.u.act)])
+=.  state  state(registry new-registry, log new-log)
+:_  state
+^-  (list effect)
+(welp efx-r (welp efx-l ~[[%set-audited key.u.act]]))
+```
+
+The `(list effect)` annotation at each `=/` widens the graft's narrow `(list X-effect)` into the kernel's typed effect-union; `welp` then operates on monomorphic lists. The helpers from `domain-patterns` (`apply-counter`, `apply-kv`, `audit-write`, …) bundle exactly this pattern into one-liners — same widening cast, hidden behind a wet-gate. See `zkvesl-docs/guides/grafting.md` §"Composing two graft arms in one domain cause" for the underlying type-theory note.
+
+### Validate rules apply universally
+
+A rule installed via `%validate-init` for a cause-tag fires on **every** poke matching that tag — graft-injected pokes (`%queue-push`, `%batch-add`, `%settle-note`, etc.) and domain pokes alike. The validate prelude runs once before the kernel's `?-` switch dispatches to any arm; rule failure short-circuits with `%validate-rejected` and leaves state untouched.
+
+This makes `validate-graft` the right primitive for kernel-wide write policies (signing requirements, body-shape guards, rate limits) regardless of whether the policy targets a user-written or a grafted poke. Use it carefully: an over-broad rule on a graft cause-tag (e.g. `%non-empty` on `%settle-note`) will block every settle attempt with an empty-shape payload, regardless of who initiated it.
+
 ### Add your own peek paths
 
 `graft-inject` wires each graft's peek handler into a chain: settle-peek, then mint-peek, then guard-peek, each one returning `~` to defer to the next. Your domain arm goes at the tail of that chain, below the last `?.  =(~ <graft>-res)  <graft>-res` line.
