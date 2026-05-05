@@ -155,6 +155,15 @@ impl Graft {
             Marker::DomainEffect | Marker::EffectUnion => None,
         }
     }
+
+    /// First 12 hex chars of the manifest sha256, for banner embedding.
+    /// Twelve chars (48 bits) is enough to disambiguate any realistic
+    /// manifest set with no collision risk while keeping the banner
+    /// scannable. Falls back to the full sha if it's somehow shorter.
+    fn sha256_short(&self) -> &str {
+        let n = 12.min(self.sha256.len());
+        &self.sha256[..n]
+    }
 }
 
 /// Load a single `*.toml` manifest. Returns Ok(None) if the file lacks a
@@ -707,6 +716,38 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
         .collect();
 
     for marker in Marker::ALL {
+        // R5/A2: strip any per-graft banner pair whose embedded sha256
+        // doesn't match the current manifest (drift) or whose banner is
+        // in pre-A2 legacy format (no sha256 suffix). The strip phase
+        // runs BEFORE find_marker so the marker idx is stable for the
+        // inject pass that follows.
+        for g in grafts {
+            if g.block(marker).is_none() {
+                continue;
+            }
+            match check_injection(&lines, g, marker) {
+                InjectStatus::Drift { old_sha } => {
+                    eprintln!(
+                        "graft-inject: {}: manifest drift at {} (banner sha256 {} → current {}). Re-injecting.",
+                        g.name,
+                        marker.label(),
+                        old_sha,
+                        g.sha256_short()
+                    );
+                    strip_banner_pair(&mut lines, &g.name, marker);
+                }
+                InjectStatus::Legacy => {
+                    eprintln!(
+                        "graft-inject: {}: legacy banner at {} (pre-A2, no sha256). Re-injecting in current format.",
+                        g.name,
+                        marker.label()
+                    );
+                    strip_banner_pair(&mut lines, &g.name, marker);
+                }
+                InjectStatus::UpToDate | InjectStatus::NotInjected => {}
+            }
+        }
+
         match find_marker(&lines, marker)? {
             Some(idx) => {
                 markers_in_source.push(marker);
@@ -716,10 +757,23 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
                     if g.block(marker).is_none() {
                         continue;
                     }
-                    if already_wired(&lines, &g.name, marker) {
-                        per_graft.get_mut(&g.name).unwrap().skipped.push(marker);
-                    } else {
-                        pending.push(g);
+                    // After the strip phase above, this can only return
+                    // UpToDate (banner present + sha matches → skip) or
+                    // NotInjected (no banner, or just stripped → inject).
+                    match check_injection(&lines, g, marker) {
+                        InjectStatus::UpToDate => {
+                            per_graft.get_mut(&g.name).unwrap().skipped.push(marker);
+                        }
+                        InjectStatus::NotInjected => {
+                            pending.push(g);
+                        }
+                        InjectStatus::Drift { .. } | InjectStatus::Legacy => {
+                            unreachable!(
+                                "strip phase should have removed drift/legacy banners; \
+                                 graft={} marker={:?}",
+                                g.name, marker
+                            );
+                        }
                     }
                 }
                 if pending.is_empty() {
@@ -795,7 +849,7 @@ fn emit_block(
 ) {
     let mut composed: Vec<String> = Vec::new();
     for g in pending.iter() {
-        composed.push(begin_banner(&g.name, marker));
+        composed.push(begin_banner_with_sha(&g.name, marker, g.sha256_short()));
         let body = g
             .block(marker)
             .expect("emit_block called with a graft missing this marker")
@@ -1029,7 +1083,10 @@ fn lint_weld_friction(lines: &[String], variants: &[String]) -> WeldLint {
         // (`graft-inject:effect-union:...`) are also skipped — those
         // bodies are synthesized, not user-written.
         if trimmed.starts_with("::") && trimmed.contains("graft-inject:") {
-            if trimmed.ends_with(":begin") {
+            // Begin banners may carry a ` sha256:<hex>` suffix (R5/A2);
+            // match on the `:begin` token regardless of suffix. End
+            // banners are still suffix-free.
+            if trimmed.contains(":begin ") || trimmed.ends_with(":begin") {
                 in_banner = true;
                 continue;
             }
@@ -1209,7 +1266,7 @@ fn emit_imports_block(
 
     let mut composed: Vec<String> = Vec::new();
     for g in pending.iter() {
-        composed.push(begin_banner(&g.name, Marker::Imports));
+        composed.push(begin_banner_with_sha(&g.name, Marker::Imports, g.sha256_short()));
         let body = g
             .block(Marker::Imports)
             .expect("emit_imports_block called with a graft missing imports")
@@ -1259,11 +1316,29 @@ fn parse_glob_import(line: &str) -> Option<&str> {
     if name.is_empty() { None } else { Some(name) }
 }
 
-/// Begin/end banner strings for per-graft-per-marker idempotence. Emitted
-/// indented to match the marker's leading whitespace; the trimmed form is
-/// what `already_wired` matches on.
+/// Prefix form of the begin banner — used for line-prefix matching when
+/// scanning the source for existing injections. Banners emitted into the
+/// composed file always carry a ` sha256:<short>` suffix (see
+/// `begin_banner_with_sha`); this prefix matches both the new and the
+/// pre-A2 legacy format and lets the idempotence check distinguish them.
 fn begin_banner(name: &str, marker: Marker) -> String {
     format!("::  graft-inject:{}:{}:begin", name, marker.label())
+}
+
+/// Full begin-banner form emitted into the composed file. The 12-char
+/// sha256 prefix lets a re-run detect manifest drift: if the user edits
+/// `<graft>.toml` (e.g. swaps a `[graft.gates]` selection or bumps a
+/// version), the sha256 changes, the embedded prefix doesn't match, and
+/// the inject pass strips the stale banner pair and re-emits with the
+/// new one. Pre-A2 banners (no sha256 suffix) are detected by the same
+/// scan and force-reinjected once on first run after the upgrade.
+fn begin_banner_with_sha(name: &str, marker: Marker, sha256_short: &str) -> String {
+    format!(
+        "::  graft-inject:{}:{}:begin sha256:{}",
+        name,
+        marker.label(),
+        sha256_short
+    )
 }
 
 fn end_banner(name: &str, marker: Marker) -> String {
@@ -1298,7 +1373,10 @@ fn emit_peek_chain(
                 .trimmed_body();
             let stub = binding_stub(&g.name);
             vec![
-                format!("{indent}{}", begin_banner(&g.name, Marker::Peek)),
+                format!(
+                    "{indent}{}",
+                    begin_banner_with_sha(&g.name, Marker::Peek, g.sha256_short())
+                ),
                 format!("{indent}=/  {stub}-res  {body}"),
                 format!("{indent}?.  =(~ {stub}-res)  {stub}-res"),
                 format!("{indent}{}", end_banner(&g.name, Marker::Peek)),
@@ -1353,22 +1431,91 @@ fn leading_whitespace(s: &str) -> &str {
     &s[..end]
 }
 
-/// Per-graft-per-marker idempotence check: is `graft_name` wired at
-/// `marker` somewhere in the file?
+/// Per-graft-per-marker idempotence status. Distinguishes "banner
+/// present and current" from "banner present but stale" (manifest drift
+/// or pre-A2 legacy format) so the inject pass can strip-and-reinject
+/// rather than silently leave a stale block in place.
+///
+/// R5/A2 surfaced this gap: pre-A2 graft-inject treated mere banner
+/// presence as the skip signal, so editing `<graft>.toml` (e.g. swapping
+/// `[graft.gates] gate = "sig-verify-schnorr"` to `"sig-verify-ed25519"`)
+/// and re-running `graft-inject --apply` left the old gate body in place.
+/// Embedding the manifest sha256 in the begin banner closes that gap.
+#[derive(Debug, Clone, PartialEq)]
+enum InjectStatus {
+    /// Banner present, embedded sha256 matches current manifest. Skip.
+    UpToDate,
+    /// Banner present but embedded sha256 differs — manifest drift.
+    /// The caller strips the banner pair and re-injects.
+    Drift { old_sha: String },
+    /// Banner present in pre-A2 legacy format (no sha256 suffix).
+    /// Force-reinject once to stamp the new format.
+    Legacy,
+    /// No banner present. Fresh inject.
+    NotInjected,
+}
+
+/// Per-graft-per-marker idempotence check.
 ///
 /// AUDIT 2026-04-19 H-11..H-14: the pre-audit implementation walked a
 /// marker window for the graft's sentinel string. That had three
 /// failure modes — cross-graft false positives (A's body containing B's
 /// sentinel), peek-chain overflow past the 10-line window at 6+ grafts,
 /// and early termination on an inner `==` inside any poke body. A banner
-/// comment emitted alongside each injected block is an exact-match
-/// invariant that removes all three footguns: it appears iff the
-/// specific graft has been injected at this specific marker, it's never
-/// a substring of any body, and a file-wide scan doesn't care how far
-/// the expanding poke switch has pushed it.
-fn already_wired(lines: &[String], graft_name: &str, marker: Marker) -> bool {
-    let needle = begin_banner(graft_name, marker);
-    lines.iter().any(|l| l.trim() == needle)
+/// comment emitted alongside each injected block removed those three
+/// footguns. R5/A2 (2026-05-04) extended the banner with a 12-char
+/// sha256 prefix so re-runs detect manifest drift as well.
+fn check_injection(lines: &[String], graft: &Graft, marker: Marker) -> InjectStatus {
+    let prefix = begin_banner(&graft.name, marker);
+    let current_sha = graft.sha256_short();
+    for line in lines {
+        let trimmed = line.trim();
+        if !trimmed.starts_with(&prefix) {
+            continue;
+        }
+        let suffix = &trimmed[prefix.len()..];
+        if suffix.is_empty() {
+            return InjectStatus::Legacy;
+        }
+        if let Some(sha) = suffix.strip_prefix(" sha256:") {
+            return if sha == current_sha {
+                InjectStatus::UpToDate
+            } else {
+                InjectStatus::Drift {
+                    old_sha: sha.to_string(),
+                }
+            };
+        }
+        // Unrecognized suffix: treat as legacy, force re-inject once.
+        return InjectStatus::Legacy;
+    }
+    InjectStatus::NotInjected
+}
+
+/// Strip a `::  graft-inject:<name>:<marker>:begin … :end` banner pair
+/// (and everything between) from `lines`. Used by the drift-detection
+/// path before re-injecting fresh content. Returns true if a pair was
+/// found and removed; false if no begin banner matched.
+fn strip_banner_pair(lines: &mut Vec<String>, graft_name: &str, marker: Marker) -> bool {
+    let begin_prefix = begin_banner(graft_name, marker);
+    let end_str = end_banner(graft_name, marker);
+    let begin_idx = lines
+        .iter()
+        .position(|l| l.trim().starts_with(&begin_prefix));
+    let Some(begin_idx) = begin_idx else {
+        return false;
+    };
+    let end_idx = lines
+        .iter()
+        .enumerate()
+        .skip(begin_idx + 1)
+        .find(|(_, l)| l.trim() == end_str)
+        .map(|(i, _)| i);
+    let Some(end_idx) = end_idx else {
+        return false;
+    };
+    lines.drain(begin_idx..=end_idx);
+    true
 }
 
 /// Last bare `~` between the peek marker and the block's closing `==`.
@@ -2230,14 +2377,17 @@ mod tests {
                 .expect("settle claims this marker")
                 .trimmed_body();
             // Body lines land one row after the `begin_banner` emitted by
-            // AUDIT 2026-04-19 H-11..H-14's idempotence refactor.
-            let expected_begin =
+            // AUDIT 2026-04-19 H-11..H-14's idempotence refactor. R5/A2
+            // (2026-05-04) appended a ` sha256:<short>` suffix; assert
+            // on the prefix shape so the test isn't coupled to the live
+            // sha256 of every fixture manifest.
+            let expected_prefix =
                 format!("{marker_indent}::  graft-inject:settle-graft:{}:begin", marker.label());
-            assert_eq!(
-                lines[marker_idx + 1],
-                expected_begin,
-                "marker `{}` begin banner missing",
-                marker.label()
+            assert!(
+                lines[marker_idx + 1].starts_with(&expected_prefix),
+                "marker `{}` begin banner missing; got: {}",
+                marker.label(),
+                lines[marker_idx + 1]
             );
             for (i, want) in body.lines().enumerate() {
                 let got = lines[marker_idx + 2 + i];
@@ -2304,15 +2454,18 @@ mod tests {
             .map(|l| l.trim_start().to_string())
             .collect();
         assert_eq!(peek_lines.len(), 13, "expected 13 lines after peek marker");
-        assert_eq!(peek_lines[0], "::  graft-inject:settle-graft:peek:begin");
+        // R5/A2: begin banners now carry a ` sha256:<short>` suffix.
+        // Match on the prefix to avoid coupling tests to live sha256
+        // values of fixture manifests.
+        assert!(peek_lines[0].starts_with("::  graft-inject:settle-graft:peek:begin"));
         assert_eq!(peek_lines[1], "=/  settle-res  (settle-peek settle.state path)");
         assert_eq!(peek_lines[2], "?.  =(~ settle-res)  settle-res");
         assert_eq!(peek_lines[3], "::  graft-inject:settle-graft:peek:end");
-        assert_eq!(peek_lines[4], "::  graft-inject:alpha:peek:begin");
+        assert!(peek_lines[4].starts_with("::  graft-inject:alpha:peek:begin"));
         assert_eq!(peek_lines[5], "=/  alpha-res  (alpha-peek state path)");
         assert_eq!(peek_lines[6], "?.  =(~ alpha-res)  alpha-res");
         assert_eq!(peek_lines[7], "::  graft-inject:alpha:peek:end");
-        assert_eq!(peek_lines[8], "::  graft-inject:beta:peek:begin");
+        assert!(peek_lines[8].starts_with("::  graft-inject:beta:peek:begin"));
         assert_eq!(peek_lines[9], "=/  beta-res  (beta-peek state path)");
         assert_eq!(peek_lines[10], "?.  =(~ beta-res)  beta-res");
         assert_eq!(peek_lines[11], "::  graft-inject:beta:peek:end");
@@ -2414,7 +2567,7 @@ mod tests {
             .map(|l| l.trim_start().to_string())
             .collect();
         assert_eq!(peek_lines.len(), 13);
-        assert_eq!(peek_lines[8], "::  graft-inject:beta:peek:begin");
+        assert!(peek_lines[8].starts_with("::  graft-inject:beta:peek:begin"));
         assert_eq!(peek_lines[9], "=/  beta-res  (beta-peek state path)");
         assert_eq!(peek_lines[10], "?.  =(~ beta-res)  beta-res");
         assert_eq!(peek_lines[11], "::  graft-inject:beta:peek:end");
@@ -2442,9 +2595,10 @@ mod tests {
             .take(5)
             .collect();
         assert_eq!(peek_lines.len(), 5, "peek region has fewer than 5 lines");
-        assert_eq!(
-            peek_lines[0].trim_start(),
-            "::  graft-inject:settle-graft:peek:begin"
+        assert!(
+            peek_lines[0]
+                .trim_start()
+                .starts_with("::  graft-inject:settle-graft:peek:begin")
         );
         assert_eq!(
             peek_lines[1].trim_start(),
