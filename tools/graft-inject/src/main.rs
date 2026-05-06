@@ -759,11 +759,28 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
     }
 
     for marker in Marker::ALL {
-        // R5/A2: strip any per-graft banner pair whose embedded sha256
-        // doesn't match the current manifest (drift) or whose banner is
-        // in pre-A2 legacy format (no sha256 suffix). The strip phase
-        // runs BEFORE find_marker so the marker idx is stable for the
-        // inject pass that follows.
+        // Find the marker once for indent/fresh-inject; we'll re-find
+        // after any drift strips that shifted lines.
+        let Some(initial_idx) = find_marker(&lines, marker)? else {
+            markers_missing.push(marker);
+            continue;
+        };
+        markers_in_source.push(marker);
+        let indent = leading_whitespace(&lines[initial_idx]).to_string();
+
+        // RH1 step 2 (HARD-FRICTION-2): for emit_block-class markers
+        // (state/cause/poke/poke-prelude/poke-postlude), drift re-injection
+        // strips and re-emits AT THE SAME LINE INDEX so the file's graft
+        // ordering survives a non-semantic manifest edit (e.g., a gate
+        // swap). Position preservation is scoped to emit_block — Imports
+        // anchors at the marker line and Peek inserts before the
+        // structural terminal `~`, neither of which exposes the same
+        // friction.
+        //
+        // R5/A2 (legacy comment): strip any per-graft banner pair whose
+        // embedded sha256 doesn't match the current manifest (drift) or
+        // whose banner is in pre-A2 legacy format (no sha256 suffix).
+        let mut pending: Vec<&Graft> = Vec::new();
         for g in grafts {
             if g.block(marker).is_none() {
                 continue;
@@ -777,7 +794,19 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
                         old_sha,
                         g.sha256_short()
                     );
-                    strip_banner_pair(&mut lines, &g.name, marker);
+                    if marker_supports_position_preserve(marker) {
+                        if let Some(orig_idx) =
+                            strip_banner_pair(&mut lines, &g.name, marker)
+                        {
+                            emit_position_preserving(
+                                &mut lines, orig_idx, &indent, marker, g,
+                            );
+                            per_graft.get_mut(&g.name).unwrap().injected.push(marker);
+                        }
+                    } else {
+                        strip_banner_pair(&mut lines, &g.name, marker);
+                        pending.push(g);
+                    }
                 }
                 InjectStatus::Legacy => {
                     eprintln!(
@@ -785,61 +814,49 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
                         g.name,
                         marker.label()
                     );
-                    strip_banner_pair(&mut lines, &g.name, marker);
+                    if marker_supports_position_preserve(marker) {
+                        if let Some(orig_idx) =
+                            strip_banner_pair(&mut lines, &g.name, marker)
+                        {
+                            emit_position_preserving(
+                                &mut lines, orig_idx, &indent, marker, g,
+                            );
+                            per_graft.get_mut(&g.name).unwrap().injected.push(marker);
+                        }
+                    } else {
+                        strip_banner_pair(&mut lines, &g.name, marker);
+                        pending.push(g);
+                    }
                 }
-                InjectStatus::UpToDate | InjectStatus::NotInjected => {}
+                InjectStatus::UpToDate => {
+                    per_graft.get_mut(&g.name).unwrap().skipped.push(marker);
+                }
+                InjectStatus::NotInjected => {
+                    pending.push(g);
+                }
             }
         }
 
-        match find_marker(&lines, marker)? {
-            Some(idx) => {
-                markers_in_source.push(marker);
-                let indent = leading_whitespace(&lines[idx]).to_string();
-                let mut pending: Vec<&Graft> = Vec::new();
-                for g in grafts {
-                    if g.block(marker).is_none() {
-                        continue;
-                    }
-                    // After the strip phase above, this can only return
-                    // UpToDate (banner present + sha matches → skip) or
-                    // NotInjected (no banner, or just stripped → inject).
-                    match check_injection(&lines, g, marker) {
-                        InjectStatus::UpToDate => {
-                            per_graft.get_mut(&g.name).unwrap().skipped.push(marker);
-                        }
-                        InjectStatus::NotInjected => {
-                            pending.push(g);
-                        }
-                        InjectStatus::Drift { .. } | InjectStatus::Legacy => {
-                            unreachable!(
-                                "strip phase should have removed drift/legacy banners; \
-                                 graft={} marker={:?}",
-                                g.name, marker
-                            );
-                        }
-                    }
-                }
-                if pending.is_empty() {
-                    continue;
-                }
-                match marker {
-                    Marker::Peek => {
-                        emit_peek_chain(&mut lines, idx, &indent, &pending);
-                    }
-                    Marker::Imports => {
-                        emit_imports_block(&mut lines, idx, &indent, &pending);
-                    }
-                    _ => {
-                        emit_block(&mut lines, idx, &indent, marker, &pending);
-                    }
-                }
-                for g in &pending {
-                    per_graft.get_mut(&g.name).unwrap().injected.push(marker);
-                }
+        if pending.is_empty() {
+            continue;
+        }
+        // Re-find the marker — drift strips may have shifted line indices.
+        let Some(idx) = find_marker(&lines, marker)? else {
+            unreachable!("marker {:?} disappeared mid-loop", marker);
+        };
+        match marker {
+            Marker::Peek => {
+                emit_peek_chain(&mut lines, idx, &indent, &pending);
             }
-            None => {
-                markers_missing.push(marker);
+            Marker::Imports => {
+                emit_imports_block(&mut lines, idx, &indent, &pending);
             }
+            _ => {
+                emit_block(&mut lines, idx, &indent, marker, &pending);
+            }
+        }
+        for g in &pending {
+            per_graft.get_mut(&g.name).unwrap().injected.push(marker);
         }
     }
 
@@ -875,6 +892,95 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
             weld_lint,
         },
     ))
+}
+
+/// RH1 step 2: markers whose drift re-injection should preserve the
+/// original block position rather than re-batching at the marker line.
+/// Imports and the emit_block-class markers (state / cause / poke*)
+/// all exhibit HARD-FRICTION-2: a single-graft drift via the batched
+/// path lands the drifted block at marker_idx+1, displacing every
+/// later graft and changing app.hoon's sha256 even though the file is
+/// logically equivalent. Peek is excluded because `emit_peek_chain`
+/// anchors against the structural terminal `~` rather than the marker
+/// line, so a per-graft strip-and-reinject would need different
+/// machinery; the chain shape is structurally ordered already.
+fn marker_supports_position_preserve(marker: Marker) -> bool {
+    matches!(
+        marker,
+        Marker::Imports
+            | Marker::State
+            | Marker::Cause
+            | Marker::PokePrelude
+            | Marker::Poke
+            | Marker::PokePostlude
+    )
+}
+
+/// RH1 step 2: dispatch to the appropriate single-graft emitter for
+/// drift re-injection. `marker_supports_position_preserve` gates the
+/// caller — markers excluded there should never reach this dispatch.
+fn emit_position_preserving(
+    lines: &mut Vec<String>,
+    insert_idx: usize,
+    indent: &str,
+    marker: Marker,
+    g: &Graft,
+) {
+    match marker {
+        Marker::Imports => {
+            emit_imports_block_single_at(lines, insert_idx, indent, g);
+        }
+        Marker::State
+        | Marker::Cause
+        | Marker::PokePrelude
+        | Marker::Poke
+        | Marker::PokePostlude => {
+            emit_block_single_at(lines, insert_idx, indent, marker, g);
+        }
+        Marker::Peek | Marker::DomainEffect | Marker::EffectUnion => {
+            unreachable!(
+                "emit_position_preserving called with non-preserving marker {:?}; \
+                 marker_supports_position_preserve gate should have rejected it",
+                marker
+            );
+        }
+    }
+}
+
+/// Insert one graft's banner-wrapped block at an explicit line index.
+/// Used by the drift re-injection path to preserve original block
+/// ordering across non-semantic manifest edits (RH1 step 2). `emit_block`
+/// remains the batch-at-marker entry point used for fresh injects.
+fn emit_block_single_at(
+    lines: &mut Vec<String>,
+    insert_idx: usize,
+    indent: &str,
+    marker: Marker,
+    g: &Graft,
+) {
+    let mut composed: Vec<String> = Vec::new();
+    composed.push(begin_banner_with_sha(&g.name, marker, g.sha256_short()));
+    let body = g
+        .block(marker)
+        .expect("emit_block_single_at called with a graft missing this marker")
+        .trimmed_body();
+    for line in body.lines() {
+        composed.push(line.to_string());
+    }
+    composed.push(end_banner(&g.name, marker));
+    let indented: Vec<String> = composed
+        .into_iter()
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("{}{}", indent, l)
+            }
+        })
+        .collect();
+    for (offset, line) in indented.into_iter().enumerate() {
+        lines.insert(insert_idx + offset, line);
+    }
 }
 
 /// Insert composed body lines after the marker, each pending graft wrapped
@@ -1297,6 +1403,51 @@ fn print_migration_line(report: &MigrationReport) {
 /// Preserves banner comments, indentation, and non-import body lines;
 /// only skips `/+  *X` / `/-  *X` whose `X` was already imported by an
 /// earlier line in the target file.
+/// RH1 step 2 single-graft variant of `emit_imports_block`. Inserts at
+/// an explicit line index (the begin-banner position the drift path
+/// captured before stripping) so re-injection preserves graft order in
+/// the imports block. Dedup logic mirrors the batch emitter.
+fn emit_imports_block_single_at(
+    lines: &mut Vec<String>,
+    insert_idx: usize,
+    indent: &str,
+    g: &Graft,
+) {
+    let mut seen: HashSet<String> = lines
+        .iter()
+        .filter_map(|l| parse_glob_import(l).map(|s| s.to_string()))
+        .collect();
+
+    let mut composed: Vec<String> = Vec::new();
+    composed.push(begin_banner_with_sha(&g.name, Marker::Imports, g.sha256_short()));
+    let body = g
+        .block(Marker::Imports)
+        .expect("emit_imports_block_single_at called with a graft missing imports")
+        .trimmed_body();
+    for line in body.lines() {
+        if let Some(name) = parse_glob_import(line) {
+            if !seen.insert(name.to_string()) {
+                continue;
+            }
+        }
+        composed.push(line.to_string());
+    }
+    composed.push(end_banner(&g.name, Marker::Imports));
+    let indented: Vec<String> = composed
+        .into_iter()
+        .map(|l| {
+            if l.is_empty() {
+                String::new()
+            } else {
+                format!("{}{}", indent, l)
+            }
+        })
+        .collect();
+    for (offset, line) in indented.into_iter().enumerate() {
+        lines.insert(insert_idx + offset, line);
+    }
+}
+
 fn emit_imports_block(
     lines: &mut Vec<String>,
     marker_idx: usize,
@@ -3171,6 +3322,68 @@ body     = """
         assert!(
             !report.pruned_grafts[0].pruned.is_empty(),
             "pruned markers list is non-empty"
+        );
+    }
+
+    /// RH1 step 2 (HARD-FRICTION-2): manifest drift on a non-first graft
+    /// must re-inject the block at its ORIGINAL line position, not at the
+    /// marker line. Pre-RH1 the strip-then-reinject path placed the
+    /// drifted graft's block at marker_idx+1, pushing every later graft
+    /// down by one — so a non-semantic edit (e.g., a gate-selection swap
+    /// in the manifest) changed `sha256(app.hoon)` even though the file
+    /// was logically equivalent. After Step 2, drift re-injection at
+    /// emit_block-class markers preserves position; the file is byte-
+    /// identical when the drifted manifest is reverted.
+    #[test]
+    fn drift_reinject_preserves_block_position() {
+        let alpha = synthetic_graft("alpha", 10);
+        let mut beta = synthetic_graft("beta", 20);
+        // Compute and store a stable sha256 so check_injection can detect
+        // "drift" when we later mutate the manifest.
+        beta.sha256 = sha256_hex(b"beta-v1");
+
+        let (composed, _) = inject(BARE_SCAFFOLD, &[alpha.clone(), beta.clone()]).unwrap();
+
+        // Confirm beta's poke block is BELOW alpha's in the original.
+        let alpha_poke = composed
+            .lines()
+            .position(|l| l.contains("graft-inject:alpha:poke:begin"))
+            .expect("alpha poke banner present");
+        let beta_poke = composed
+            .lines()
+            .position(|l| l.contains("graft-inject:beta:poke:begin"))
+            .expect("beta poke banner present");
+        assert!(
+            alpha_poke < beta_poke,
+            "initial layout: alpha:poke must precede beta:poke"
+        );
+
+        // Simulate a beta manifest edit (sha256 changes; body unchanged).
+        let mut beta_drifted = beta.clone();
+        beta_drifted.sha256 = sha256_hex(b"beta-v2");
+
+        let (after_drift, _) =
+            inject(&composed, &[alpha.clone(), beta_drifted]).unwrap();
+        let alpha_poke2 = after_drift
+            .lines()
+            .position(|l| l.contains("graft-inject:alpha:poke:begin"))
+            .expect("alpha poke banner survives drift");
+        let beta_poke2 = after_drift
+            .lines()
+            .position(|l| l.contains("graft-inject:beta:poke:begin"))
+            .expect("beta poke banner re-emitted after drift");
+        assert!(
+            alpha_poke2 < beta_poke2,
+            "drift re-injection must preserve order: alpha:poke still precedes beta:poke. \
+             Pre-RH1 the drifted graft jumped to marker_idx+1, inverting the order."
+        );
+
+        // Revert beta to its original sha. The result is byte-identical
+        // to the initial composition — drift round-trips at the byte level.
+        let (after_revert, _) = inject(&after_drift, &[alpha, beta]).unwrap();
+        assert_eq!(
+            after_revert, composed,
+            "drift-then-revert is byte-identical (Step 2 invariant)"
         );
     }
 
