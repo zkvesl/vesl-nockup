@@ -212,3 +212,41 @@ fn legacy_banner_force_reinjects_once() -> Result<()> {
     );
     Ok(())
 }
+
+/// RH2 HARD-BUG-3 binary-level regression guard: drop a graft from the
+/// active set and re-add it on the next run; the third run's
+/// `app.hoon` must be byte-identical to the first. Mirrors the
+/// post-mortem's HARD-REV-IDEMPOTENCE-CHAIN scenario at the CLI seam
+/// — the unit test of the same shape exercises `inject()` directly,
+/// this one hits the spawned binary against real graft manifests.
+#[test]
+fn drop_readd_round_trip_byte_identity() -> Result<()> {
+    let scratch = setup_scratch("rh2_drop_readd_byte_identity")?;
+    let app_hoon = scratch.join("hoon/app/app.hoon");
+
+    let full_set = "settle-graft,registry-graft,log-graft,validate-graft";
+    let dropped = "settle-graft,registry-graft,log-graft";
+
+    let initial = run_graft_inject(&scratch, full_set)?;
+    assert!(initial.status.success(), "initial inject failed");
+    let baseline = fs::read_to_string(&app_hoon)?;
+
+    let drop = run_graft_inject(&scratch, dropped)?;
+    assert!(drop.status.success(), "drop run failed");
+    let drop_stderr = String::from_utf8_lossy(&drop.stderr);
+    assert!(
+        drop_stderr.contains("validate-graft: orphan banner pair"),
+        "drop run must orphan-prune validate-graft; stderr was:\n{drop_stderr}"
+    );
+
+    let readd = run_graft_inject(&scratch, full_set)?;
+    assert!(readd.status.success(), "readd run failed");
+    let final_state = fs::read_to_string(&app_hoon)?;
+
+    assert_eq!(
+        baseline, final_state,
+        "drop+readd round trip must leave app.hoon byte-identical \
+         (RH2 HARD-BUG-3 invariant)"
+    );
+    Ok(())
+}
