@@ -105,7 +105,7 @@ Then copy the marker template over the scaffolded (and markerless) `app.hoon`:
 cp <path-to-vesl-nockup>/templates/app.hoon hoon/app/app.hoon
 ```
 
-The nockup `basic` template's `app.hoon` does not contain the seven `::  nockup:*` markers that `graft-inject` wires against. `templates/app.hoon` is the same minimal kernel with the markers pre-placed at the correct structural points.
+The nockup `basic` template's `app.hoon` does not contain the nine `::  nockup:*` markers that `graft-inject` wires against. `templates/app.hoon` is the same minimal kernel with the markers pre-placed at the correct structural points.
 
 ### If the registry hasn't resolved `zkvesl/vesl-graft` yet
 
@@ -144,7 +144,7 @@ graft-inject hoon/app/app.hoon            # preview
 graft-inject --apply hoon/app/app.hoon    # write
 ```
 
-The `app.hoon` you copied in Step 2 has seven `::  nockup:*` marker comments at fixed structural points. `graft-inject` discovers every `<name>-graft.toml` under `hoon/lib/`, composes their per-marker blocks, and prints the result — imports, state fields, cause-union branches, poke prelude/postlude wrappers, `?-` poke arms, and a chained peek dispatcher. About 80 lines per graft, written for you. The tool is idempotent — re-running after `--apply` skips anything already wired.
+The `app.hoon` you copied in Step 2 has nine `::  nockup:*` marker comments at fixed structural points — seven content markers (where graft bodies splice in) and two codegen markers (`domain-effect` and `effect-union`, anchors for the Phase 03f typed effect-union pass). `graft-inject` discovers every `<name>-graft.toml` under `hoon/lib/`, composes their per-marker blocks, and prints the result — imports, state fields, cause-union branches, poke prelude/postlude wrappers, `?-` poke arms, a chained peek dispatcher, and the synthesized `+$  effect  $%(...)` union. About 80 lines per graft, written for you. The tool is idempotent — re-running after `--apply` skips anything already wired.
 
 **Preview by default.** A bare invocation prints the composed kernel to stdout and a per-manifest sha256 summary to stderr. Nothing is written until you pass `--apply`. This keeps a compromised `hoon/lib/` — pulled by `sync.sh`, a bad `cp`, or a dependency bump — from silently composing hostile Hoon into your kernel source. See `docs/graft-manifest.md` for the trust model.
 
@@ -420,7 +420,7 @@ Peek path is `[%registry-entry key=@]`. Registry has the heaviest C1 surface in 
 If you already have a working nockapp, skip Step 1. The rest applies, with one extra step: you have an `app.hoon` already — you need to *annotate* it with markers rather than copy the template over it.
 
 1. `nockup package add zkvesl/vesl-graft -v latest && nockup package install` — same as Step 2 above.
-2. **Annotate your existing `app.hoon` with the seven `::  nockup:*` markers.** `graft-inject` looks for exact marker comments at specific structural points:
+2. **Annotate your existing `app.hoon` with the nine `::  nockup:*` markers.** `graft-inject` looks for exact marker comments at specific structural points:
    - `::  nockup:imports` — at the top of the file, near your other `/+` imports
    - `::  nockup:state` — inside your `versioned-state` `$:` block, above the closing `==`
    - `::  nockup:cause` — inside your `cause` `$%` union, above the closing `==`
@@ -428,6 +428,8 @@ If you already have a working nockapp, skip Step 1. The rest applies, with one e
    - `::  nockup:poke` — inside your `?-` poke switch, as the last item before `==`
    - `::  nockup:poke-postlude` — immediately after the `?-` switch (Phase 03b — bracket for postlude transforms over the switch's `[(list effect) _state]` result)
    - `::  nockup:peek` — inside your peek handler's `?+` default arm (or on the line above a bare `~` fallthrough)
+   - `::  nockup:domain-effect` — placement anchor for *your* `+$  domain-effect  $%(...)` declaration (Phase 03f Lever 1; graft-inject does not own the body, only checks the marker is present)
+   - `::  nockup:effect-union` — REPLACE-IF-PRESENT codegen target where graft-inject synthesizes the typed `+$  effect  $%(<each graft's effect> domain-effect ==)` union (Phase 03f Lever 1)
 
    See `templates/app.hoon` for a reference placement. Two-space law applies — `::` followed by exactly two spaces, then `nockup:<name>`.
 3. `graft-inject --apply hoon/app/app.hoon` — same as Step 3 above. Safe to run against a populated kernel; it only edits marker lines. Bare invocation (no `--apply`) previews.
