@@ -3427,6 +3427,124 @@ body     = """
         );
     }
 
+    /// RH2 HARD-BUG-2: peek-marker drift re-injection currently falls
+    /// through to `emit_peek_chain` because `marker_supports_position_preserve`
+    /// returns false for Peek. The drifted block ends up appended at the
+    /// chain tail (just before the structural terminal `~`) instead of
+    /// at its original position. Reproduces the post-mortem's settle-graft
+    /// peek migration (line 101 → 113) at HARD-REV-SWAP-GATE.
+    ///
+    /// Test shape: drift the FIRST graft of a 3-graft chain. With current
+    /// code, the drifted graft is stripped and re-emitted at the chain
+    /// tail, so its peek block ends up after the others — order inverted.
+    /// After the canonical-re-emit refactor, peek drift round-trips at
+    /// the byte level just like the other markers.
+    #[test]
+    fn peek_drift_reinject_preserves_block_position() {
+        let mut alpha = synthetic_graft("alpha", 10);
+        alpha.sha256 = sha256_hex(b"alpha-v1");
+        let beta = synthetic_graft("beta", 20);
+        let gamma = synthetic_graft("gamma", 30);
+
+        let (composed, _) =
+            inject(BARE_SCAFFOLD, &[alpha.clone(), beta.clone(), gamma.clone()]).unwrap();
+
+        let pos = |s: &str, g: &str| -> usize {
+            s.lines()
+                .position(|l| l.contains(&format!("graft-inject:{g}:peek:begin")))
+                .unwrap_or_else(|| panic!("{g} peek banner missing"))
+        };
+        assert!(
+            pos(&composed, "alpha") < pos(&composed, "beta"),
+            "initial layout: alpha:peek precedes beta:peek"
+        );
+        assert!(
+            pos(&composed, "beta") < pos(&composed, "gamma"),
+            "initial layout: beta:peek precedes gamma:peek"
+        );
+
+        let mut alpha_drifted = alpha.clone();
+        alpha_drifted.sha256 = sha256_hex(b"alpha-v2");
+
+        let (after_drift, _) =
+            inject(&composed, &[alpha_drifted, beta.clone(), gamma.clone()]).unwrap();
+
+        assert!(
+            pos(&after_drift, "alpha") < pos(&after_drift, "beta"),
+            "drift re-injection must preserve order at the peek marker: \
+             alpha:peek still precedes beta:peek. HARD-BUG-2 currently \
+             relocates the drifted peek block to the chain tail."
+        );
+        assert!(
+            pos(&after_drift, "beta") < pos(&after_drift, "gamma"),
+            "non-drifted blocks (beta, gamma) keep relative order through drift"
+        );
+
+        let (after_revert, _) = inject(&after_drift, &[alpha, beta, gamma]).unwrap();
+        assert_eq!(
+            after_revert, composed,
+            "peek drift-then-revert is byte-identical (HARD-BUG-2 invariant)"
+        );
+    }
+
+    /// RH2 HARD-BUG-3: dropping a graft and re-adding it currently lands
+    /// the re-injected block at marker_idx+1 (position 1 of each marker
+    /// section), displacing any other graft blocks below the marker.
+    /// After the canonical-re-emit refactor, the final layout is a pure
+    /// function of the active graft set and drop+readd is byte-identical.
+    #[test]
+    fn drop_readd_preserves_position_byte_identical() {
+        let alpha = synthetic_graft("alpha", 10);
+        let beta = synthetic_graft("beta", 20);
+        let gamma = synthetic_graft("gamma", 30);
+
+        let (composed, _) =
+            inject(BARE_SCAFFOLD, &[alpha.clone(), beta.clone(), gamma.clone()]).unwrap();
+
+        let (after_drop, _) = inject(&composed, &[alpha.clone(), gamma.clone()]).unwrap();
+        assert!(
+            !after_drop.contains("graft-inject:beta:"),
+            "beta banners pruned on drop (precondition for the readd test)"
+        );
+
+        let (after_readd, _) = inject(&after_drop, &[alpha, beta, gamma]).unwrap();
+        assert_eq!(
+            after_readd, composed,
+            "drop+readd is byte-identical (HARD-BUG-3 invariant). \
+             Pre-fix the re-added beta lands at marker_idx+1 in each \
+             section instead of between alpha and gamma."
+        );
+    }
+
+    /// RH2 HARD-BUG-3 cross-marker scenario: matches the post-mortem's
+    /// HARD-REV-IDEMPOTENCE-CHAIN sequence with four grafts. The byte-
+    /// identical assertion catches both the direct (re-added graft
+    /// position) and the collateral (other grafts moving) symptoms in a
+    /// single check.
+    #[test]
+    fn cross_marker_drop_readd_no_collateral_movement() {
+        let a = synthetic_graft("aaa", 10);
+        let b = synthetic_graft("bbb", 20);
+        let c = synthetic_graft("ccc", 30);
+        let d = synthetic_graft("ddd", 40);
+
+        let (composed, _) =
+            inject(BARE_SCAFFOLD, &[a.clone(), b.clone(), c.clone(), d.clone()]).unwrap();
+
+        let (after_drop, _) =
+            inject(&composed, &[a.clone(), b.clone(), c.clone()]).unwrap();
+
+        let (after_readd, _) = inject(&after_drop, &[a, b, c, d]).unwrap();
+
+        assert_eq!(
+            after_readd, composed,
+            "drop+readd cycle (4 grafts) is byte-identical. \
+             Catches the HARD-BUG-3 collateral-movement symptom — \
+             the post-mortem's `log-graft jumps to position 1 even \
+             though only validate was re-added` bug."
+        );
+    }
+
     // ---------------------------------------------------------------
     // [graft.gates] selection — EXPANSION Phase 01 / parametize_2
     // ---------------------------------------------------------------
