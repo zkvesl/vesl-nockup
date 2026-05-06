@@ -759,8 +759,6 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
     }
 
     for marker in Marker::ALL {
-        // Find the marker once for indent/fresh-inject; we'll re-find
-        // after any drift strips that shifted lines.
         let Some(initial_idx) = find_marker(&lines, marker)? else {
             markers_missing.push(marker);
             continue;
@@ -768,23 +766,20 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
         markers_in_source.push(marker);
         let indent = leading_whitespace(&lines[initial_idx]).to_string();
 
-        // RH1 step 2 (HARD-FRICTION-2): for emit_block-class markers
-        // (state/cause/poke/poke-prelude/poke-postlude), drift re-injection
-        // strips and re-emits AT THE SAME LINE INDEX so the file's graft
-        // ordering survives a non-semantic manifest edit (e.g., a gate
-        // swap). Position preservation is scoped to emit_block — Imports
-        // anchors at the marker line and Peek inserts before the
-        // structural terminal `~`, neither of which exposes the same
-        // friction.
-        //
-        // R5/A2 (legacy comment): strip any per-graft banner pair whose
-        // embedded sha256 doesn't match the current manifest (drift) or
-        // whose banner is in pre-A2 legacy format (no sha256 suffix).
-        let mut pending: Vec<&Graft> = Vec::new();
-        for g in grafts {
-            if g.block(marker).is_none() {
-                continue;
-            }
+        // Filter to grafts that contribute a block at this marker.
+        // Codegen-only markers (DomainEffect, EffectUnion) yield an
+        // empty slice; canonicalize_marker_section returns immediately.
+        let grafts_at_marker: Vec<&Graft> = grafts
+            .iter()
+            .filter(|g| g.block(marker).is_some())
+            .collect();
+
+        // Drive the per-graft report by reading the current banner state,
+        // then unconditionally canonicalize. Output bytes are identical
+        // whether a graft was UpToDate or drifted — the report just
+        // distinguishes the two so users see a meaningful "skipped vs
+        // injected" summary on rerun.
+        for g in &grafts_at_marker {
             match check_injection(&lines, g, marker) {
                 InjectStatus::Drift { old_sha } => {
                     eprintln!(
@@ -794,19 +789,7 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
                         old_sha,
                         g.sha256_short()
                     );
-                    if marker_supports_position_preserve(marker) {
-                        if let Some(orig_idx) =
-                            strip_banner_pair(&mut lines, &g.name, marker)
-                        {
-                            emit_position_preserving(
-                                &mut lines, orig_idx, &indent, marker, g,
-                            );
-                            per_graft.get_mut(&g.name).unwrap().injected.push(marker);
-                        }
-                    } else {
-                        strip_banner_pair(&mut lines, &g.name, marker);
-                        pending.push(g);
-                    }
+                    per_graft.get_mut(&g.name).unwrap().injected.push(marker);
                 }
                 InjectStatus::Legacy => {
                     eprintln!(
@@ -814,50 +797,24 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
                         g.name,
                         marker.label()
                     );
-                    if marker_supports_position_preserve(marker) {
-                        if let Some(orig_idx) =
-                            strip_banner_pair(&mut lines, &g.name, marker)
-                        {
-                            emit_position_preserving(
-                                &mut lines, orig_idx, &indent, marker, g,
-                            );
-                            per_graft.get_mut(&g.name).unwrap().injected.push(marker);
-                        }
-                    } else {
-                        strip_banner_pair(&mut lines, &g.name, marker);
-                        pending.push(g);
-                    }
+                    per_graft.get_mut(&g.name).unwrap().injected.push(marker);
                 }
                 InjectStatus::UpToDate => {
                     per_graft.get_mut(&g.name).unwrap().skipped.push(marker);
                 }
                 InjectStatus::NotInjected => {
-                    pending.push(g);
+                    per_graft.get_mut(&g.name).unwrap().injected.push(marker);
                 }
             }
         }
 
-        if pending.is_empty() {
-            continue;
-        }
-        // Re-find the marker — drift strips may have shifted line indices.
-        let Some(idx) = find_marker(&lines, marker)? else {
-            unreachable!("marker {:?} disappeared mid-loop", marker);
-        };
-        match marker {
-            Marker::Peek => {
-                emit_peek_chain(&mut lines, idx, &indent, &pending);
-            }
-            Marker::Imports => {
-                emit_imports_block(&mut lines, idx, &indent, &pending);
-            }
-            _ => {
-                emit_block(&mut lines, idx, &indent, marker, &pending);
-            }
-        }
-        for g in &pending {
-            per_graft.get_mut(&g.name).unwrap().injected.push(marker);
-        }
+        // RH2 step 2 (HARD-BUG-2 + HARD-BUG-3): collapse the dual
+        // placement strategy (drift-preserve at orig_idx vs fresh-batch
+        // at marker_idx+1) to a single canonical re-emit. The marker
+        // section's graft blocks become a pure function of the active
+        // set, so drop+readd is byte-identical and peek drift no longer
+        // jumps to the chain tail.
+        canonicalize_marker_section(&mut lines, marker, &indent, &grafts_at_marker);
     }
 
     // Phase 03f Lever 1: typed effect-union codegen runs after the
@@ -894,92 +851,40 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
     ))
 }
 
-/// RH1 step 2: markers whose drift re-injection should preserve the
-/// original block position rather than re-batching at the marker line.
-/// Imports and the emit_block-class markers (state / cause / poke*)
-/// all exhibit HARD-FRICTION-2: a single-graft drift via the batched
-/// path lands the drifted block at marker_idx+1, displacing every
-/// later graft and changing app.hoon's sha256 even though the file is
-/// logically equivalent. Peek is excluded because `emit_peek_chain`
-/// anchors against the structural terminal `~` rather than the marker
-/// line, so a per-graft strip-and-reinject would need different
-/// machinery; the chain shape is structurally ordered already.
-fn marker_supports_position_preserve(marker: Marker) -> bool {
-    matches!(
-        marker,
-        Marker::Imports
-            | Marker::State
-            | Marker::Cause
-            | Marker::PokePrelude
-            | Marker::Poke
-            | Marker::PokePostlude
-    )
-}
-
-/// RH1 step 2: dispatch to the appropriate single-graft emitter for
-/// drift re-injection. `marker_supports_position_preserve` gates the
-/// caller — markers excluded there should never reach this dispatch.
-fn emit_position_preserving(
+/// RH2 step 2: a single placement strategy for graft blocks at one
+/// marker. Strips every active-graft banner pair at `marker`, then
+/// re-emits the slice in canonical (priority-then-name) order. The
+/// final layout is a pure function of `grafts_for_marker`, so:
+///
+/// - drop+readd cycles produce byte-identical output (HARD-BUG-3),
+/// - drift re-injection does not relocate the drifted block to a new
+///   position relative to its peers (HARD-BUG-2 for peek; same fix
+///   for all other markers).
+///
+/// Replaces RH1 step 2's `emit_position_preserving` dispatcher and the
+/// `*_single_at` emitters. Codegen-only markers (DomainEffect,
+/// EffectUnion) yield an empty slice from the caller's filter, so the
+/// early return covers them — `emit_effect_union` runs separately
+/// after the marker loop.
+fn canonicalize_marker_section(
     lines: &mut Vec<String>,
-    insert_idx: usize,
-    indent: &str,
     marker: Marker,
-    g: &Graft,
+    indent: &str,
+    grafts_for_marker: &[&Graft],
 ) {
+    if grafts_for_marker.is_empty() {
+        return;
+    }
+    for g in grafts_for_marker {
+        strip_banner_pair(lines, &g.name, marker);
+    }
+    let marker_idx = find_marker(lines, marker)
+        .expect("io-free find_marker")
+        .expect("marker still present after strip — caller observed it pre-strip");
     match marker {
-        Marker::Imports => {
-            emit_imports_block_single_at(lines, insert_idx, indent, g);
-        }
-        Marker::State
-        | Marker::Cause
-        | Marker::PokePrelude
-        | Marker::Poke
-        | Marker::PokePostlude => {
-            emit_block_single_at(lines, insert_idx, indent, marker, g);
-        }
-        Marker::Peek | Marker::DomainEffect | Marker::EffectUnion => {
-            unreachable!(
-                "emit_position_preserving called with non-preserving marker {:?}; \
-                 marker_supports_position_preserve gate should have rejected it",
-                marker
-            );
-        }
-    }
-}
-
-/// Insert one graft's banner-wrapped block at an explicit line index.
-/// Used by the drift re-injection path to preserve original block
-/// ordering across non-semantic manifest edits (RH1 step 2). `emit_block`
-/// remains the batch-at-marker entry point used for fresh injects.
-fn emit_block_single_at(
-    lines: &mut Vec<String>,
-    insert_idx: usize,
-    indent: &str,
-    marker: Marker,
-    g: &Graft,
-) {
-    let mut composed: Vec<String> = Vec::new();
-    composed.push(begin_banner_with_sha(&g.name, marker, g.sha256_short()));
-    let body = g
-        .block(marker)
-        .expect("emit_block_single_at called with a graft missing this marker")
-        .trimmed_body();
-    for line in body.lines() {
-        composed.push(line.to_string());
-    }
-    composed.push(end_banner(&g.name, marker));
-    let indented: Vec<String> = composed
-        .into_iter()
-        .map(|l| {
-            if l.is_empty() {
-                String::new()
-            } else {
-                format!("{}{}", indent, l)
-            }
-        })
-        .collect();
-    for (offset, line) in indented.into_iter().enumerate() {
-        lines.insert(insert_idx + offset, line);
+        Marker::Peek => emit_peek_chain(lines, marker_idx, indent, grafts_for_marker),
+        Marker::Imports => emit_imports_block(lines, marker_idx, indent, grafts_for_marker),
+        _ => emit_block(lines, marker_idx, indent, marker, grafts_for_marker),
     }
 }
 
@@ -1403,51 +1308,6 @@ fn print_migration_line(report: &MigrationReport) {
 /// Preserves banner comments, indentation, and non-import body lines;
 /// only skips `/+  *X` / `/-  *X` whose `X` was already imported by an
 /// earlier line in the target file.
-/// RH1 step 2 single-graft variant of `emit_imports_block`. Inserts at
-/// an explicit line index (the begin-banner position the drift path
-/// captured before stripping) so re-injection preserves graft order in
-/// the imports block. Dedup logic mirrors the batch emitter.
-fn emit_imports_block_single_at(
-    lines: &mut Vec<String>,
-    insert_idx: usize,
-    indent: &str,
-    g: &Graft,
-) {
-    let mut seen: HashSet<String> = lines
-        .iter()
-        .filter_map(|l| parse_glob_import(l).map(|s| s.to_string()))
-        .collect();
-
-    let mut composed: Vec<String> = Vec::new();
-    composed.push(begin_banner_with_sha(&g.name, Marker::Imports, g.sha256_short()));
-    let body = g
-        .block(Marker::Imports)
-        .expect("emit_imports_block_single_at called with a graft missing imports")
-        .trimmed_body();
-    for line in body.lines() {
-        if let Some(name) = parse_glob_import(line) {
-            if !seen.insert(name.to_string()) {
-                continue;
-            }
-        }
-        composed.push(line.to_string());
-    }
-    composed.push(end_banner(&g.name, Marker::Imports));
-    let indented: Vec<String> = composed
-        .into_iter()
-        .map(|l| {
-            if l.is_empty() {
-                String::new()
-            } else {
-                format!("{}{}", indent, l)
-            }
-        })
-        .collect();
-    for (offset, line) in indented.into_iter().enumerate() {
-        lines.insert(insert_idx + offset, line);
-    }
-}
-
 fn emit_imports_block(
     lines: &mut Vec<String>,
     marker_idx: usize,
@@ -3427,18 +3287,18 @@ body     = """
         );
     }
 
-    /// RH2 HARD-BUG-2: peek-marker drift re-injection currently falls
-    /// through to `emit_peek_chain` because `marker_supports_position_preserve`
-    /// returns false for Peek. The drifted block ends up appended at the
-    /// chain tail (just before the structural terminal `~`) instead of
-    /// at its original position. Reproduces the post-mortem's settle-graft
-    /// peek migration (line 101 → 113) at HARD-REV-SWAP-GATE.
+    /// RH2 HARD-BUG-2 regression guard: peek-marker drift re-injection
+    /// must preserve relative order between graft peek blocks. Pre-fix
+    /// (RH1 step 2) Peek was excluded from the position-preservation
+    /// gate, so peek drift fell through to the batch fresh-inject path
+    /// (`emit_peek_chain`) which inserts before the chain's terminal
+    /// `~` — relocating the drifted block to the tail. Post-fix (RH2
+    /// step 2) `canonicalize_marker_section` strips and re-emits all
+    /// active grafts in canonical order regardless of marker type.
     ///
-    /// Test shape: drift the FIRST graft of a 3-graft chain. With current
-    /// code, the drifted graft is stripped and re-emitted at the chain
-    /// tail, so its peek block ends up after the others — order inverted.
-    /// After the canonical-re-emit refactor, peek drift round-trips at
-    /// the byte level just like the other markers.
+    /// Test shape: drift the FIRST graft of a 3-graft chain.
+    /// Reproduces the post-mortem's settle-graft peek migration
+    /// (line 101 → 113) at HARD-REV-SWAP-GATE.
     #[test]
     fn peek_drift_reinject_preserves_block_position() {
         let mut alpha = synthetic_graft("alpha", 10);
