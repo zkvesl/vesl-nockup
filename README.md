@@ -645,6 +645,30 @@ Inside each `%settle-*` arm, replace the gate body:
 
 **Swapping a gate selection mid-project.** When you change `[graft.gates] gate = "..."` in a manifest (e.g., promoting a project from `sig-verify-schnorr` in development to `manifest-verify` in production), re-run `graft-inject --apply hoon/app/app.hoon` — the composer detects the manifest drift via the `sha256:<short>` prefix it embeds in each `::  graft-inject:<graft>:<marker>:begin` banner, strips the stale block, and re-injects from the new manifest. The drift event is announced on stderr (`graft-inject: settle-graft: manifest drift at poke (banner sha256 eec1fca7a063 → current 3c43c1086620). Re-injecting.`). Pre-Phase-03h kernels whose banners predate the sha256 suffix are detected as legacy and force-re-injected once on first run after the upgrade — the new format is stamped in place, no manual cleanup needed.
 
+### Removing a graft
+
+You added `rbac-graft` to try it; now you're taking it back out. Drop the name from `--grafts` and re-run with `--apply`:
+
+```bash
+graft-inject --grafts settle-graft,registry-graft,log-graft --apply hoon/app/app.hoon
+```
+
+graft-inject auto-prunes the banner-pair-bounded blocks the dropped graft owned. The per-graft summary surfaces it:
+
+```
+  rbac-graft       no-manifest    pruned 5/5 (imports, state, cause, poke, peek) (orphan blocks from previous injection)
+```
+
+The lib files (`hoon/lib/rbac-graft.hoon`, `hoon/lib/rbac-graft.toml`) stay where they are — graft-inject only edits `app.hoon`. Delete them manually if you want them gone for good. Re-add the graft later by putting its name back in `--grafts`; the round-trip is byte-identical.
+
+If your installed `graft-inject` predates RH1 step 1, you'll see the orphan blocks left behind and `hoonc` will fail with a wall of `hoonc.hoon` internals (the orphan arms reference an `effect` union variant that's no longer there). The workaround is a sed-range delete:
+
+```bash
+sed -i '/graft-inject:rbac-graft:[a-z-]*:begin/,/:end/d' hoon/app/app.hoon
+```
+
+Then `cargo install --path tools/graft-inject --force` to upgrade and never need that workaround again.
+
 ### Drive a catalog gate from Rust
 
 When your manifest selects one of the Tier 1a catalog gates via `[graft.gates]` (`sig-verify-schnorr`, `sig-verify-ed25519`, `manifest-verify`, `set-membership-verify`, `bounded-value-verify`), the gate's `data` field is no longer a flat byte slice — it's a structured cell. `vesl-core` ships per-gate poke builders that thread the right cell shape; pick the one matching your gate. Worked Schnorr example, end-to-end:
@@ -782,6 +806,9 @@ The verify-gate returned `%.n`. The `?>` in `lib/settle-graft.hoon`'s `%settle-n
 
 **Peek returns `~` on what looks like a valid path**
 Settle-graft's peek paths are **namespaced**: `[%settle-registered hull ~]`, `[%settle-noted note-id ~]`, `[%settle-root hull ~]`, `[%settle-epoch ~]`, `[%settle-count ~]`. Pre-Phase-10 unprefixed forms (`%registered` / `%settled` / `%root` / `%epoch`) and the transitional Phase-10 `%vesl-*` forms are both retired — Phase 12A landed `%settle-*` as the final naming. Rust callers going through `vesl-core` are unaffected; the builders construct pokes, not peek paths.
+
+**`out.jam` changed but graft-inject reported nothing**
+A comment-only or whitespace edit in a transitively-parsed `.hoon` library (anything under `hoon/lib/`, including helpers like `domain-patterns.hoon` that no marker imports directly) can shift `out.jam` even when graft-inject's per-graft summary reports `injected 0/N; skipped` across the board. The cause is hoonc-side, not graft-inject — something position-sensitive in the source (likely span metadata) bleeds into the jammed output. graft-inject is **manifest-keyed**: it re-injects only when a `<graft>.toml` digest changes, so library `.hoon` edits slip past it. If you need byte-stable `out.jam`, treat any `.hoon` edit as material — bump the corresponding `.toml`'s body to force a re-inject pass — even if you intended only a comment.
 
 ## Reference
 
