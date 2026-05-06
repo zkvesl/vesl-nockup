@@ -1905,18 +1905,24 @@ fn main() -> ExitCode {
     }
 }
 
-/// One-line stderr warning when the binary's source SHA (captured at
-/// build time by `build.rs`) doesn't match the latest commit touching
-/// `src/` in the manifest dir. Catches the dogfood case where a global
-/// `cargo install --path tools/graft-inject` ran weeks ago and has
-/// fallen behind source.
+/// One-line stderr warning when the binary's content-hash of `src/`
+/// (captured at build time by `build.rs`) doesn't match the current
+/// content-hash of `src/` in the manifest dir. Catches the dogfood
+/// case where a global `cargo install --path tools/graft-inject` ran
+/// weeks ago and has fallen behind source.
+///
+/// RH1 step 3 (HARD-FRICTION-1): pre-RH1 the metric was `git log -1
+/// -- src` (latest commit touching src/), which fired in a working
+/// checkout where source had advanced past the binary's git context
+/// even when the binary's `src/` bytes already matched. A content-hash
+/// fires only when actual bytes differ.
 ///
 /// Silent when:
-/// - The build SHA is `unknown` (no git context at build time).
-/// - The manifest dir from build time no longer exists on this
-///   machine (binary was moved, or the source checkout was deleted).
-/// - `git` isn't on PATH or `git log` fails.
-/// - The current source SHA matches the build SHA (binary is current).
+/// - The build hash is `unknown` (build.rs couldn't walk src/).
+/// - The manifest dir from build time no longer exists on this machine
+///   (binary was moved, or the source checkout was deleted).
+/// - The runtime walk of src/ fails for any reason.
+/// - The current content-hash matches the build hash (binary is current).
 ///
 /// Suppress entirely with `GRAFT_INJECT_NO_STALENESS_WARNING=1` for
 /// CI runs that don't want the noise.
@@ -1924,34 +1930,68 @@ fn warn_if_stale() {
     if std::env::var("GRAFT_INJECT_NO_STALENESS_WARNING").is_ok() {
         return;
     }
-    let build_sha = env!("GRAFT_INJECT_BUILD_SRC_SHA");
-    if build_sha == "unknown" {
+    let build_hash = env!("GRAFT_INJECT_BUILD_SRC_HASH");
+    if build_hash == "unknown" {
         return;
     }
     let manifest_dir = env!("GRAFT_INJECT_MANIFEST_DIR");
-    if !Path::new(manifest_dir).exists() {
+    let src_root = Path::new(manifest_dir).join("src");
+    if !src_root.exists() {
         return;
     }
-    let Ok(output) = std::process::Command::new("git")
-        .args(["-C", manifest_dir, "log", "-1", "--format=%H", "--", "src"])
-        .output()
-    else {
+    let Ok(current_hash) = hash_src_dir(&src_root) else {
         return;
     };
-    if !output.status.success() {
+    if current_hash == build_hash {
         return;
     }
-    let current_sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if current_sha.is_empty() || current_sha == build_sha {
-        return;
-    }
-    let short = |s: &str| s.chars().take(8).collect::<String>();
+    let short = |s: &str| s.chars().take(12).collect::<String>();
     eprintln!(
-        "graft-inject: warning — binary built from {} but tools/graft-inject/src/ \
+        "graft-inject: warning — binary built from src/ hash {} but src/ \
          is now at {}. Rebuild: cargo install --path tools/graft-inject --force",
-        short(build_sha),
-        short(&current_sha),
+        short(build_hash),
+        short(&current_hash),
     );
+}
+
+/// Mirror of `build.rs::hash_dir` for runtime staleness check. Walks
+/// `dir` recursively, sorts entries by relative path for determinism,
+/// and digests `(relative_path_bytes \0 file_bytes \0)` into a sha256.
+/// Must stay byte-compatible with the build-time helper.
+fn hash_src_dir(dir: &Path) -> std::io::Result<String> {
+    let mut entries: Vec<PathBuf> = Vec::new();
+    collect_src_files(dir, &mut entries)?;
+    entries.sort();
+
+    let mut hasher = Sha256::new();
+    for path in &entries {
+        let rel = path.strip_prefix(dir).unwrap_or(path);
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        hasher.update(rel_str.as_bytes());
+        hasher.update(b"\0");
+        let bytes = fs::read(path)?;
+        hasher.update(&bytes);
+        hasher.update(b"\0");
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+fn collect_src_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            collect_src_files(&path, out)?;
+        } else if ft.is_file() {
+            out.push(path);
+        }
+    }
+    Ok(())
 }
 
 fn run(cli: Cli) -> Result<()> {

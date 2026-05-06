@@ -17,6 +17,12 @@ serde_json = "1"
 sha2 = "0.10"
 toml = "0.8"
 
+[build-dependencies]
+# build.rs computes a content-hash of src/ at build time so runtime
+# staleness detection compares actual source bytes rather than a git
+# rev that drifts on every commit (RH1 step 3 / HARD-FRICTION-1).
+sha2 = "0.10"
+
 [dev-dependencies]
 # Integration tests (mint_lifecycle etc.) boot a graft-composed kernel
 # and drive it via vesl-test's harness. vesl-core crates come from the
