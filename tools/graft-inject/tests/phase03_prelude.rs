@@ -65,6 +65,10 @@ name     = "guard-test-graft"
 version  = "0.1.0"
 priority = 105
 
+[graft.types]
+effect = "guard-test-effect"
+cause  = "guard-test-cause"
+
 [graft.blocks.imports]
 sentinel = "*guard-test-graft"
 body     = """

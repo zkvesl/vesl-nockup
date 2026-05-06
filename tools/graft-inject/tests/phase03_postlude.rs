@@ -71,6 +71,10 @@ name     = "tap-graft"
 version  = "0.1.0"
 priority = 125
 
+[graft.types]
+effect = "tap-effect"
+cause  = "tap-cause"
+
 [graft.blocks.imports]
 sentinel = "*tap-graft"
 body     = """
