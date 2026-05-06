@@ -616,6 +616,11 @@ struct InjectReport {
     markers_missing: Vec<Marker>,
     /// Per-graft outcome, in the same order as the input slice.
     grafts: Vec<GraftReport>,
+    /// Grafts whose banner pairs were present in source but absent from
+    /// the active `--grafts` set on this run. Their orphan blocks were
+    /// auto-pruned. Carrier separate from `grafts` because no manifest
+    /// is loaded for these names.
+    pruned_grafts: Vec<GraftReport>,
     /// Phase 03f Lever 1: outcome of the typed effect-union codegen pass.
     codegen: CodegenReport,
     /// Phase 03f Lever 1.5: weld-friction lint findings in domain code.
@@ -686,6 +691,9 @@ struct GraftReport {
     injected: Vec<Marker>,
     /// Markers where the graft's sentinel was already present (idempotent skip).
     skipped: Vec<Marker>,
+    /// Markers stripped as orphans this run — banner pairs were present
+    /// in the source but the graft is no longer in the active set.
+    pruned: Vec<Marker>,
 }
 
 fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
@@ -710,10 +718,45 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
                     applicable,
                     injected: Vec::new(),
                     skipped: Vec::new(),
+                    pruned: Vec::new(),
                 },
             )
         })
         .collect();
+
+    // RH1 step 1: auto-prune banner pairs whose graft is no longer in
+    // `grafts`. Runs before the strip/inject loop so orphan blocks
+    // referencing now-missing variants are gone before hoonc sees them
+    // and before drift detection runs against a clean tree.
+    let active: HashSet<&str> = grafts.iter().map(|g| g.name.as_str()).collect();
+    let orphan_names = orphan_graft_names(&lines, &active);
+    let mut pruned_grafts: Vec<GraftReport> = Vec::new();
+    for name in &orphan_names {
+        let mut pruned: Vec<Marker> = Vec::new();
+        for marker in Marker::ALL {
+            if strip_banner_pair(&mut lines, name, marker).is_some() {
+                pruned.push(marker);
+            }
+        }
+        if !pruned.is_empty() {
+            eprintln!(
+                "graft-inject: {}: orphan banner pair(s) at {} (graft not in active set). Pruning.",
+                name,
+                pruned
+                    .iter()
+                    .map(|m| m.label())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            pruned_grafts.push(GraftReport {
+                name: name.clone(),
+                applicable: pruned.clone(),
+                injected: Vec::new(),
+                skipped: Vec::new(),
+                pruned,
+            });
+        }
+    }
 
     for marker in Marker::ALL {
         // R5/A2: strip any per-graft banner pair whose embedded sha256
@@ -827,6 +870,7 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
             markers_in_source,
             markers_missing,
             grafts: grafts_reports,
+            pruned_grafts,
             codegen,
             weld_lint,
         },
@@ -1492,30 +1536,67 @@ fn check_injection(lines: &[String], graft: &Graft, marker: Marker) -> InjectSta
     InjectStatus::NotInjected
 }
 
+/// Scan `lines` for `::  graft-inject:<name>:<marker>:begin` banners
+/// whose `<name>` is not in `active`. Returns the set of orphan graft
+/// names. Used by the prune pre-pass in `inject()` to detect grafts
+/// that were previously injected but have been dropped from `--grafts`.
+///
+/// Discrimination: codegen banners (e.g. `::  graft-inject:effect-union:begin`)
+/// have a single segment between `graft-inject:` and `:begin` that matches
+/// a `Marker::label()`; per-graft banners have two segments (`<name>:<marker>`).
+/// Codegen banners are owned by the tool itself and must never be pruned.
+fn orphan_graft_names(
+    lines: &[String],
+    active: &HashSet<&str>,
+) -> std::collections::BTreeSet<String> {
+    use std::collections::BTreeSet;
+    const PREFIX: &str = "::  graft-inject:";
+    let marker_labels: HashSet<&str> = Marker::ALL.iter().map(|m| m.label()).collect();
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for line in lines {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix(PREFIX) else {
+            continue;
+        };
+        let Some((segment, _tail)) = rest.split_once(':') else {
+            continue;
+        };
+        // Codegen banner — single segment is a Marker label, never a graft name.
+        if marker_labels.contains(segment) {
+            continue;
+        }
+        // Per-graft banner — first segment is the graft name.
+        if !active.contains(segment) {
+            names.insert(segment.to_string());
+        }
+    }
+    names
+}
+
 /// Strip a `::  graft-inject:<name>:<marker>:begin … :end` banner pair
 /// (and everything between) from `lines`. Used by the drift-detection
-/// path before re-injecting fresh content. Returns true if a pair was
-/// found and removed; false if no begin banner matched.
-fn strip_banner_pair(lines: &mut Vec<String>, graft_name: &str, marker: Marker) -> bool {
+/// path before re-injecting fresh content, and by the orphan-prune
+/// pre-pass for grafts dropped from `--grafts`. Returns the line index
+/// of the begin banner before stripping (so callers in the drift path
+/// can re-insert at the same position), or `None` if no pair matched.
+fn strip_banner_pair(
+    lines: &mut Vec<String>,
+    graft_name: &str,
+    marker: Marker,
+) -> Option<usize> {
     let begin_prefix = begin_banner(graft_name, marker);
     let end_str = end_banner(graft_name, marker);
     let begin_idx = lines
         .iter()
-        .position(|l| l.trim().starts_with(&begin_prefix));
-    let Some(begin_idx) = begin_idx else {
-        return false;
-    };
+        .position(|l| l.trim().starts_with(&begin_prefix))?;
     let end_idx = lines
         .iter()
         .enumerate()
         .skip(begin_idx + 1)
         .find(|(_, l)| l.trim() == end_str)
-        .map(|(i, _)| i);
-    let Some(end_idx) = end_idx else {
-        return false;
-    };
+        .map(|(i, _)| i)?;
     lines.drain(begin_idx..=end_idx);
-    true
+    Some(begin_idx)
 }
 
 /// Last bare `~` between the peek marker and the block's closing `==`.
@@ -1948,7 +2029,28 @@ fn print_report(path: &Path, report: &InjectReport, grafts: &[Graft], applied: b
         if !skipped_labels.is_empty() {
             summary.push_str(&format!("; skipped {}", skipped_labels.join(", ")));
         }
+        if !g.pruned.is_empty() {
+            // RH1 step 1: a graft can both be in the active set AND have
+            // had stale orphan markers (from a partial prior run). Surface
+            // both states on the same line.
+            let pruned_labels: Vec<&str> = g.pruned.iter().map(|m| m.label()).collect();
+            summary.push_str(&format!("; pruned {}", pruned_labels.join(", ")));
+        }
         eprintln!("{summary}");
+    }
+    // RH1 step 1: orphan grafts (banner pairs present in source but graft
+    // dropped from --grafts) carry no manifest, so they live on a separate
+    // carrier. Surface them so the user sees the drop confirmed.
+    for g in &report.pruned_grafts {
+        had_output = true;
+        let pruned_labels: Vec<&str> = g.pruned.iter().map(|m| m.label()).collect();
+        eprintln!(
+            "  {:<16} no-manifest    pruned {}/{} ({}) (orphan blocks from previous injection)",
+            g.name,
+            g.pruned.len(),
+            g.applicable.len(),
+            pruned_labels.join(", ")
+        );
     }
     if !had_output {
         eprintln!("  (no grafts contributed)");
@@ -3031,21 +3133,45 @@ body     = """
         assert!(report.grafts[0].injected.is_empty());
     }
 
-    /// Removing a graft from the injection set must NOT delete an
-    /// already-wired banner block. The tool is additive by design; cleanup
-    /// is a manual op, not a side-effect of `--grafts`.
+    /// RH1 step 1 (HARD-BUG-1): removing a graft from the injection set
+    /// auto-prunes its banner-pair-bounded blocks. Pre-RH1 the tool was
+    /// additive-only; orphan blocks then referenced types missing from the
+    /// shrunk effect-union and hoonc failed silently. The new contract is:
+    /// drop a graft from `--grafts`, re-run with `--apply`, and the orphan
+    /// blocks are stripped automatically.
+    ///
+    /// Byte-identical round-trip across drop-then-readd is a Step 2 concern
+    /// (HARD-FRICTION-2 — preserve position on fresh-inject after a partial
+    /// drop). This test isolates the prune contract.
     #[test]
-    fn removed_graft_banner_preserved() {
+    fn removed_graft_auto_prunes_orphan_banners() {
         let a = synthetic_graft("alpha", 10);
         let b = synthetic_graft("beta", 20);
         let (after_both, _) = inject(BARE_SCAFFOLD, &[a.clone(), b.clone()]).unwrap();
         assert!(after_both.contains("::  graft-inject:beta:imports:begin"));
-        let (after_alpha_only, _) = inject(&after_both, &[a]).unwrap();
+        let (after_alpha_only, report) = inject(&after_both, &[a]).unwrap();
         assert!(
-            after_alpha_only.contains("::  graft-inject:beta:imports:begin"),
-            "beta banner must survive a re-run with only alpha selected"
+            !after_alpha_only.contains("::  graft-inject:beta:"),
+            "beta banner pairs must be pruned when beta drops from --grafts"
         );
-        assert!(after_alpha_only.contains("/+  *beta"));
+        assert!(
+            !after_alpha_only.contains("/+  *beta"),
+            "beta imports must be pruned with the rest of its banner pair"
+        );
+        assert!(
+            after_alpha_only.contains("::  graft-inject:alpha:imports:begin"),
+            "alpha banners must remain — only beta dropped"
+        );
+        let pruned: Vec<&str> = report
+            .pruned_grafts
+            .iter()
+            .map(|g| g.name.as_str())
+            .collect();
+        assert_eq!(pruned, vec!["beta"], "report surfaces beta as pruned");
+        assert!(
+            !report.pruned_grafts[0].pruned.is_empty(),
+            "pruned markers list is non-empty"
+        );
     }
 
     // ---------------------------------------------------------------
