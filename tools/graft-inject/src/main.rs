@@ -1169,6 +1169,126 @@ fn lint_weld_friction(lines: &[String], variants: &[String]) -> WeldLint {
     WeldLint { findings }
 }
 
+/// Pre-apply lint: bare-`~` ambiguity inside domain `?-` switch arms.
+///
+/// RM1 HARD-BUG-2 (`.dev/debug/log-meta/RM1/B_to_C.md` §HARD-BUG-2)
+/// surfaced this: `find_last_bare_tilde` walks from the `nockup:peek`
+/// marker until the next `==` capturing the last `~`-only line as
+/// the peek-chain terminator. The next `==` is typically the
+/// `?-  -.u.act` close in the poke arm, so any bare-`~` line inside a
+/// domain arm body (e.g. `%ping :_ state ^- (list effect) ~`)
+/// becomes the new "terminator" and graft-inject inserts the peek
+/// chain into the poke body — corrupting the file.
+///
+/// RH2 step 2's canonical re-emit fix landed for the placement bugs
+/// it targeted, but `emit_peek_chain` still anchors against
+/// `find_last_bare_tilde`. Until that anchor changes, the safest
+/// surface is a pre-apply lint that warns when the user's domain
+/// arms create the structural ambiguity.
+///
+/// The lint walks lines inside the `nockup:poke` region but outside
+/// any `graft-inject:*:begin/:end` banner (graft-injected arms are
+/// graft-inject's own output and aren't user-editable). When a
+/// domain arm body's final line is exactly `~`, the line is flagged
+/// and the developer is pointed at the workaround:
+/// `\`(list effect)\`~` or `^- (list effect) ~` on a single line.
+fn lint_bare_tilde_ambiguity(lines: &[String]) -> BareTildeLint {
+    let mut findings = Vec::new();
+    // Anchor on the `?-  -.u.act` switch header. graft-inject's
+    // `find_last_bare_tilde` would scan the same range from the
+    // peek marker forward, so any domain arm body inside this
+    // switch that ends with bare `~` is the friction shape from
+    // RM1 HARD-BUG-2. The `nockup:poke` marker by itself isn't
+    // enough — domain arms live BEFORE the marker (between the
+    // switch open and the marker), so a forward-only scan from
+    // the marker would miss them.
+    let Some(switch_idx) = lines.iter().position(|l| {
+        let t = l.trim();
+        t.starts_with("?-") && t.contains("-.u.act")
+    }) else {
+        return BareTildeLint::default();
+    };
+
+    let mut in_banner = false;
+    // Track the most recent domain `%<tag>` arm header so each finding
+    // can name its parent arm. Domain arms are leading `%<tag>` lines
+    // that are NOT inside a graft-inject banner.
+    let mut current_arm: Option<String> = None;
+    for i in (switch_idx + 1)..lines.len() {
+        let trimmed = lines[i].trim();
+        if trimmed == "==" {
+            break;
+        }
+        // Banner state machine — copies the lint_weld_friction shape so
+        // graft-injected arm bodies are skipped.
+        if trimmed.starts_with("::") && trimmed.contains("graft-inject:") {
+            if trimmed.contains(":begin ") || trimmed.ends_with(":begin") {
+                in_banner = true;
+                continue;
+            }
+            if trimmed.ends_with(":end") {
+                in_banner = false;
+                continue;
+            }
+        }
+        if in_banner {
+            continue;
+        }
+        // Skip the `nockup:poke` placeholder — it's a comment marker,
+        // not a domain arm. Comments in general (`::  ...`) reset
+        // nothing; they're transparent to the arm-tracking logic.
+        if trimmed.starts_with("::") {
+            continue;
+        }
+        // Track the most recent domain arm header. A domain arm header
+        // is a line whose first token starts with `%` followed by a
+        // tag character. We only need the tag for the finding message,
+        // so a quick prefix match is enough — full Hoon parsing isn't
+        // required.
+        if let Some(rest) = trimmed.strip_prefix('%') {
+            if rest
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_alphabetic() || c == '-')
+                .unwrap_or(false)
+            {
+                let tag: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                    .collect();
+                if !tag.is_empty() {
+                    current_arm = Some(tag);
+                }
+            }
+        }
+        if trimmed == "~" {
+            if let Some(arm) = current_arm.take() {
+                findings.push(BareTildeLintFinding {
+                    line: i + 1,
+                    arm,
+                });
+                // After flagging once per arm, reset so multi-line arm
+                // bodies don't repeat-flag (the bug fires on the LAST
+                // line; one finding per arm is enough).
+            }
+        }
+    }
+    BareTildeLint { findings }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct BareTildeLintFinding {
+    /// 1-indexed line number of the bare `~`.
+    line: usize,
+    /// Domain arm tag (e.g. "ping") whose body ends in the bare `~`.
+    arm: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+struct BareTildeLint {
+    findings: Vec<BareTildeLintFinding>,
+}
+
 /// Outcome of `migrate_legacy_effect`. Surfaced to stderr so reviewers
 /// can see whether the auto-migration touched the file before codegen
 /// runs.
@@ -1760,6 +1880,17 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+
+    /// Run pre-apply structural validations on app.hoon. Exits 1 on
+    /// any HARD finding so CI can gate `--apply` on the lint passing.
+    Lint {
+        /// Target Hoon source file.
+        path: PathBuf,
+
+        /// JSON output mode (machine-readable).
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Schema item for `--list --json`. Stable across the v3 plan's lifespan;
@@ -1878,6 +2009,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             apply: false,
             no_migrate: false,
         }),
+        Some(Command::Lint { path, json }) => run_lint(&path, json),
         None => {
             // Legacy bare-invocation back-compat. The user typed
             // `graft-inject <PATH> ...` or `graft-inject --list ...`
@@ -1897,6 +2029,76 @@ fn dispatch(cli: Cli) -> Result<()> {
             run(cli)
         }
     }
+}
+
+/// `graft-inject lint <PATH>` entry point. Read-only — never writes.
+/// Returns Ok(()) when the file is clean and Err with a single bail
+/// when any HARD finding fires (so the process exits 1 and CI gates
+/// on it). The findings themselves are emitted to stderr in the
+/// human-readable form, or to stdout as JSON when `--json` is set.
+fn run_lint(path: &Path, json: bool) -> Result<()> {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("hoon") => {}
+        Some(other) => bail!(
+            "target {} has extension `.{}`; lint only runs on Hoon source files",
+            path.display(),
+            other,
+        ),
+        None => bail!(
+            "target {} has no file extension; lint only runs on Hoon source files",
+            path.display(),
+        ),
+    }
+    let source = fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let lines: Vec<String> = source.lines().map(String::from).collect();
+    let bare_tilde = lint_bare_tilde_ambiguity(&lines);
+    let findings_total = bare_tilde.findings.len();
+
+    if json {
+        // Stable schema: { "bare_tilde_ambiguity": [{line, arm}, ...] }.
+        // Future lint families append top-level keys without reshaping
+        // existing ones (mirrors the --list --json schema policy at
+        // the GraftSummary block above).
+        let report = LintReport {
+            bare_tilde_ambiguity: &bare_tilde.findings,
+        };
+        let s = serde_json::to_string_pretty(&report)
+            .expect("LintReport always serializes");
+        println!("{s}");
+    } else {
+        eprintln!("graft-inject lint: {findings_total} finding(s)");
+        if !bare_tilde.findings.is_empty() {
+            eprintln!("  bare-tilde-ambiguity:");
+            for f in &bare_tilde.findings {
+                eprintln!(
+                    "    {}:{} — domain arm `%{}` body ends with bare `~` line",
+                    path.display(),
+                    f.line,
+                    f.arm,
+                );
+            }
+            eprintln!(
+                "    graft-inject's chain-rebuilder may mistake this for the peek-chain"
+            );
+            eprintln!("    terminator (RM1 HARD-BUG-2). Refactor to one of:");
+            eprintln!("      `(list effect)`~");
+            eprintln!("      ^- (list effect) ~");
+            eprintln!(
+                "    see vesl-nockup/.dev/debug/log-meta/RM1/B_to_C.md §HARD-BUG-2"
+            );
+        }
+    }
+
+    if findings_total > 0 {
+        bail!("graft-inject lint: {findings_total} finding(s) above");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct LintReport<'a> {
+    bare_tilde_ambiguity: &'a [BareTildeLintFinding],
 }
 
 /// One-line stderr warning when the binary's content-hash of `src/`
@@ -2973,6 +3175,82 @@ mod tests {
         assert!(cli.command.is_none());
         assert_eq!(cli.path.as_deref(), Some(Path::new("hoon/app/app.hoon")));
         assert_eq!(cli.grafts, vec!["foo".to_string()]);
+    }
+
+    // ---------- Phase 7: bare-tilde-ambiguity lint ----------
+
+    /// RM1 HARD-BUG-2 reproduction: a domain `%ping` arm whose body
+    /// is `^- (list effect)` then a bare `~` line should trip the
+    /// lint. The `find_last_bare_tilde` scan would otherwise pick
+    /// this `~` up as the peek-chain terminator.
+    #[test]
+    fn bare_tilde_lint_flags_ping_arm() {
+        let fixture = r#"?-    -.u.act
+    %ping
+  :_  state
+  ^-  (list effect)
+  ~
+    %quiet
+  [~ state]
+    ::  nockup:poke
+=="#;
+        let lines: Vec<String> = fixture.lines().map(String::from).collect();
+        let lint = lint_bare_tilde_ambiguity(&lines);
+        assert_eq!(lint.findings.len(), 1, "expected 1 finding, got {lint:#?}");
+        assert_eq!(lint.findings[0].arm, "ping");
+        // Line 5 is the `~` (1-indexed; line 1 is the `?-` switch).
+        assert_eq!(lint.findings[0].line, 5);
+    }
+
+    /// Workaround form (`(list effect)~` on one line) is safe — no
+    /// bare `~` line, no finding.
+    #[test]
+    fn bare_tilde_lint_clears_one_line_workaround() {
+        let fixture = r#"?-    -.u.act
+    %ping
+  :_  state
+  `(list effect)`~
+    %quiet
+  [~ state]
+=="#;
+        let lines: Vec<String> = fixture.lines().map(String::from).collect();
+        let lint = lint_bare_tilde_ambiguity(&lines);
+        assert!(
+            lint.findings.is_empty(),
+            "workaround form should not flag, got {lint:#?}"
+        );
+    }
+
+    /// Graft-injected arms use bare `~` legitimately (it's their
+    /// chain terminator). The lint must skip lines inside
+    /// `graft-inject:<X>:begin/:end` banner pairs.
+    #[test]
+    fn bare_tilde_lint_skips_graft_injected_arms() {
+        let fixture = r#"?-    -.u.act
+::  graft-inject:settle-graft:poke:begin sha256:deadbeef
+    %settle-do
+  :_  state
+  ~
+::  graft-inject:settle-graft:poke:end
+    %ping
+  :_  state
+  `(list effect)`~
+=="#;
+        let lines: Vec<String> = fixture.lines().map(String::from).collect();
+        let lint = lint_bare_tilde_ambiguity(&lines);
+        assert!(
+            lint.findings.is_empty(),
+            "graft-injected bodies must be skipped, got {lint:#?}"
+        );
+    }
+
+    /// Without a `?-  -.u.act` switch, the lint is a no-op.
+    #[test]
+    fn bare_tilde_lint_no_switch_no_findings() {
+        let fixture = "++  peek\n  ~\n--";
+        let lines: Vec<String> = fixture.lines().map(String::from).collect();
+        let lint = lint_bare_tilde_ambiguity(&lines);
+        assert!(lint.findings.is_empty());
     }
 
     /// Build a temp lib dir with settle-graft.toml and an alpha synthetic
