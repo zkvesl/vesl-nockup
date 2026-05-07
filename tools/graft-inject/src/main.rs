@@ -1759,6 +1759,170 @@ struct TransitiveImportLint {
     findings: Vec<TransitiveImportFinding>,
 }
 
+/// Pre-apply lint: literal duplicate variant heads inside the
+/// `+$ cause $%(...)` union, OR literal duplicate field names inside
+/// the `+$ versioned-state $:(...)` record.
+///
+/// Distinguishes from `lint_collision_check` (which scans manifests
+/// cross-referenced against domain): this pass scans the
+/// already-composed app.hoon's literal unions for self-collisions.
+/// Catches the case where the developer hand-writes two domain causes
+/// with the same head, AND the case where two grafts each contribute
+/// the same head after injection (collision_check would miss the
+/// latter when the manifests declared distinct cause names but the
+/// underlying `[%<tag> ...]` ended up identical).
+///
+/// Reports literal-match duplicates only. Near-miss disambiguation
+/// (`%enqueue-job-f` vs `%enqueue-job-i`) is intentionally not
+/// flagged — adds parser complexity without matching empirical demand.
+fn lint_internal_dupes(lines: &[String]) -> InternalDupeLint {
+    use std::collections::BTreeMap;
+
+    let mut findings = Vec::new();
+
+    let mut cause_lines: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (tag, line) in extract_all_cause_variants(lines) {
+        cause_lines.entry(tag).or_default().push(line);
+    }
+    for (tag, line_nums) in cause_lines {
+        if line_nums.len() > 1 {
+            findings.push(InternalDupeFinding {
+                kind: InternalDupeKind::CauseTag,
+                name: tag,
+                lines: line_nums,
+            });
+        }
+    }
+
+    let mut state_lines: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (name, line) in extract_all_state_fields(lines) {
+        state_lines.entry(name).or_default().push(line);
+    }
+    for (name, line_nums) in state_lines {
+        if line_nums.len() > 1 {
+            findings.push(InternalDupeFinding {
+                kind: InternalDupeKind::StateField,
+                name,
+                lines: line_nums,
+            });
+        }
+    }
+
+    InternalDupeLint { findings }
+}
+
+/// Walk from `+$ cause $%(...)` open to its closing `==`, emitting
+/// `(tag, 1-indexed line)` for every `[%<tag> ...]` variant. Banner
+/// content IS included — internal-collision lint cares about literal
+/// duplicates regardless of whether they came from domain or graft
+/// injection.
+fn extract_all_cause_variants(lines: &[String]) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    let Some(open_idx) = lines.iter().position(|l| {
+        let t = l.trim();
+        t.starts_with("+$") && t.contains("cause")
+    }) else {
+        return out;
+    };
+    let mut started = false;
+    for (i, line) in lines.iter().enumerate().skip(open_idx) {
+        let trimmed = line.trim();
+        if !started {
+            if let Some(after) = trimmed.find("$%") {
+                started = true;
+                let rest = &trimmed[after + 2..];
+                if let Some(tag) = bracket_tag(rest) {
+                    out.push((tag, i + 1));
+                }
+            }
+            continue;
+        }
+        if trimmed == "==" {
+            break;
+        }
+        if trimmed.starts_with("::") {
+            continue;
+        }
+        if let Some(tag) = bracket_tag(trimmed) {
+            out.push((tag, i + 1));
+        }
+    }
+    out
+}
+
+/// Walk from `+$ versioned-state $:(...)` open to close, emit
+/// `(field, 1-indexed line)` for every `<name>=<type>` line.
+fn extract_all_state_fields(lines: &[String]) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    let Some(open_idx) = lines.iter().position(|l| {
+        let t = l.trim();
+        t.starts_with("+$") && (t.contains("state") || t.contains("versioned-state"))
+    }) else {
+        return out;
+    };
+    let mut started = false;
+    for (i, line) in lines.iter().enumerate().skip(open_idx) {
+        let trimmed = line.trim();
+        if !started {
+            if trimmed.contains("$:") {
+                started = true;
+            }
+            continue;
+        }
+        if trimmed == "==" {
+            break;
+        }
+        if trimmed.starts_with("::") || trimmed.is_empty() {
+            continue;
+        }
+        if let Some(eq) = trimmed.find('=') {
+            let name: String = trimmed[..eq]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            if !name.is_empty() {
+                out.push((name, i + 1));
+            }
+        }
+    }
+    out
+}
+
+/// Read `[%<tag>` prefix and return the tag. None when the input
+/// doesn't start with `[%` or the tag is empty. Sibling of
+/// `push_bracket_tag` — that one mutates an output Vec, this one
+/// returns by value.
+fn bracket_tag(s: &str) -> Option<String> {
+    let trimmed = s.trim_start();
+    let rest = trimmed.strip_prefix("[%")?;
+    let tag: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    if tag.is_empty() { None } else { Some(tag) }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum InternalDupeKind {
+    CauseTag,
+    StateField,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct InternalDupeFinding {
+    kind: InternalDupeKind,
+    /// Duplicate name (`enqueue-job`, `entries`, ...).
+    name: String,
+    /// 1-indexed line numbers of every occurrence (sorted).
+    lines: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct InternalDupeLint {
+    findings: Vec<InternalDupeFinding>,
+}
+
 /// Outcome of `migrate_legacy_effect`. Surfaced to stderr so reviewers
 /// can see whether the auto-migration touched the file before codegen
 /// runs.
@@ -2600,9 +2764,16 @@ fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
     // the lint needs to mirror that scope to be useful.
     let transitive_imports = lint_transitive_imports(path, lib_dir);
 
+    // Internal-dupe lint (RM2 §1.2): literal duplicate cause-tag heads
+    // or state-field names inside the composed unions. Catches both
+    // hand-written domain dupes and post-injection graft dupes that
+    // collision_check (manifest-side) misses.
+    let internal_dupes = lint_internal_dupes(&lines);
+
     let findings_total = bare_tilde.findings.len()
         + collision.findings.len()
-        + transitive_imports.findings.len();
+        + transitive_imports.findings.len()
+        + internal_dupes.findings.len();
 
     if json {
         // Stable schema: { "bare_tilde_ambiguity": [...], "collision": [...],
@@ -2613,6 +2784,7 @@ fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
             bare_tilde_ambiguity: &bare_tilde.findings,
             collision: &collision.findings,
             transitive_imports: &transitive_imports.findings,
+            internal_dupes: &internal_dupes.findings,
         };
         let s = serde_json::to_string_pretty(&report)
             .expect("LintReport always serializes");
@@ -2694,6 +2866,37 @@ fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
                 "    see vesl-nockup/.dev/debug/log-meta/RM2/seed-A.md §DOC-GAP-1"
             );
         }
+        if !internal_dupes.findings.is_empty() {
+            eprintln!("  internal-dupes:");
+            for f in &internal_dupes.findings {
+                let kind = match f.kind {
+                    InternalDupeKind::CauseTag => "cause-tag",
+                    InternalDupeKind::StateField => "state-field",
+                };
+                let line_list: Vec<String> = f.lines.iter().map(|l| l.to_string()).collect();
+                eprintln!(
+                    "    duplicate {} `{}` at lines {}",
+                    kind,
+                    f.name,
+                    line_list.join(", "),
+                );
+            }
+            eprintln!(
+                "    literal duplicates in the composed +$ cause $%(...) or"
+            );
+            eprintln!(
+                "    +$ versioned-state $:(...) — hoonc accepts whichever wins"
+            );
+            eprintln!(
+                "    lexically (mint-lost) or fires nest-fail on duplicate fields."
+            );
+            eprintln!(
+                "    Rename, merge into a tagged sum, or distinguish by argument shape."
+            );
+            eprintln!(
+                "    see vesl-nockup/.dev/debug/log-meta/RM2/round.md §META-COLLISION"
+            );
+        }
     }
 
     if findings_total > 0 {
@@ -2707,6 +2910,7 @@ struct LintReport<'a> {
     bare_tilde_ambiguity: &'a [BareTildeLintFinding],
     collision: &'a [CollisionFinding],
     transitive_imports: &'a [TransitiveImportFinding],
+    internal_dupes: &'a [InternalDupeFinding],
 }
 
 /// `graft-inject codegen kernel-cause-tags` entry point. Reads the
