@@ -1289,6 +1289,277 @@ struct BareTildeLint {
     findings: Vec<BareTildeLintFinding>,
 }
 
+/// Pre-apply lint: cross-graft and graft-vs-domain name collisions.
+///
+/// RM1 META-COLLISION-1 (`.dev/debug/log-meta/RM1/E_to_F.md`),
+/// META-COLLISION-2 (`G_to_H.md`), and META-COLLISION-3 (`H_to_I.md`)
+/// surfaced two kinds of collision in cumulative-domain mode:
+/// - Cause-tag collisions: two grafts (or a graft and the domain)
+///   declare the same `%<tag>` poke arm. The composed `?-` switch
+///   has duplicate `%<tag>` arms; hoonc's exhaustiveness check
+///   fires `mint-lost` or accepts whichever arm wins lexically.
+/// - State-field collisions: two grafts (or a graft and the domain)
+///   declare the same field name in the state record. The composed
+///   `+$ versioned-state` has duplicate field names; hoonc fires a
+///   nest-fail.
+///
+/// The lint reads each graft's `[graft.blocks.poke]` body (cause
+/// tags appear as leading `%<tag>` arm headers) and `[graft.blocks.state]`
+/// body (field names appear before `=`). It also parses the domain's
+/// `nockup:cause` and `nockup:state` regions in app.hoon. Any name
+/// declared by more than one source becomes a finding.
+fn lint_collision_check(
+    grafts: &[Graft],
+    domain_lines: &[String],
+) -> CollisionLint {
+    use std::collections::BTreeMap;
+    let mut cause_owners: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut state_owners: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+    for g in grafts {
+        for tag in extract_graft_cause_tags(g) {
+            cause_owners.entry(tag).or_default().push(g.name.clone());
+        }
+        for field in extract_graft_state_fields(g) {
+            state_owners.entry(field).or_default().push(g.name.clone());
+        }
+    }
+    for tag in extract_domain_cause_tags(domain_lines) {
+        cause_owners
+            .entry(tag)
+            .or_default()
+            .push("(domain)".to_string());
+    }
+    for field in extract_domain_state_fields(domain_lines) {
+        state_owners
+            .entry(field)
+            .or_default()
+            .push("(domain)".to_string());
+    }
+
+    let mut findings = Vec::new();
+    for (tag, owners) in cause_owners {
+        if owners.len() > 1 {
+            findings.push(CollisionFinding {
+                kind: CollisionKind::CauseTag,
+                name: tag,
+                owners,
+            });
+        }
+    }
+    for (field, owners) in state_owners {
+        if owners.len() > 1 {
+            findings.push(CollisionFinding {
+                kind: CollisionKind::StateField,
+                name: field,
+                owners,
+            });
+        }
+    }
+    CollisionLint { findings }
+}
+
+/// Extract `%<tag>` arm headers from a graft's poke block body.
+/// graft poke bodies follow a uniform shape: each arm starts with
+/// `%<tag>` on its own line (modulo leading whitespace), preceded by
+/// `::` separators between arms. Walk the lines and collect the tags.
+fn extract_graft_cause_tags(g: &Graft) -> Vec<String> {
+    let mut tags = Vec::new();
+    for marker in [Marker::Poke, Marker::PokePrelude, Marker::PokePostlude] {
+        let Some(body) = g.block(marker) else {
+            continue;
+        };
+        for line in body.body.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix('%') {
+                let tag: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                    .collect();
+                if !tag.is_empty() {
+                    // Skip embedded `%foo` references inside expressions
+                    // (e.g., `[%queue-push ...]` inside a `=/`). Real arm
+                    // headers are bare on a line; embedded references are
+                    // inside `[]` or `()` or have leading punctuation.
+                    if !line.contains('[') && !line.contains('(') {
+                        tags.push(tag);
+                    }
+                }
+            }
+        }
+    }
+    tags
+}
+
+/// Extract field names from a graft's state block body. The shape is
+/// `<field>=<type>` (most grafts) or a `$:` record with multiple
+/// `<field>=<type>` lines. Tokens before `=` (modulo leading
+/// whitespace) are field names.
+fn extract_graft_state_fields(g: &Graft) -> Vec<String> {
+    let Some(body) = g.block(Marker::State) else {
+        return Vec::new();
+    };
+    let mut fields = Vec::new();
+    for line in body.body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || trimmed.starts_with("::")
+            || trimmed.starts_with("$:")
+            || trimmed == "=="
+        {
+            continue;
+        }
+        if let Some(eq) = trimmed.find('=') {
+            let name: String = trimmed[..eq]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            if !name.is_empty() {
+                fields.push(name);
+            }
+        }
+    }
+    fields
+}
+
+/// Walk `domain_lines` (the entire app.hoon source as line vec) and
+/// extract domain cause tags — `[%<tag> ...]` lines that sit between
+/// the `+$ cause $%(...)` opening and the `::  nockup:cause` marker
+/// (or the closing `==` if no marker is present).
+fn extract_domain_cause_tags(lines: &[String]) -> Vec<String> {
+    let mut tags = Vec::new();
+    let Some(open_idx) = lines.iter().position(|l| {
+        let t = l.trim();
+        t.starts_with("+$") && t.contains("cause")
+    }) else {
+        return tags;
+    };
+    let mut started = false;
+    let mut in_banner = false;
+    for line in &lines[open_idx..] {
+        let trimmed = line.trim();
+        if !started {
+            if let Some(after) = trimmed.find("$%") {
+                started = true;
+                // `$%` may be followed by a variant on the same line
+                // (e.g. `$%  [%cause ~]`). Probe for `[%<tag>` after
+                // the `$%` token before continuing.
+                let rest = &trimmed[after + 2..];
+                push_bracket_tag(rest, &mut tags);
+            }
+            continue;
+        }
+        if trimmed.starts_with("::  nockup:cause") || trimmed == "==" {
+            break;
+        }
+        if trimmed.starts_with("::") && trimmed.contains("graft-inject:") {
+            if trimmed.contains(":begin ") || trimmed.ends_with(":begin") {
+                in_banner = true;
+                continue;
+            }
+            if trimmed.ends_with(":end") {
+                in_banner = false;
+                continue;
+            }
+        }
+        if in_banner {
+            continue;
+        }
+        push_bracket_tag(trimmed, &mut tags);
+    }
+    tags
+}
+
+/// Extract a `[%<tag> ...]` leading tag from a string and append to
+/// `tags`. No-op when the input doesn't start with `[%`.
+fn push_bracket_tag(s: &str, tags: &mut Vec<String>) {
+    let trimmed = s.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("[%") {
+        let tag: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect();
+        if !tag.is_empty() {
+            tags.push(tag);
+        }
+    }
+}
+
+/// Walk `lines` and extract domain state field names — `<name>=<type>`
+/// lines between `+$ versioned-state $:(...)` (or similar) and the
+/// `::  nockup:state` marker.
+fn extract_domain_state_fields(lines: &[String]) -> Vec<String> {
+    let mut fields = Vec::new();
+    let Some(open_idx) = lines.iter().position(|l| {
+        let t = l.trim();
+        t.starts_with("+$") && (t.contains("state") || t.contains("versioned-state"))
+    }) else {
+        return fields;
+    };
+    let mut started = false;
+    let mut in_banner = false;
+    for line in &lines[open_idx..] {
+        let trimmed = line.trim();
+        if !started {
+            if trimmed.contains("$:") {
+                started = true;
+            }
+            continue;
+        }
+        if trimmed.starts_with("::  nockup:state") || trimmed == "==" {
+            break;
+        }
+        if trimmed.starts_with("::") && trimmed.contains("graft-inject:") {
+            if trimmed.contains(":begin ") || trimmed.ends_with(":begin") {
+                in_banner = true;
+                continue;
+            }
+            if trimmed.ends_with(":end") {
+                in_banner = false;
+                continue;
+            }
+        }
+        if in_banner {
+            continue;
+        }
+        if trimmed.starts_with("::") || trimmed.is_empty() {
+            continue;
+        }
+        if let Some(eq) = trimmed.find('=') {
+            let name: String = trimmed[..eq]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            if !name.is_empty() {
+                fields.push(name);
+            }
+        }
+    }
+    fields
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CollisionKind {
+    CauseTag,
+    StateField,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CollisionFinding {
+    kind: CollisionKind,
+    /// The colliding name (`enqueue-job`, `entries`, ...).
+    name: String,
+    /// Owners that declared the name. `(domain)` represents the
+    /// app.hoon domain code; everything else is a graft name.
+    owners: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+struct CollisionLint {
+    findings: Vec<CollisionFinding>,
+}
+
 /// Outcome of `migrate_legacy_effect`. Surfaced to stderr so reviewers
 /// can see whether the auto-migration touched the file before codegen
 /// runs.
@@ -1887,6 +2158,10 @@ enum Command {
         /// Target Hoon source file.
         path: PathBuf,
 
+        /// Manifest discovery root for collision-check across grafts.
+        #[arg(long, default_value = DEFAULT_LIB_DIR)]
+        lib_dir: PathBuf,
+
         /// JSON output mode (machine-readable).
         #[arg(long)]
         json: bool,
@@ -2009,7 +2284,11 @@ fn dispatch(cli: Cli) -> Result<()> {
             apply: false,
             no_migrate: false,
         }),
-        Some(Command::Lint { path, json }) => run_lint(&path, json),
+        Some(Command::Lint {
+            path,
+            lib_dir,
+            json,
+        }) => run_lint(&path, &lib_dir, json),
         None => {
             // Legacy bare-invocation back-compat. The user typed
             // `graft-inject <PATH> ...` or `graft-inject --list ...`
@@ -2036,7 +2315,7 @@ fn dispatch(cli: Cli) -> Result<()> {
 /// when any HARD finding fires (so the process exits 1 and CI gates
 /// on it). The findings themselves are emitted to stderr in the
 /// human-readable form, or to stdout as JSON when `--json` is set.
-fn run_lint(path: &Path, json: bool) -> Result<()> {
+fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("hoon") => {}
         Some(other) => bail!(
@@ -2053,15 +2332,30 @@ fn run_lint(path: &Path, json: bool) -> Result<()> {
         .with_context(|| format!("reading {}", path.display()))?;
     let lines: Vec<String> = source.lines().map(String::from).collect();
     let bare_tilde = lint_bare_tilde_ambiguity(&lines);
-    let findings_total = bare_tilde.findings.len();
+
+    // Collision check needs the discovered graft set so it can
+    // cross-reference cause tags and state fields. When --lib-dir
+    // doesn't exist we skip collision check rather than hard-error;
+    // bare-tilde lint stays useful on its own (e.g. on a kernel
+    // outside its project tree).
+    let collision = if lib_dir.is_dir() {
+        let grafts = discover_grafts(lib_dir)
+            .with_context(|| format!("discovering grafts under {}", lib_dir.display()))?;
+        lint_collision_check(&grafts, &lines)
+    } else {
+        CollisionLint::default()
+    };
+
+    let findings_total = bare_tilde.findings.len() + collision.findings.len();
 
     if json {
-        // Stable schema: { "bare_tilde_ambiguity": [{line, arm}, ...] }.
+        // Stable schema: { "bare_tilde_ambiguity": [...], "collision": [...] }.
         // Future lint families append top-level keys without reshaping
         // existing ones (mirrors the --list --json schema policy at
         // the GraftSummary block above).
         let report = LintReport {
             bare_tilde_ambiguity: &bare_tilde.findings,
+            collision: &collision.findings,
         };
         let s = serde_json::to_string_pretty(&report)
             .expect("LintReport always serializes");
@@ -2088,6 +2382,31 @@ fn run_lint(path: &Path, json: bool) -> Result<()> {
                 "    see vesl-nockup/.dev/debug/log-meta/RM1/B_to_C.md §HARD-BUG-2"
             );
         }
+        if !collision.findings.is_empty() {
+            eprintln!("  collision:");
+            for f in &collision.findings {
+                let kind = match f.kind {
+                    CollisionKind::CauseTag => "cause-tag",
+                    CollisionKind::StateField => "state-field",
+                };
+                eprintln!(
+                    "    {} `{}` declared by: {}",
+                    kind,
+                    f.name,
+                    f.owners.join(", ")
+                );
+            }
+            eprintln!(
+                "    duplicate names compose into one cause $% / state record."
+            );
+            eprintln!(
+                "    Disambiguate via manifest rename, profile-letter suffix, or"
+            );
+            eprintln!("    domain shadowing.");
+            eprintln!(
+                "    see vesl-nockup/.dev/debug/log-meta/RM1/E_to_F.md §META-COLLISION-1"
+            );
+        }
     }
 
     if findings_total > 0 {
@@ -2099,6 +2418,7 @@ fn run_lint(path: &Path, json: bool) -> Result<()> {
 #[derive(Debug, Serialize)]
 struct LintReport<'a> {
     bare_tilde_ambiguity: &'a [BareTildeLintFinding],
+    collision: &'a [CollisionFinding],
 }
 
 /// One-line stderr warning when the binary's content-hash of `src/`
@@ -3251,6 +3571,150 @@ mod tests {
         let lines: Vec<String> = fixture.lines().map(String::from).collect();
         let lint = lint_bare_tilde_ambiguity(&lines);
         assert!(lint.findings.is_empty());
+    }
+
+    // ---------- Phase 8: collision-check lint ----------
+
+    /// Build a synthetic graft with named cause tags and state fields
+    /// for collision-check tests. The block bodies follow the canonical
+    /// shape: state body is `<field>=<type>`, poke body has bare
+    /// `%<tag>` arm headers separated by `::`.
+    fn synthetic_collision_graft(
+        name: &str,
+        cause_tags: &[&str],
+        state_fields: &[&str],
+    ) -> Graft {
+        let mut poke_body = String::new();
+        for tag in cause_tags {
+            poke_body.push_str("::\n  %");
+            poke_body.push_str(tag);
+            poke_body.push_str("\n[~ state]\n");
+        }
+        let state_body = state_fields
+            .iter()
+            .map(|f| format!("{f}=@"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Graft {
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            priority: 50,
+            after: vec![],
+            blocks: GraftBlocks {
+                imports: None,
+                state: if state_fields.is_empty() {
+                    None
+                } else {
+                    Some(Block {
+                        sentinel: state_fields[0].to_string(),
+                        body: state_body,
+                    })
+                },
+                cause: None,
+                poke_prelude: None,
+                poke: Some(Block {
+                    sentinel: format!("%{}", cause_tags.first().unwrap_or(&"")),
+                    body: poke_body,
+                }),
+                poke_postlude: None,
+                peek: None,
+            },
+            types: None,
+            gates: None,
+            sha256: "0".repeat(64),
+        }
+    }
+
+    /// RM1 META-COLLISION-1: queue-graft and pipeline-graft both
+    /// declare `%enqueue-job`. Cross-graft cause-tag collision should
+    /// fire one finding naming both grafts as owners.
+    #[test]
+    fn collision_lint_flags_cross_graft_cause_tag() {
+        let queue = synthetic_collision_graft(
+            "queue-graft",
+            &["enqueue-job", "drain-jobs"],
+            &["queue"],
+        );
+        let pipeline = synthetic_collision_graft(
+            "pipeline-graft",
+            &["enqueue-job", "ack-job"],
+            &["pipeline"],
+        );
+        let lint = lint_collision_check(&[queue, pipeline], &[]);
+        assert_eq!(lint.findings.len(), 1);
+        assert_eq!(lint.findings[0].name, "enqueue-job");
+        assert_eq!(lint.findings[0].kind, CollisionKind::CauseTag);
+        assert!(lint.findings[0].owners.contains(&"queue-graft".to_string()));
+        assert!(
+            lint.findings[0]
+                .owners
+                .contains(&"pipeline-graft".to_string())
+        );
+    }
+
+    /// RM1 META-COLLISION-2: domain declares `entries` field and a
+    /// graft also exposes `entries`. The lint should fire one finding
+    /// with one owner being `(domain)`.
+    #[test]
+    fn collision_lint_flags_domain_vs_graft_state() {
+        let audit = synthetic_collision_graft("audit-graft", &["log-entry"], &["entries"]);
+        let domain = vec![
+            "+$  versioned-state".to_string(),
+            "  $:  %v1".to_string(),
+            "      entries=(list @t)".to_string(),
+            "      ::  nockup:state".to_string(),
+            "  ==".to_string(),
+        ];
+        let lint = lint_collision_check(&[audit], &domain);
+        assert_eq!(lint.findings.len(), 1);
+        assert_eq!(lint.findings[0].name, "entries");
+        assert_eq!(lint.findings[0].kind, CollisionKind::StateField);
+        assert!(
+            lint.findings[0]
+                .owners
+                .contains(&"(domain)".to_string())
+        );
+        assert!(
+            lint.findings[0]
+                .owners
+                .contains(&"audit-graft".to_string())
+        );
+    }
+
+    /// Two grafts with disjoint tag sets and disjoint field sets
+    /// must produce zero findings. Sanity check that the lint isn't
+    /// over-flagging.
+    #[test]
+    fn collision_lint_clears_disjoint_grafts() {
+        let queue = synthetic_collision_graft("queue-graft", &["queue-push"], &["queue"]);
+        let counter =
+            synthetic_collision_graft("counter-graft", &["counter-inc"], &["counter"]);
+        let lint = lint_collision_check(&[queue, counter], &[]);
+        assert!(
+            lint.findings.is_empty(),
+            "disjoint grafts must not collide, got {lint:#?}"
+        );
+    }
+
+    /// Domain cause-tag colliding with a graft cause-tag fires a
+    /// CauseTag finding with `(domain)` listed alongside the graft.
+    #[test]
+    fn collision_lint_flags_domain_vs_graft_cause() {
+        let queue = synthetic_collision_graft("queue-graft", &["queue-push"], &["queue"]);
+        let domain = vec![
+            "+$  cause".to_string(),
+            "  $%  [%queue-push payload=@]".to_string(),
+            "      ::  nockup:cause".to_string(),
+            "  ==".to_string(),
+        ];
+        let lint = lint_collision_check(&[queue], &domain);
+        assert!(
+            lint.findings.iter().any(|f| f.name == "queue-push"
+                && f.kind == CollisionKind::CauseTag
+                && f.owners.contains(&"(domain)".to_string())
+                && f.owners.contains(&"queue-graft".to_string())),
+            "expected domain-vs-graft cause-tag finding, got {lint:#?}"
+        );
     }
 
     /// Build a temp lib dir with settle-graft.toml and an alpha synthetic
