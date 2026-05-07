@@ -993,8 +993,8 @@ fn emit_effect_union(
 
     let mut begin_idx: Option<usize> = None;
     let mut end_idx: Option<usize> = None;
-    for i in (union_idx + 1)..lines.len() {
-        let trimmed = lines[i].trim();
+    for (i, line) in lines.iter().enumerate().skip(union_idx + 1) {
+        let trimmed = line.trim();
         if trimmed == begin_str {
             if begin_idx.is_some() {
                 bail!(
@@ -1046,8 +1046,8 @@ fn emit_effect_union(
             // comment, or the bare-effect line stops the search.
             let mut bare_idx: Option<usize> = None;
             let scan_end = lines.len().min(union_idx + 8);
-            for i in (union_idx + 1)..scan_end {
-                let trimmed = lines[i].trim();
+            for (i, line) in lines.iter().enumerate().take(scan_end).skip(union_idx + 1) {
+                let trimmed = line.trim();
                 if trimmed.is_empty() || trimmed.starts_with("::") {
                     continue;
                 }
@@ -1214,8 +1214,8 @@ fn lint_bare_tilde_ambiguity(lines: &[String]) -> BareTildeLint {
     // can name its parent arm. Domain arms are leading `%<tag>` lines
     // that are NOT inside a graft-inject banner.
     let mut current_arm: Option<String> = None;
-    for i in (switch_idx + 1)..lines.len() {
-        let trimmed = lines[i].trim();
+    for (i, line) in lines.iter().enumerate().skip(switch_idx + 1) {
+        let trimmed = line.trim();
         if trimmed == "==" {
             break;
         }
