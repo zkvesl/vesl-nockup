@@ -8,7 +8,7 @@
 //! See `--help` for full CLI surface.
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -1644,9 +1644,24 @@ fn find_last_bare_tilde(lines: &[String], marker_idx: usize) -> Option<usize> {
     name = "graft-inject",
     version,
     about = "Compose vesl-flavored grafts into a nockup app.hoon kernel",
-    long_about = None,
+    long_about = "Compose vesl-flavored grafts into a nockup app.hoon kernel.\n\
+                  \n\
+                  Subcommands:\n  \
+                    inject     compose grafts into app.hoon (preview-by-default; --apply to write)\n  \
+                    list       list discovered grafts under --lib-dir\n  \
+                  \n\
+                  Without a subcommand, falls back to the legacy bare invocation\n\
+                  (`graft-inject <PATH> --grafts ...`). That form is deprecated; prefer\n\
+                  `graft-inject inject <PATH>` so the operation is explicit. Run\n\
+                  `graft-inject <subcommand> --help` for subcommand-specific options.",
 )]
 struct Cli {
+    /// Top-level subcommand. When omitted, the legacy bare-invocation
+    /// flags (`<PATH>`, `--grafts`, `--apply`, `--list`, …) are honored
+    /// for back-compat — a one-line deprecation note prints to stderr.
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Target file (omit when using --list).
     path: Option<PathBuf>,
 
@@ -1695,6 +1710,56 @@ struct Cli {
     /// the `nockup:effect-union` marker.
     #[arg(long = "no-migrate")]
     no_migrate: bool,
+}
+
+/// Subcommands. Each variant carries its own argument set so
+/// `graft-inject <subcmd> --help` shows only the relevant flags. Bare
+/// `graft-inject <PATH> [flags]` keeps working through the
+/// `Cli::command == None` branch in `main`.
+#[derive(Subcommand, Debug, Clone)]
+enum Command {
+    /// Compose grafts into app.hoon (preview-by-default; --apply to write).
+    Inject {
+        /// Target Hoon source file.
+        path: PathBuf,
+
+        /// Comma-separated graft names, in injection order. When omitted,
+        /// auto-discovers all *.toml manifests under --lib-dir.
+        #[arg(long, value_delimiter = ',')]
+        grafts: Vec<String>,
+
+        /// Comma-separated graft names to subtract from the discovered set.
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
+
+        /// Manifest discovery root.
+        #[arg(long, default_value = DEFAULT_LIB_DIR)]
+        lib_dir: PathBuf,
+
+        /// Write the composed output to PATH (default is preview-only).
+        #[arg(long)]
+        apply: bool,
+
+        /// Skip the auto-migration of legacy `+$ effect *` to the marker
+        /// shape. Default migrates transparently.
+        #[arg(long = "no-migrate")]
+        no_migrate: bool,
+    },
+
+    /// List discovered grafts under --lib-dir.
+    List {
+        /// Manifest discovery root.
+        #[arg(long, default_value = DEFAULT_LIB_DIR)]
+        lib_dir: PathBuf,
+
+        /// Comma-separated graft names to subtract from the discovered set.
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
+
+        /// JSON output mode (machine-readable).
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Schema item for `--list --json`. Stable across the v3 plan's lifespan;
@@ -1756,11 +1821,80 @@ impl<'a> GraftSummary<'a> {
 fn main() -> ExitCode {
     warn_if_stale();
     let cli = Cli::parse();
-    match run(cli) {
+    let result = dispatch(cli);
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("graft-inject: {e:#}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// Subcommand dispatch. Either runs an explicit subcommand (modern
+/// surface) or falls through to the legacy bare-invocation flow
+/// (`graft-inject <PATH> --apply --grafts ...`) — emitting a
+/// deprecation note when the legacy path is taken so scripts know to
+/// migrate.
+///
+/// Each subcommand variant is reified into the legacy `Cli` shape and
+/// handed to `run()`. The shared dispatch keeps subcommand-specific
+/// flags isolated in `Command::*` while reusing the inject pipeline
+/// and the `select_grafts` / `emit_list` plumbing unchanged.
+fn dispatch(cli: Cli) -> Result<()> {
+    match cli.command {
+        Some(Command::Inject {
+            path,
+            grafts,
+            exclude,
+            lib_dir,
+            apply,
+            no_migrate,
+        }) => run(Cli {
+            command: None,
+            path: Some(path),
+            grafts,
+            exclude,
+            lib_dir,
+            list: false,
+            json: false,
+            dry_run: false,
+            apply,
+            no_migrate,
+        }),
+        Some(Command::List {
+            lib_dir,
+            exclude,
+            json,
+        }) => run(Cli {
+            command: None,
+            path: None,
+            grafts: Vec::new(),
+            exclude,
+            lib_dir,
+            list: true,
+            json,
+            dry_run: false,
+            apply: false,
+            no_migrate: false,
+        }),
+        None => {
+            // Legacy bare-invocation back-compat. The user typed
+            // `graft-inject <PATH> ...` or `graft-inject --list ...`
+            // without naming a subcommand; emit a deprecation hint
+            // unless this is a help-style invocation with nothing to do.
+            if cli.list {
+                eprintln!(
+                    "graft-inject: --list is deprecated; use \
+                     `graft-inject list` instead."
+                );
+            } else if cli.path.is_some() {
+                eprintln!(
+                    "graft-inject: bare-invocation is deprecated; use \
+                     `graft-inject inject <PATH>` instead."
+                );
+            }
+            run(cli)
         }
     }
 }
@@ -2769,6 +2903,7 @@ mod tests {
 
     fn cli_with(lib_dir: PathBuf) -> Cli {
         Cli {
+            command: None,
             path: None,
             grafts: Vec::new(),
             exclude: Vec::new(),
@@ -2779,6 +2914,65 @@ mod tests {
             apply: false,
             no_migrate: false,
         }
+    }
+
+    /// `graft-inject inject hoon/app/app.hoon --grafts foo,bar --apply`
+    /// should parse cleanly into Command::Inject with the listed args.
+    #[test]
+    fn cli_parses_inject_subcommand() {
+        let cli = Cli::try_parse_from([
+            "graft-inject",
+            "inject",
+            "hoon/app/app.hoon",
+            "--grafts",
+            "foo,bar",
+            "--apply",
+        ])
+        .expect("inject subcommand must parse");
+        match cli.command {
+            Some(Command::Inject {
+                path,
+                grafts,
+                apply,
+                no_migrate,
+                ..
+            }) => {
+                assert_eq!(path, PathBuf::from("hoon/app/app.hoon"));
+                assert_eq!(grafts, vec!["foo".to_string(), "bar".to_string()]);
+                assert!(apply);
+                assert!(!no_migrate);
+            }
+            other => panic!("expected Command::Inject, got {other:?}"),
+        }
+    }
+
+    /// `graft-inject list --json` parses into Command::List with json on.
+    #[test]
+    fn cli_parses_list_subcommand() {
+        let cli = Cli::try_parse_from(["graft-inject", "list", "--json"])
+            .expect("list subcommand must parse");
+        match cli.command {
+            Some(Command::List { json, .. }) => assert!(json),
+            other => panic!("expected Command::List, got {other:?}"),
+        }
+    }
+
+    /// `graft-inject hoon/app/app.hoon --grafts foo` (legacy bare form)
+    /// must still parse — `command` ends up `None` and the legacy fields
+    /// carry the args. This is the back-compat path that prints the
+    /// deprecation note in `dispatch`.
+    #[test]
+    fn cli_parses_legacy_bare_invocation() {
+        let cli = Cli::try_parse_from([
+            "graft-inject",
+            "hoon/app/app.hoon",
+            "--grafts",
+            "foo",
+        ])
+        .expect("legacy bare form must still parse");
+        assert!(cli.command.is_none());
+        assert_eq!(cli.path.as_deref(), Some(Path::new("hoon/app/app.hoon")));
+        assert_eq!(cli.grafts, vec!["foo".to_string()]);
     }
 
     /// Build a temp lib dir with settle-graft.toml and an alpha synthetic
