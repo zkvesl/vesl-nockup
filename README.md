@@ -140,20 +140,48 @@ The two `vesl-core` / `nock-noun-rs` Rust deps are already in your `Cargo.toml` 
 ## Step 3 — wire the kernel
 
 ```bash
-graft-inject hoon/app/app.hoon            # preview
-graft-inject --apply hoon/app/app.hoon    # write
+graft-inject inject hoon/app/app.hoon            # preview
+graft-inject inject --apply hoon/app/app.hoon    # write
 ```
 
-The `app.hoon` you copied in Step 2 has nine `::  nockup:*` marker comments at fixed structural points — seven content markers (where graft bodies splice in) and two codegen markers (`domain-effect` and `effect-union`, anchors for the Phase 03f typed effect-union pass). `graft-inject` discovers every `<name>-graft.toml` under `hoon/lib/`, composes their per-marker blocks, and prints the result — imports, state fields, cause-union branches, poke prelude/postlude wrappers, `?-` poke arms, a chained peek dispatcher, and the synthesized `+$  effect  $%(...)` union. About 80 lines per graft, written for you. The tool is idempotent — re-running after `--apply` skips anything already wired.
+The `app.hoon` you copied in Step 2 has nine `::  nockup:*` marker comments at fixed structural points — seven content markers (where graft bodies splice in) and two codegen markers (`domain-effect` and `effect-union`, anchors for the Phase 03f typed effect-union pass). `graft-inject inject` discovers every `<name>-graft.toml` under `hoon/lib/`, composes their per-marker blocks, and prints the result — imports, state fields, cause-union branches, poke prelude/postlude wrappers, `?-` poke arms, a chained peek dispatcher, and the synthesized `+$  effect  $%(...)` union. About 80 lines per graft, written for you. The tool is idempotent — re-running after `--apply` skips anything already wired.
 
 **Preview by default.** A bare invocation prints the composed kernel to stdout and a per-manifest sha256 summary to stderr. Nothing is written until you pass `--apply`. This keeps a compromised `hoon/lib/` — pulled by `sync.sh`, a bad `cp`, or a dependency bump — from silently composing hostile Hoon into your kernel source. See `docs/graft-manifest.md` for the trust model.
+
+`graft-inject` ships four subcommands. Run `graft-inject --help` for the index, or `graft-inject <subcmd> --help` for per-subcommand flags:
+
+```
+inject     compose grafts into app.hoon (preview-by-default; --apply to write)
+list       list discovered grafts under --lib-dir
+lint       run pre-apply structural validations on app.hoon (see "Pre-apply linting" below)
+help       print the index
+```
+
+Legacy bare invocation — `graft-inject hoon/app/app.hoon ...` and `graft-inject --list` — still parses for back-compat but emits a one-line deprecation hint. Migrate scripts to the explicit `inject` / `list` subcommand form.
 
 Selective composition:
 
 ```bash
-graft-inject --list                                                    # see what's available
-graft-inject --grafts settle-graft,mint-graft --apply hoon/app/app.hoon # explicit subset
-graft-inject --exclude forge-graft --apply hoon/app/app.hoon            # everything but forge
+graft-inject list                                                              # see what's available
+graft-inject inject --grafts settle-graft,mint-graft --apply hoon/app/app.hoon # explicit subset
+graft-inject inject --exclude forge-graft --apply hoon/app/app.hoon            # everything but forge
+```
+
+### Pre-apply linting
+
+`graft-inject lint <app.hoon>` runs read-only structural validations before any potential `--apply`. Two lint families ship today:
+
+- **`bare-tilde-ambiguity`** — flags domain `?-` switch arms whose body ends with a `~`-only line. The peek-chain rebuilder's `find_last_bare_tilde` scan would otherwise mistake that `~` for the chain terminator and corrupt the file (RM1 HARD-BUG-2). Refactor to `\`(list effect)\`~` or `^- (list effect) ~` on a single line.
+- **`collision-check`** — flags duplicate cause-tag names and state-field names across grafts and between grafts and the domain. Surfaces RM1 META-COLLISION-1/2/3 at scaffold time rather than at hoonc nest-fail time.
+
+Exit code is `1` on any finding so CI can gate `--apply` on the lint passing. Pass `--json` for a stable machine-readable schema:
+
+```json
+{
+  "bare_tilde_ambiguity": [{"line": 354, "arm": "ping"}],
+  "collision": [{"kind": "cause_tag", "name": "enqueue-job",
+                 "owners": ["queue-graft", "pipeline-graft"]}]
+}
 ```
 
 Expected output for an all-four compose (with `--apply`):
@@ -289,7 +317,7 @@ Mint is **append-only** — a second `build_mint_commit_poke(7, ...)` on the sam
 
 ### Forge: proving a Nock computation
 
-Forge is the one primitive that produces a STARK, and the one with the heaviest compile (the prover tree adds ~16MB of pre-jammed constraint tables to your kernel). Whether to include it is a deployment decision — skip it via `graft-inject --exclude forge-graft` if you don't need proofs.
+Forge is the one primitive that produces a STARK, and the one with the heaviest compile (the prover tree adds ~16MB of pre-jammed constraint tables to your kernel). Whether to include it is a deployment decision — skip it via `graft-inject inject --exclude forge-graft hoon/app/app.hoon` if you don't need proofs.
 
 ```rust
 use vesl_core::build_forge_prove_poke;
@@ -325,7 +353,7 @@ poke(&mut app, build_kv_delete_poke("greeting")).await?;
 // → %kv-deleted (idempotent — missing keys also emit %kv-deleted)
 ```
 
-Compose by listing the graft alongside the others: `graft-inject --grafts settle,mint,kv hoon/app/app.hoon`. Peek path is `[%kv-value key=@t]` returning the stored atom or `~`. The store is capped at 10M entries (`%kv-error 'capacity'` on overflow). Overwrite of an existing key bypasses the cap.
+Compose by listing the graft alongside the others: `graft-inject inject --grafts settle,mint,kv hoon/app/app.hoon`. Peek path is `[%kv-value key=@t]` returning the stored atom or `~`. The store is capped at 10M entries (`%kv-error 'capacity'` on overflow). Overwrite of an existing key bypasses the cap.
 
 `kv-graft` is the *loose* store: overwrite-on-set, noop on delete-missing. The strict counterpart (`registry-graft`) — error on overwrite, error on missing-update, structured `record=*` values — ships later in Phase 02. Pick by stance.
 
@@ -432,7 +460,7 @@ If you already have a working nockapp, skip Step 1. The rest applies, with one e
    - `::  nockup:effect-union` — REPLACE-IF-PRESENT codegen target where graft-inject synthesizes the typed `+$  effect  $%(<each graft's effect> domain-effect ==)` union (Phase 03f Lever 1)
 
    See `templates/app.hoon` for a reference placement. Two-space law applies — `::` followed by exactly two spaces, then `nockup:<name>`.
-3. `graft-inject --apply hoon/app/app.hoon` — same as Step 3 above. Safe to run against a populated kernel; it only edits marker lines. Bare invocation (no `--apply`) previews.
+3. `graft-inject inject --apply hoon/app/app.hoon` — same as Step 3 above. Safe to run against a populated kernel; it only edits marker lines. Bare invocation (no `--apply`) previews.
 4. Recompile (`hoonc hoon/app/app.hoon hoon/`) and rebuild (`cargo +nightly build`).
 5. Call `vesl_core::build_settle_register_poke`, `build_settle_note_poke`, `build_settle_verify_poke` from your existing `main.rs` alongside your domain pokes. No rewrite needed.
 
@@ -643,14 +671,14 @@ Inside each `%settle-*` arm, replace the gate body:
 
 `verify-gate` is `$-([note-id=@ data=* expected-root=@] ?)`. `note-id` is bound so domain gates can enforce `note-id == deterministic-fn(data)`, closing the pre-commit race (audit H-03). `data` is whatever your Rust side jammed into the `payload` atom; your gate casts it (`;;(manifest data)`, `;;(my-intent data)`, etc.) and returns a loobean. The caller decides what the data shape is — the graft doesn't care. The installed three-arg signature matches `hoon/lib/settle-graft.toml:34`.
 
-**Swapping a gate selection mid-project.** When you change `[graft.gates] gate = "..."` in a manifest (e.g., promoting a project from `sig-verify-schnorr` in development to `manifest-verify` in production), re-run `graft-inject --apply hoon/app/app.hoon` — the composer detects the manifest drift via the `sha256:<short>` prefix it embeds in each `::  graft-inject:<graft>:<marker>:begin` banner, strips the stale block, and re-injects from the new manifest. The drift event is announced on stderr (`graft-inject: settle-graft: manifest drift at poke (banner sha256 eec1fca7a063 → current 3c43c1086620). Re-injecting.`). Pre-Phase-03h kernels whose banners predate the sha256 suffix are detected as legacy and force-re-injected once on first run after the upgrade — the new format is stamped in place, no manual cleanup needed.
+**Swapping a gate selection mid-project.** When you change `[graft.gates] gate = "..."` in a manifest (e.g., promoting a project from `sig-verify-schnorr` in development to `manifest-verify` in production), re-run `graft-inject inject --apply hoon/app/app.hoon` — the composer detects the manifest drift via the `sha256:<short>` prefix it embeds in each `::  graft-inject:<graft>:<marker>:begin` banner, strips the stale block, and re-injects from the new manifest. The drift event is announced on stderr (`graft-inject: settle-graft: manifest drift at poke (banner sha256 eec1fca7a063 → current 3c43c1086620). Re-injecting.`). Pre-Phase-03h kernels whose banners predate the sha256 suffix are detected as legacy and force-re-injected once on first run after the upgrade — the new format is stamped in place, no manual cleanup needed.
 
 ### Removing a graft
 
 You added `rbac-graft` to try it; now you're taking it back out. Drop the name from `--grafts` and re-run with `--apply`:
 
 ```bash
-graft-inject --grafts settle-graft,registry-graft,log-graft --apply hoon/app/app.hoon
+graft-inject inject --grafts settle-graft,registry-graft,log-graft --apply hoon/app/app.hoon
 ```
 
 graft-inject auto-prunes the banner-pair-bounded blocks the dropped graft owned. The per-graft summary surfaces it:
@@ -784,7 +812,7 @@ The standard suite covers register, duplicate-register, verify, settle, replay, 
 You edited `app.hoon` without the marker comments, or your spacing is off. Two-space law: `::` followed by exactly two spaces, then `nockup:<name>`.
 
 **`graft-inject` errors with `unknown graft: <name>`**
-`--grafts <csv>` names a graft whose `.toml` isn't in `--lib-dir`. Check `graft-inject --list` to see what's installed. Auto-discovery (bare invocation) won't produce this error — it just picks what's there.
+`--grafts <csv>` names a graft whose `.toml` isn't in `--lib-dir`. Check `graft-inject list` to see what's installed. Auto-discovery (bare invocation) won't produce this error — it just picks what's there.
 
 **`hoonc` exits 0 but no `out.jam`**
 Type error in the kernel. Most common cause: your `effect` type is narrower than the union the grafted arms produce. Use `+$  effect  *` unless you've explicitly constrained it.
