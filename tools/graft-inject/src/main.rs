@@ -1817,6 +1817,38 @@ fn lint_internal_dupes(lines: &[String]) -> InternalDupeLint {
 /// duplicates regardless of whether they came from domain or graft
 /// injection.
 fn extract_all_cause_variants(lines: &[String]) -> Vec<(String, usize)> {
+    extract_cause_union_members(lines)
+        .into_iter()
+        .filter_map(|m| match m {
+            CauseUnionMember::Literal { tag, line } => Some((tag, line)),
+            CauseUnionMember::Reference { .. } => None,
+        })
+        .collect()
+}
+
+/// Member of a literal `+$ cause` definition. Distinguishes inline
+/// `[%<tag> ...]` variants from sub-union type references like
+/// `settle-cause` or `intent-cause` — the codegen pass needs both
+/// (literals → tag direct; references → look up the named graft's
+/// manifest), the lint pass cares only about literals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CauseUnionMember {
+    /// `[%<tag> ...]` form — an inline variant whose head is `tag`.
+    Literal { tag: String, line: usize },
+    /// Sub-union reference — a bare type name like `settle-cause`,
+    /// `intent-cause` etc. that resolves to another `+$` definition
+    /// (typically the one a graft contributes via its imports).
+    Reference { name: String, line: usize },
+}
+
+/// Parse the `+$ cause` definition in `lines`. Three shapes accepted:
+///   1. `+$ cause $%(...)` — explicit union; emit one member per
+///      variant.
+///   2. `+$ cause <type-name>` — single-line alias; emit one
+///      Reference for the alias target.
+///   3. `+$ cause` then `$%(...)` on a later line — same as shape 1
+///      but split across lines.
+fn extract_cause_union_members(lines: &[String]) -> Vec<CauseUnionMember> {
     let mut out = Vec::new();
     let Some(open_idx) = lines.iter().position(|l| {
         let t = l.trim();
@@ -1824,6 +1856,32 @@ fn extract_all_cause_variants(lines: &[String]) -> Vec<(String, usize)> {
     }) else {
         return out;
     };
+
+    // Detect shape 2 (`+$ cause <type-name>` alias) by inspecting the
+    // tokens after `cause` on the open line.
+    let cause_line = lines[open_idx].trim();
+    let after_cause: Vec<&str> = cause_line
+        .split_whitespace()
+        .skip_while(|t| *t != "cause")
+        .skip(1)
+        .collect();
+    if let Some(first) = after_cause.first() {
+        if !first.starts_with("$%") && !first.starts_with("[%") && !first.is_empty() {
+            let name: String = first
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            if !name.is_empty() {
+                out.push(CauseUnionMember::Reference {
+                    name,
+                    line: open_idx + 1,
+                });
+                return out;
+            }
+        }
+    }
+
+    // Shape 1 / 3: scan for `$%`, then collect members until `==`.
     let mut started = false;
     for (i, line) in lines.iter().enumerate().skip(open_idx) {
         let trimmed = line.trim();
@@ -1831,9 +1889,7 @@ fn extract_all_cause_variants(lines: &[String]) -> Vec<(String, usize)> {
             if let Some(after) = trimmed.find("$%") {
                 started = true;
                 let rest = &trimmed[after + 2..];
-                if let Some(tag) = bracket_tag(rest) {
-                    out.push((tag, i + 1));
-                }
+                push_cause_member(rest, i + 1, &mut out);
             }
             continue;
         }
@@ -1843,11 +1899,30 @@ fn extract_all_cause_variants(lines: &[String]) -> Vec<(String, usize)> {
         if trimmed.starts_with("::") {
             continue;
         }
-        if let Some(tag) = bracket_tag(trimmed) {
-            out.push((tag, i + 1));
-        }
+        push_cause_member(trimmed, i + 1, &mut out);
     }
     out
+}
+
+/// Append a `CauseUnionMember` parsed from `s`. `[%<tag>` becomes a
+/// Literal; bare identifiers become a Reference. Empty strings are
+/// no-ops.
+fn push_cause_member(s: &str, line: usize, out: &mut Vec<CauseUnionMember>) {
+    let t = s.trim();
+    if t.is_empty() {
+        return;
+    }
+    if let Some(tag) = bracket_tag(t) {
+        out.push(CauseUnionMember::Literal { tag, line });
+        return;
+    }
+    let name: String = t
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect();
+    if !name.is_empty() {
+        out.push(CauseUnionMember::Reference { name, line });
+    }
 }
 
 /// Walk from `+$ versioned-state $:(...)` open to close, emit
@@ -2945,24 +3020,56 @@ fn run_codegen_kernel_cause_tags(
         .with_context(|| format!("reading {}", path.display()))?;
     let lines: Vec<String> = source.lines().map(String::from).collect();
 
-    // Collect tags from the domain cause $% and every graft's poke arm
-    // headers. Dedup via a BTreeSet so the emitted slice is
-    // deterministic across runs (sorted lexicographically).
+    // Collect tags by walking the literal `+$ cause` definition in
+    // `path` (RM2 §2.2). Each member is either:
+    //   * an inline `[%<tag> ...]` variant — emit `<tag>` directly
+    //     (this captures domain causes — the previously-missed class
+    //     that left `assert_kernel_cause_tag!("submit-artifact")` etc.
+    //     unsupported);
+    //   * a sub-union reference like `settle-cause` or `intent-cause`
+    //     — look up the manifest under `lib_dir` whose
+    //     `[graft.types].cause` declares that name, then inline its
+    //     poke-arm tags via `extract_graft_cause_tags`.
+    //
+    // Inactive grafts (manifests under lib_dir whose cause type is not
+    // referenced from the union) contribute nothing, closing RM2
+    // NEW-FRICTION-1 (false-positive tags from placeholder grafts).
+    let grafts = if lib_dir.is_dir() {
+        discover_grafts(lib_dir)
+            .with_context(|| format!("discovering grafts under {}", lib_dir.display()))?
+    } else {
+        Vec::new()
+    };
     let mut tags: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for tag in extract_domain_cause_tags(&lines) {
-        // Skip the placeholder `[%cause ~]` variant the template ships
-        // before any domain tag is added — it's not a real cause-tag,
-        // just a syntactic anchor for the union.
-        if tag != "cause" {
-            tags.insert(tag);
-        }
-    }
-    if lib_dir.is_dir() {
-        let grafts = discover_grafts(lib_dir)
-            .with_context(|| format!("discovering grafts under {}", lib_dir.display()))?;
-        for g in &grafts {
-            for tag in extract_graft_cause_tags(g) {
-                tags.insert(tag);
+    for member in extract_cause_union_members(&lines) {
+        match member {
+            CauseUnionMember::Literal { tag, .. } => {
+                // Skip the placeholder `[%cause ~]` variant the template
+                // ships before any domain tag is added — syntactic anchor,
+                // not a real cause-tag.
+                if tag != "cause" {
+                    tags.insert(tag);
+                }
+            }
+            CauseUnionMember::Reference { name, .. } => {
+                // Match against each graft's declared cause type. Falls
+                // through silently when no manifest matches — that's an
+                // orphan reference (graft missing from lib_dir), which
+                // graft-inject's inject pass would have caught earlier.
+                for g in &grafts {
+                    let matches = g
+                        .types
+                        .as_ref()
+                        .and_then(|t| t.cause.as_deref())
+                        .map(|c| c == name)
+                        .unwrap_or(false);
+                    if matches {
+                        for tag in extract_graft_cause_tags(g) {
+                            tags.insert(tag);
+                        }
+                        break;
+                    }
+                }
             }
         }
     }
