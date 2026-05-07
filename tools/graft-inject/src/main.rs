@@ -1560,6 +1560,205 @@ struct CollisionLint {
     findings: Vec<CollisionFinding>,
 }
 
+/// Pre-apply lint: walk every `.hoon` file reachable from the input
+/// path via `/+`, `/=`, `/-`, `/#` imports, AND eagerly scan every
+/// `.hoon` under `<hoon-root>/common/`. Report unsatisfied edges as
+/// HARD-LINT findings.
+///
+/// Reproduces the empirical seed-A friction (`hoon/common/nock-prover.hoon
+/// → /# softed-constraints` after slim-cp): even though Profile A's
+/// app.hoon doesn't reach nock-prover transitively, hoonc parses
+/// hoon/common/ eagerly and silent-fails on the missing `/dat/` target.
+/// This lint surfaces the same edge before hoonc runs so the developer
+/// sees a clear "missing file at PATH" rather than hoonc's "no panic!"
+/// lie. See `vesl-nockup/.dev/debug/log-meta/RM2/seed-A.md` §DOC-GAP-1.
+///
+/// Resolution rules:
+/// - `/+ <name>`         → `<lib-dir>/<name>.hoon`
+/// - `/+ *<name>`        → `<lib-dir>/<name>.hoon` (public-import form)
+/// - `/= <bind> /<path>` → `<hoon-root>/<path>.hoon`
+/// - `/-  <name>`        → `<hoon-root>/sur/<name>.hoon`
+/// - `/# <name>`         → `<hoon-root>/dat/<name>.hoon`
+fn lint_transitive_imports(root_path: &Path, lib_dir: &Path) -> TransitiveImportLint {
+    use std::collections::VecDeque;
+
+    let hoon_root = lib_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let common_dir = hoon_root.join("common");
+
+    // Canonicalize for dedup. If canonicalize fails (e.g. the file
+    // doesn't exist), fall back to the raw path — the resolver below
+    // is the place that flags absence, not the dedup step.
+    let canon = |p: &Path| -> PathBuf {
+        p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+    };
+
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    let mut queue: VecDeque<(PathBuf, Vec<PathBuf>)> = VecDeque::new();
+    queue.push_back((canon(root_path), Vec::new()));
+
+    // Eagerly seed every .hoon under hoon/common/. Manual recursion via
+    // fs::read_dir keeps us off walkdir.
+    if common_dir.is_dir() {
+        let mut stack = vec![common_dir.clone()];
+        while let Some(dir) = stack.pop() {
+            let entries = match fs::read_dir(&dir) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().and_then(|e| e.to_str()) == Some("hoon") {
+                    queue.push_back((canon(&p), Vec::new()));
+                }
+            }
+        }
+    }
+
+    let mut findings: Vec<TransitiveImportFinding> = Vec::new();
+    while let Some((current, parents)) = queue.pop_front() {
+        if !visited.insert(current.clone()) {
+            continue;
+        }
+        let content = match fs::read_to_string(&current) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let lines: Vec<String> = content.lines().map(String::from).collect();
+        for spec in parse_imports(&lines) {
+            let target = resolve_import(&spec, &hoon_root, lib_dir);
+            if target.exists() {
+                let mut next_parents = parents.clone();
+                next_parents.push(current.clone());
+                queue.push_back((canon(&target), next_parents));
+            } else {
+                let mut chain = parents.clone();
+                chain.push(current.clone());
+                findings.push(TransitiveImportFinding {
+                    source: current.clone(),
+                    rune: spec.rune.to_string(),
+                    name: spec.name.clone(),
+                    target,
+                    reachable_from: chain,
+                });
+            }
+        }
+    }
+
+    TransitiveImportLint { findings }
+}
+
+/// One import edge extracted from a .hoon prologue.
+#[derive(Debug, Clone)]
+struct ImportSpec {
+    rune: &'static str,
+    name: String,
+    /// `/=` only: the path argument (e.g. `/common/wrapper`). Empty
+    /// for the other runes.
+    path_arg: String,
+}
+
+/// Parse the leading import block of a .hoon file. Stops at the first
+/// non-rune non-comment non-empty line — Hoon prologues conventionally
+/// run all imports before the first runic body.
+fn parse_imports(lines: &[String]) -> Vec<ImportSpec> {
+    let mut out = Vec::new();
+    for line in lines {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with("::") {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("/+") {
+            for name in split_import_names(rest) {
+                out.push(ImportSpec {
+                    rune: "/+",
+                    name,
+                    path_arg: String::new(),
+                });
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("/=") {
+            // `/= <bind> /<path>`. Extract the leading slash-path; bind
+            // name is the first whitespace-separated token.
+            let fields: Vec<&str> = rest.split_whitespace().collect();
+            if let Some(p) = fields.iter().find(|f| f.starts_with('/')) {
+                out.push(ImportSpec {
+                    rune: "/=",
+                    name: fields.first().map(|s| s.to_string()).unwrap_or_default(),
+                    path_arg: p.to_string(),
+                });
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("/-") {
+            for name in split_import_names(rest) {
+                out.push(ImportSpec {
+                    rune: "/-",
+                    name,
+                    path_arg: String::new(),
+                });
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("/#") {
+            for name in split_import_names(rest) {
+                out.push(ImportSpec {
+                    rune: "/#",
+                    name,
+                    path_arg: String::new(),
+                });
+            }
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// Split a `/+` or `/-` argument into individual import names.
+/// Tolerates leading `*` (public import) and comma-separated lists.
+fn split_import_names(rest: &str) -> Vec<String> {
+    rest.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim_start_matches('*').to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Resolve an import spec to a candidate file path under hoon-root.
+fn resolve_import(spec: &ImportSpec, hoon_root: &Path, lib_dir: &Path) -> PathBuf {
+    match spec.rune {
+        "/+" => lib_dir.join(format!("{}.hoon", spec.name)),
+        "/=" => {
+            let p = spec.path_arg.trim_start_matches('/');
+            hoon_root.join(format!("{}.hoon", p))
+        }
+        "/-" => hoon_root.join("sur").join(format!("{}.hoon", spec.name)),
+        "/#" => hoon_root.join("dat").join(format!("{}.hoon", spec.name)),
+        _ => PathBuf::new(),
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TransitiveImportFinding {
+    /// .hoon file that owns the unsatisfied import.
+    source: PathBuf,
+    /// Rune ("/+", "/=", "/-", "/#").
+    rune: String,
+    /// Import name (or `/=` bind name).
+    name: String,
+    /// Expected resolution path that doesn't exist on disk.
+    target: PathBuf,
+    /// Chain of files traversed to reach `source`. Empty when
+    /// `source` is a top-level seed (the input root or a
+    /// hoon/common/ entry).
+    reachable_from: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct TransitiveImportLint {
+    findings: Vec<TransitiveImportFinding>,
+}
+
 /// Outcome of `migrate_legacy_effect`. Surfaced to stderr so reviewers
 /// can see whether the auto-migration touched the file before codegen
 /// runs.
@@ -2396,16 +2595,24 @@ fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
         CollisionLint::default()
     };
 
-    let findings_total = bare_tilde.findings.len() + collision.findings.len();
+    // Transitive import walk (RM2 §1.1). Runs unconditionally — the
+    // seed-A friction fires when hoonc eager-parses hoon/common/, and
+    // the lint needs to mirror that scope to be useful.
+    let transitive_imports = lint_transitive_imports(path, lib_dir);
+
+    let findings_total = bare_tilde.findings.len()
+        + collision.findings.len()
+        + transitive_imports.findings.len();
 
     if json {
-        // Stable schema: { "bare_tilde_ambiguity": [...], "collision": [...] }.
-        // Future lint families append top-level keys without reshaping
-        // existing ones (mirrors the --list --json schema policy at
-        // the GraftSummary block above).
+        // Stable schema: { "bare_tilde_ambiguity": [...], "collision": [...],
+        // "transitive_imports": [...] }. Future lint families append
+        // top-level keys without reshaping existing ones (mirrors the
+        // --list --json schema policy at the GraftSummary block above).
         let report = LintReport {
             bare_tilde_ambiguity: &bare_tilde.findings,
             collision: &collision.findings,
+            transitive_imports: &transitive_imports.findings,
         };
         let s = serde_json::to_string_pretty(&report)
             .expect("LintReport always serializes");
@@ -2457,6 +2664,36 @@ fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
                 "    see vesl-nockup/.dev/debug/log-meta/RM1/E_to_F.md §META-COLLISION-1"
             );
         }
+        if !transitive_imports.findings.is_empty() {
+            eprintln!("  transitive-imports:");
+            for f in &transitive_imports.findings {
+                eprintln!(
+                    "    {}: {} {} → {} (NOT FOUND)",
+                    f.source.display(),
+                    f.rune,
+                    f.name,
+                    f.target.display(),
+                );
+                for parent in &f.reachable_from {
+                    eprintln!("      reachable from: {}", parent.display());
+                }
+            }
+            eprintln!(
+                "    hoonc eager-parses hoon/common/ regardless of import-graph"
+            );
+            eprintln!(
+                "    reachability; unsatisfied edges leave hoonc exit 0 with no"
+            );
+            eprintln!(
+                "    out.jam (the \"no panic!\" silent-fail). Either add the missing"
+            );
+            eprintln!(
+                "    target file or strip the offending file from hoon/common/."
+            );
+            eprintln!(
+                "    see vesl-nockup/.dev/debug/log-meta/RM2/seed-A.md §DOC-GAP-1"
+            );
+        }
     }
 
     if findings_total > 0 {
@@ -2469,6 +2706,7 @@ fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
 struct LintReport<'a> {
     bare_tilde_ambiguity: &'a [BareTildeLintFinding],
     collision: &'a [CollisionFinding],
+    transitive_imports: &'a [TransitiveImportFinding],
 }
 
 /// `graft-inject codegen kernel-cause-tags` entry point. Reads the
