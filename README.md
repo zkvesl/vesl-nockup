@@ -169,10 +169,12 @@ graft-inject inject --exclude forge-graft --apply hoon/app/app.hoon            #
 
 ### Pre-apply linting
 
-`graft-inject lint <app.hoon>` runs read-only structural validations before any potential `--apply`. Two lint families ship today:
+`graft-inject lint <app.hoon>` runs read-only structural validations before any potential `--apply`. Four lint families ship today:
 
 - **`bare-tilde-ambiguity`** — flags domain `?-` switch arms whose body ends with a `~`-only line. The peek-chain rebuilder's `find_last_bare_tilde` scan would otherwise mistake that `~` for the chain terminator and corrupt the file (RM1 HARD-BUG-2). Refactor to `\`(list effect)\`~` or `^- (list effect) ~` on a single line.
-- **`collision-check`** — flags duplicate cause-tag names and state-field names across grafts and between grafts and the domain. Surfaces RM1 META-COLLISION-1/2/3 at scaffold time rather than at hoonc nest-fail time.
+- **`collision-check`** — flags duplicate cause-tag names and state-field names across grafts and between grafts and the domain. Cross-references manifest declarations against the domain `nockup:cause` / `nockup:state` regions. Surfaces RM1 META-COLLISION-1/2/3 at scaffold time rather than at hoonc nest-fail time.
+- **`transitive-imports`** — walks every `.hoon` reachable from `<app.hoon>` via `/+`, `/=`, `/-`, `/#` imports AND eagerly scans every `.hoon` under `hoon/common/`. Reports each unsatisfied edge with the source file, the import token, the expected target path, and the BFS chain. hoonc eager-parses `hoon/common/` regardless of import-graph reachability — unsatisfied edges there leave hoonc exit 0 with no `out.jam` (the "no panic!" silent-fail). Surfaced empirically in RM2 seed-A.md DOC-GAP-1.
+- **`internal-dupes`** — flags literal duplicate variant heads in the composed `+$ cause $%(...)` union and literal duplicate field names in `+$ versioned-state $:(...)`. Differs from `collision-check` by scanning the already-composed source unions including graft-injected banner content, so post-injection duplicates that the manifest-side pass misses (e.g. two grafts contributing the same `[%<tag> ...]` head despite distinct manifest names) get caught here.
 
 Exit code is `1` on any finding so CI can gate `--apply` on the lint passing. Pass `--json` for a stable machine-readable schema:
 
@@ -180,7 +182,13 @@ Exit code is `1` on any finding so CI can gate `--apply` on the lint passing. Pa
 {
   "bare_tilde_ambiguity": [{"line": 354, "arm": "ping"}],
   "collision": [{"kind": "cause_tag", "name": "enqueue-job",
-                 "owners": ["queue-graft", "pipeline-graft"]}]
+                 "owners": ["queue-graft", "pipeline-graft"]}],
+  "transitive_imports": [{"source": "hoon/common/nock-prover.hoon",
+                          "rune": "/#", "name": "softed-constraints",
+                          "target": "hoon/dat/softed-constraints.hoon",
+                          "reachable_from": ["hoon/common/nock-prover.hoon"]}],
+  "internal_dupes": [{"kind": "cause_tag", "name": "enqueue-job",
+                      "lines": [167, 213]}]
 }
 ```
 
