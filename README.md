@@ -787,6 +787,8 @@ sed -i '/graft-inject:rbac-graft:[a-z-]*:begin/,/:end/d' hoon/app/app.hoon
 
 Then `cargo install --path tools/graft-inject --force` to upgrade and never need that workaround again.
 
+**`hoon/common/` transitive-import note.** When you slim the sandbox before a non-forge compile (a `rm hoon/lib/forge-graft.*` and `rm -rf hoon/dat hoon/jams` pass), strip the corresponding `hoon/common/` files too — `nock-prover.hoon`, `nock-verifier.hoon`, `pow.hoon`, `tx-engine{,-0,-1}.hoon`, and the `v0-v1`/`v2`/`stark` subtrees transitively `/#` into `hoon/dat/`. hoonc's eager-parse pass over the entire `hoon/common/` tree pulls them in regardless of whether your kernel reaches them, and the unsatisfied `/dat/` references show up as the misleading "no panic!" silent-fail (RM2 seed-A.md DOC-GAP-1 RECUR). vesl-core's `.dev/DOGFOOD.md` slim-cp recipe ships the canonical strip list. Pair the slim-cp with `graft-inject lint hoon/app/app.hoon` (RM2 §1.1 transitive-imports) to surface any further unsatisfied edges before hoonc runs.
+
 ### Drive a catalog gate from Rust
 
 When your manifest selects one of the Tier 1a catalog gates via `[graft.gates]` (`sig-verify-schnorr`, `sig-verify-ed25519`, `manifest-verify`, `set-membership-verify`, `bounded-value-verify`), the gate's `data` field is no longer a flat byte slice — it's a structured cell. `vesl-core` ships per-gate poke builders that thread the right cell shape; pick the one matching your gate. Worked Schnorr example, end-to-end:
