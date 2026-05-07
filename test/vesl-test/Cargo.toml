@@ -35,3 +35,9 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+# vesl-checkpoint is the synced bundle from vesl-core; harness-level
+# integration tests use snapshot/resume to verify state-equivalence
+# across composition changes (RM2's defining test surface).
+vesl-checkpoint = { path = "../../crates/vesl-checkpoint" }

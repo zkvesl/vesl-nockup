@@ -167,7 +167,7 @@ cp "$vesl/docs/graft-manifest.md" "$here/docs/"
 # legitimate sibling dep.
 echo "  rust crates (vesl-core crate stack)"
 mkdir -p "$here/crates"
-for c in nock-noun-rs nockchain-tip5-rs nockchain-client-rs vesl-core; do
+for c in nock-noun-rs nockchain-tip5-rs nockchain-client-rs vesl-core vesl-checkpoint; do
     rm -rf "$here/crates/$c"
     cp -rL "$vesl/crates/$c" "$here/crates/$c"
 done

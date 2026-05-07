@@ -28,10 +28,12 @@ sha2 = "0.10"
 # and drive it via vesl-test's harness. vesl-core crates come from the
 # bundled copy in vesl-nockup/crates/ (synced from upstream via sync.sh);
 # nockchain is the one legitimate external sibling.
-vesl-core      = { path = "../../crates/vesl-core" }
-vesl-test      = { path = "../../test/vesl-test" }
-nock-noun-rs   = { path = "../../crates/nock-noun-rs" }
-nockapp        = { path = "../../../nockchain/crates/nockapp", default-features = false }
-nockvm         = { path = "../../../nockchain/crates/nockvm/rust/nockvm" }
-nockchain-math = { path = "../../../nockchain/crates/nockchain-math" }
-tokio          = { version = "1", features = ["rt-multi-thread", "macros"] }
+vesl-core       = { path = "../../crates/vesl-core" }
+vesl-test       = { path = "../../test/vesl-test" }
+vesl-checkpoint = { path = "../../crates/vesl-checkpoint" }
+nock-noun-rs    = { path = "../../crates/nock-noun-rs" }
+nockapp         = { path = "../../../nockchain/crates/nockapp", default-features = false }
+nockvm          = { path = "../../../nockchain/crates/nockvm/rust/nockvm" }
+nockchain-math  = { path = "../../../nockchain/crates/nockchain-math" }
+tempfile        = "3"
+tokio           = { version = "1", features = ["rt-multi-thread", "macros"] }

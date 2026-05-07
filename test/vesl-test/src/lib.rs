@@ -36,6 +36,13 @@ pub struct GraftTestHarness {
 }
 
 impl GraftTestHarness {
+    /// Borrow the underlying `NockApp`. Used by `vesl-checkpoint`
+    /// snapshot/resume tests that need to pass the live app to
+    /// `snapshot()` without going through a harness method.
+    pub fn app(&self) -> &NockApp {
+        &self.app
+    }
+
     /// Boot a NockApp from a compiled out.jam.
     pub async fn boot<P: AsRef<Path>>(jam_path: P) -> Result<Self> {
         let jam_path = jam_path.as_ref();
