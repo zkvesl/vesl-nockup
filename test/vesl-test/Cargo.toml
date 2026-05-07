@@ -16,9 +16,16 @@ nock-noun-rs = { path = "../../crates/nock-noun-rs" }
 # transitive deps or we get duplicate `nockvm`/`nockapp` versions in the
 # graph and `nock_noun_rs::Noun` stops type-equating to `nockapp::Noun`.
 # vesl-core uses path = "../../../nockchain/crates/...", so we mirror.
-nockapp        = { path = "../../../nockchain/crates/nockapp", default-features = false }
+#
+# slog-tracing routes Hoon `~> %slog.[pri text]` through tracing macros
+# (priority 1 → warn, priority 0 → info, etc.) so PokeReport's capture
+# layer can scoop them. Without this feature the slogs go straight to
+# stderr and our Layer never sees them.
+nockapp        = { path = "../../../nockchain/crates/nockapp", default-features = false, features = ["slog-tracing"] }
 nockvm         = { path = "../../../nockchain/crates/nockvm/rust/nockvm" }
 nockvm_macros  = { path = "../../../nockchain/crates/nockvm/rust/nockvm_macros" }
 
 anyhow = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -10,8 +10,10 @@
 //! /  `note`). The `settle` method remains as a deprecated alias so
 //! existing tests outside this repo keep compiling for one release.
 
+use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use nock_noun_rs::{jam_to_bytes, make_atom_in, make_tag_in, new_stack};
@@ -39,7 +41,7 @@ impl GraftTestHarness {
     pub async fn boot<P: AsRef<Path>>(jam_path: P) -> Result<Self> {
         let jam_path = jam_path.as_ref();
         let cli = boot::default_boot_cli(false);
-        boot::init_default_tracing(&cli);
+        init_capture_tracing(&cli);
         let kernel = fs::read(jam_path)
             .with_context(|| format!("reading kernel jam at {}", jam_path.display()))?;
         let app: NockApp =
@@ -82,6 +84,28 @@ impl GraftTestHarness {
             .await
             .map_err(|e| anyhow::anyhow!("poke failed: {e}"))?;
         Ok(effect_tags(&effects))
+    }
+
+    /// Like [`poke_slab`] but also returns any slog warnings emitted
+    /// during the call (e.g. `invalid cause` from the wrapper's
+    /// `(soft cause)` short-circuit). Use when a test needs to assert
+    /// on the kernel's diagnostics, not just on the effect tags.
+    ///
+    /// Capture is per-thread: if multiple harnesses call this method
+    /// concurrently from different threads, each scoops only its own
+    /// thread's slogs. Within a single thread, capture is per-call —
+    /// each invocation drains the buffer before running the poke.
+    pub async fn poke_slab_report(&mut self, slab: NounSlab) -> Result<PokeReport> {
+        clear_thread_capture();
+        let effects = self
+            .app
+            .poke(SystemWire.to_wire(), slab)
+            .await
+            .map_err(|e| anyhow::anyhow!("poke failed: {e}"))?;
+        Ok(PokeReport {
+            effect_tags: effect_tags(&effects),
+            slog_warnings: drain_thread_capture(),
+        })
     }
 
     /// Peek a path through the kernel's `++peek` arm. Wraps
@@ -296,5 +320,176 @@ impl SuiteReport {
             self.passed.len(),
             self.failed.len()
         )
+    }
+}
+
+// -- poke report ------------------------------------------------------------
+
+/// Outcome of a single poke. `effect_tags` is the same `Vec<String>`
+/// that [`GraftTestHarness::poke_slab`] returns; `slog_warnings`
+/// captures any `target: "slogger"` tracing events emitted by the
+/// kernel during the call.
+#[derive(Debug, Clone, Default)]
+pub struct PokeReport {
+    pub effect_tags: Vec<String>,
+    pub slog_warnings: Vec<SlogWarning>,
+}
+
+/// Structured slog observation. `InvalidCause` is parsed out of the
+/// wrapper's `~> %slog.[1 (crip "invalid cause {<noun>}")]` shape;
+/// other slogs land in `Other` verbatim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlogWarning {
+    /// The kernel's `(soft cause)` rejected the poke's cause cell.
+    /// `noun` is the printed noun body (decimal-with-dots tag atoms
+    /// per Hoon's default formatter); use [`decode_cause_tag`] to
+    /// extract the leading tag if needed.
+    InvalidCause { noun: String },
+    /// Anything else slogged through `target: "slogger"`.
+    Other(String),
+}
+
+impl PokeReport {
+    /// Convenience: did the kernel reject any cause-tag during this poke?
+    pub fn rejected_cause(&self) -> bool {
+        self.slog_warnings
+            .iter()
+            .any(|w| matches!(w, SlogWarning::InvalidCause { .. }))
+    }
+}
+
+/// Decode the leading tag of an `invalid cause` noun shown as
+/// dotted-decimal. `"499.918.253.415 138.296..."` → `Some("g-set")`.
+/// Hoon's `<...>` formatter prints atoms as little-endian decimal with
+/// dot separators every three digits; this reverses that for the head
+/// atom only. Returns None when the noun doesn't fit the expected
+/// `[head_atom rest...]` shape.
+pub fn decode_cause_tag(noun: &str) -> Option<String> {
+    let inner = noun.trim().trim_start_matches('[').trim_end_matches(']');
+    let head = inner.split_whitespace().next()?;
+    let digits: String = head.chars().filter(|c| c.is_ascii_digit()).collect();
+    let mut value: u64 = digits.parse().ok()?;
+    if value == 0 {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    while value > 0 {
+        bytes.push((value & 0xff) as u8);
+        value >>= 8;
+    }
+    String::from_utf8(bytes).ok()
+}
+
+// -- thread-local capture --------------------------------------------------
+
+thread_local! {
+    static CAPTURE: RefCell<Vec<SlogWarning>> = const { RefCell::new(Vec::new()) };
+}
+
+fn clear_thread_capture() {
+    CAPTURE.with(|c| c.borrow_mut().clear());
+}
+
+fn drain_thread_capture() -> Vec<SlogWarning> {
+    CAPTURE.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+fn push_thread_capture(w: SlogWarning) {
+    CAPTURE.with(|c| c.borrow_mut().push(w));
+}
+
+// -- tracing init + capture layer ------------------------------------------
+
+static TRACING_INIT: OnceLock<()> = OnceLock::new();
+
+/// Initialize tracing once per process: fmt layer (default human-
+/// readable output) + EnvFilter (RUST_LOG, default "info") + a custom
+/// layer that scoops `target: "slogger"` events into the per-thread
+/// capture buffer. Subsequent calls are a no-op so multiple harnesses
+/// in the same test process don't double-init.
+fn init_capture_tracing(_cli: &boot::Cli) {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::{EnvFilter, fmt};
+    TRACING_INIT.get_or_init(|| {
+        let filter = EnvFilter::new(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
+        );
+        let _ = tracing_subscriber::registry()
+            .with(fmt::layer())
+            .with(filter)
+            .with(SlogCaptureLayer)
+            .try_init();
+    });
+}
+
+struct SlogCaptureLayer;
+
+impl<S> tracing_subscriber::Layer<S> for SlogCaptureLayer
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if event.metadata().target() != "slogger" {
+            return;
+        }
+        let mut visitor = MessageVisitor::default();
+        event.record(&mut visitor);
+        let Some(msg) = visitor.message else { return };
+        let warning = if let Some(noun) = msg.strip_prefix("invalid cause ") {
+            SlogWarning::InvalidCause {
+                noun: noun.trim().to_string(),
+            }
+        } else {
+            SlogWarning::Other(msg)
+        };
+        push_thread_capture(warning);
+    }
+}
+
+#[derive(Default)]
+struct MessageVisitor {
+    message: Option<String>,
+}
+
+impl tracing::field::Visit for MessageVisitor {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            self.message = Some(value.to_string());
+        }
+    }
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" && self.message.is_none() {
+            self.message = Some(format!("{value:?}"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_cause_tag_recovers_g_set() {
+        // Hoon prints `[%g-set ...]` as `[499918253415 ...]`, formatted
+        // with dotted thousands. The first atom decodes back to "g-set".
+        let noun = "[499.918.253.415 138.296.650.232.540.498.593.146.226 1]";
+        assert_eq!(decode_cause_tag(noun).as_deref(), Some("g-set"));
+    }
+
+    #[test]
+    fn decode_cause_tag_rejects_zero_atom() {
+        assert_eq!(decode_cause_tag("[0 1]"), None);
+    }
+
+    #[test]
+    fn decode_cause_tag_handles_short_tag() {
+        // `%foo` → 0x6f6f66 → 7.303.014 in the dotted format.
+        let noun = "[7.303.014 ~]";
+        assert_eq!(decode_cause_tag(noun).as_deref(), Some("foo"));
     }
 }
