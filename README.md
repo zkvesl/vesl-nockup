@@ -828,6 +828,31 @@ async fn graft_lifecycle() -> anyhow::Result<()> {
 
 The standard suite covers register, duplicate-register, verify, settle, replay, unregistered-hull, and root-mismatch. Raw pokes through `h.poke_slab(slab)` if you need them.
 
+### Inspecting a kernel from the outside
+
+Once a kernel is compiled, you don't always want to write a Rust driver to ask "what's the current value of state X?" — `vesl-test` ships a CLI bin that boots an `out.jam` and runs a peek for you.
+
+```bash
+# keyless: [%log-len ~]
+vesl-test inspect peek out.jam --path-tag log-len
+
+# hull-keyed: [%settle-registered hull=1 ~]
+vesl-test inspect peek out.jam --path-tag settle-registered --hull 1
+
+# cord-keyed: [%kv-value @t %greeting ~]
+vesl-test inspect peek out.jam --path-tag kv-value --key greeting
+
+# stable JSON for downstream tooling
+vesl-test inspect peek out.jam --path-tag log-len --json
+```
+
+Output reports one of three states per peek:
+- **unrecognized** — the kernel's `++peek` arm returned bare `~`. Either the path is malformed or the graft owning that tag isn't composed.
+- **present-but-empty** — `[~ ~]`. Path is recognized; no value at that key.
+- **present** — `[~ [~ value]]`. Value renders as a recursive cell tree; atoms show as both Hoon-style decimal-with-dots and (when LE bytes form printable UTF-8) ASCII.
+
+Hoon-literal path parsing (`[%kv-value @t %my-key]` directly) is out of scope for the v1 cut. The `--path-tag` + `--hull`/`--key` form covers every peek shape the v0.1 grafts use; richer paths land when a real consumer needs them.
+
 ## Troubleshooting
 
 **`graft-inject` reports `warning — markers not found: imports, state, ...`**
