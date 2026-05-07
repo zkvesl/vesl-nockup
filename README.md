@@ -219,6 +219,16 @@ Produces `out.jam`, the compiled kernel your Rust driver will boot. (If you're i
 
 The `[ -s out.jam ] || (...)` guard is load-bearing: hoonc's "no panic!" final line and exit 0 don't reliably correlate with `out.jam` being written. Structural type errors during eager-parse can leave the trace half-emitted with no panic message, the process still exits clean, and you walk into Step 5 against a stale kernel from your previous compile. RM1 DOC-GAP-1 and the RM2 F→G postscript are the empirical references — both bit ~10 minutes of debug time before the runner spotted the staleness.
 
+For a structured alternative — covering both the silent-fail case AND the case where `out.jam` exists but is stale (kernel sources edited without recompile) — pair the hoonc invocation with `vesl-test verify-jam`:
+
+```bash
+hoonc --new hoon/app/app.hoon hoon/ && [ -s out.jam ] || exit 1
+sha256sum hoon/app/app.hoon hoon/lib/*.toml > .out-jam-source-fingerprint
+vesl-test verify-jam .   # exit 0 fresh, 1 stale, 2 no fingerprint
+```
+
+The fingerprint sidecar pins the source bytes the current `out.jam` was compiled from. Re-run `verify-jam` whenever you'd otherwise wonder "is this `out.jam` actually the build I think it is?" — most useful right before driving a kernel that took 10+ minutes to compile.
+
 ## Step 5 — build and run
 
 With `Cargo.toml` set up from Step 1 and the vesl crates from Step 2, build the driver:
