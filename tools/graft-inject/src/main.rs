@@ -2166,6 +2166,48 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+
+    /// Emit Rust source from app.hoon — codegen target depends on the
+    /// sub-subcommand. Currently ships `kernel-cause-tags`; future
+    /// targets append here.
+    Codegen {
+        #[command(subcommand)]
+        target: CodegenTarget,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum CodegenTarget {
+    /// Emit `pub const KERNEL_CAUSE_TAGS: &[&str]` from app.hoon's
+    /// composed cause $%. Pairs with the `assert_kernel_cause_tag!`
+    /// macro the same file emits, so driver-side
+    /// `b"<tag>"` literals are checked at compile time against the
+    /// kernel's accepted tags. Closes RM1 HARD-BUG-3 (kernel rename
+    /// invisible to driver) and HARD-FRICTION-4 (driver tag with no
+    /// kernel arm).
+    KernelCauseTags {
+        /// Target Hoon source file (app.hoon with the grafts already
+        /// composed, or the canonical scaffold for codegen-only flows).
+        path: PathBuf,
+
+        /// Manifest discovery root. Cause tags are collected from
+        /// every graft's `[graft.blocks.poke]` body in addition to
+        /// the domain `nockup:cause` region.
+        #[arg(long, default_value = DEFAULT_LIB_DIR)]
+        lib_dir: PathBuf,
+
+        /// Output Rust file path. Without `--out` the emitted source
+        /// goes to stdout — useful for `cargo run -- codegen ... |
+        /// rustfmt`.
+        #[arg(long)]
+        out: Option<PathBuf>,
+
+        /// JSON output mode — emit a `{"kernel_cause_tags": [...]}`
+        /// document to stdout instead of Rust source. Useful for
+        /// non-Rust consumers and CI smoke checks.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Schema item for `--list --json`. Stable across the v3 plan's lifespan;
@@ -2289,6 +2331,14 @@ fn dispatch(cli: Cli) -> Result<()> {
             lib_dir,
             json,
         }) => run_lint(&path, &lib_dir, json),
+        Some(Command::Codegen { target }) => match target {
+            CodegenTarget::KernelCauseTags {
+                path,
+                lib_dir,
+                out,
+                json,
+            } => run_codegen_kernel_cause_tags(&path, &lib_dir, out.as_deref(), json),
+        },
         None => {
             // Legacy bare-invocation back-compat. The user typed
             // `graft-inject <PATH> ...` or `graft-inject --list ...`
@@ -2419,6 +2469,163 @@ fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
 struct LintReport<'a> {
     bare_tilde_ambiguity: &'a [BareTildeLintFinding],
     collision: &'a [CollisionFinding],
+}
+
+/// `graft-inject codegen kernel-cause-tags` entry point. Reads the
+/// composed cause $% from `path` plus every graft's poke arm tags
+/// under `lib_dir`, deduplicates, and emits Rust source: a
+/// `KERNEL_CAUSE_TAGS: &[&str]` slice plus an `assert_kernel_cause_tag!`
+/// macro that compile-time checks tags against the slice.
+///
+/// Closes RM1 HARD-BUG-3 (kernel rename leaves driver pointing at a
+/// dead tag) and HARD-FRICTION-4 (driver tag with no kernel arm) by
+/// shifting the failure left from "no effects observed at runtime" to
+/// `cargo build` errors.
+fn run_codegen_kernel_cause_tags(
+    path: &Path,
+    lib_dir: &Path,
+    out: Option<&Path>,
+    json: bool,
+) -> Result<()> {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("hoon") => {}
+        Some(other) => bail!(
+            "target {} has extension `.{}`; codegen only reads Hoon source files",
+            path.display(),
+            other,
+        ),
+        None => bail!(
+            "target {} has no file extension; codegen only reads Hoon source files",
+            path.display(),
+        ),
+    }
+    let source = fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let lines: Vec<String> = source.lines().map(String::from).collect();
+
+    // Collect tags from the domain cause $% and every graft's poke arm
+    // headers. Dedup via a BTreeSet so the emitted slice is
+    // deterministic across runs (sorted lexicographically).
+    let mut tags: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for tag in extract_domain_cause_tags(&lines) {
+        // Skip the placeholder `[%cause ~]` variant the template ships
+        // before any domain tag is added — it's not a real cause-tag,
+        // just a syntactic anchor for the union.
+        if tag != "cause" {
+            tags.insert(tag);
+        }
+    }
+    if lib_dir.is_dir() {
+        let grafts = discover_grafts(lib_dir)
+            .with_context(|| format!("discovering grafts under {}", lib_dir.display()))?;
+        for g in &grafts {
+            for tag in extract_graft_cause_tags(g) {
+                tags.insert(tag);
+            }
+        }
+    }
+
+    let source_sha = sha256_hex(source.as_bytes());
+
+    if json {
+        let doc = CodegenTagsJson {
+            source: path.display().to_string(),
+            source_sha256: &source_sha,
+            kernel_cause_tags: tags.iter().cloned().collect(),
+        };
+        let s = serde_json::to_string_pretty(&doc)
+            .expect("CodegenTagsJson always serializes");
+        match out {
+            Some(p) => fs::write(p, format!("{s}\n"))
+                .with_context(|| format!("writing {}", p.display()))?,
+            None => println!("{s}"),
+        }
+        return Ok(());
+    }
+
+    let rust_src = emit_kernel_cause_tags_rs(path, &source_sha, &tags);
+    match out {
+        Some(p) => fs::write(p, &rust_src)
+            .with_context(|| format!("writing {}", p.display()))?,
+        None => print!("{rust_src}"),
+    }
+    Ok(())
+}
+
+/// Render the emitted Rust file. The slice is sorted (BTreeSet
+/// iteration order); the macro uses a const block so missing tags
+/// surface as compile errors rather than runtime panics.
+fn emit_kernel_cause_tags_rs(
+    source_path: &Path,
+    source_sha256: &str,
+    tags: &std::collections::BTreeSet<String>,
+) -> String {
+    let mut s = String::new();
+    s.push_str("// AUTO-GENERATED by `graft-inject codegen kernel-cause-tags`.\n");
+    s.push_str(&format!("// Source: {} sha256:{}\n", source_path.display(), source_sha256));
+    s.push_str("// Re-run after every kernel change. Do not edit by hand.\n\n");
+    s.push_str("/// Cause tags accepted by the composed kernel's `+$ cause $%(...)`\n");
+    s.push_str("/// union. Sorted lexicographically; see the macro below for\n");
+    s.push_str("/// compile-time membership checks.\n");
+    s.push_str("pub const KERNEL_CAUSE_TAGS: &[&str] = &[\n");
+    for tag in tags {
+        s.push_str(&format!("    \"{tag}\",\n"));
+    }
+    s.push_str("];\n\n");
+    s.push_str("/// Compile-time assertion that `$tag` (a string literal) is in\n");
+    s.push_str("/// `KERNEL_CAUSE_TAGS`. Use at the call site of every poke\n");
+    s.push_str("/// builder so kernel renames surface as `cargo build` errors.\n");
+    s.push_str("///\n");
+    s.push_str("/// ```rust,ignore\n");
+    s.push_str("/// fn build_g_set_poke(name: &str, value: u64) -> NounSlab {\n");
+    s.push_str("///     assert_kernel_cause_tag!(\"g-set\");\n");
+    s.push_str("///     /* … */\n");
+    s.push_str("/// }\n");
+    s.push_str("/// ```\n");
+    s.push_str("#[macro_export]\n");
+    s.push_str("macro_rules! assert_kernel_cause_tag {\n");
+    s.push_str("    ($tag:literal) => {\n");
+    s.push_str("        const _: () = {\n");
+    s.push_str("            const TAG: &str = $tag;\n");
+    s.push_str("            let mut found = false;\n");
+    s.push_str("            let mut i = 0;\n");
+    s.push_str("            while i < $crate::KERNEL_CAUSE_TAGS.len() {\n");
+    s.push_str("                let candidate = $crate::KERNEL_CAUSE_TAGS[i];\n");
+    s.push_str("                if candidate.len() == TAG.len() {\n");
+    s.push_str("                    let cb = candidate.as_bytes();\n");
+    s.push_str("                    let tb = TAG.as_bytes();\n");
+    s.push_str("                    let mut eq = true;\n");
+    s.push_str("                    let mut j = 0;\n");
+    s.push_str("                    while j < cb.len() {\n");
+    s.push_str("                        if cb[j] != tb[j] {\n");
+    s.push_str("                            eq = false;\n");
+    s.push_str("                            break;\n");
+    s.push_str("                        }\n");
+    s.push_str("                        j += 1;\n");
+    s.push_str("                    }\n");
+    s.push_str("                    if eq {\n");
+    s.push_str("                        found = true;\n");
+    s.push_str("                        break;\n");
+    s.push_str("                    }\n");
+    s.push_str("                }\n");
+    s.push_str("                i += 1;\n");
+    s.push_str("            }\n");
+    s.push_str("            assert!(found, concat!(\n");
+    s.push_str("                \"cause tag `\", $tag, \"` not in KERNEL_CAUSE_TAGS — \",\n");
+    s.push_str("                \"re-run `graft-inject codegen kernel-cause-tags` and \",\n");
+    s.push_str("                \"check the driver's poke builder against the kernel's cause $%.\"\n");
+    s.push_str("            ));\n");
+    s.push_str("        };\n");
+    s.push_str("    };\n");
+    s.push_str("}\n");
+    s
+}
+
+#[derive(Debug, Serialize)]
+struct CodegenTagsJson<'a> {
+    source: String,
+    source_sha256: &'a str,
+    kernel_cause_tags: Vec<String>,
 }
 
 /// One-line stderr warning when the binary's content-hash of `src/`
@@ -3694,6 +3901,52 @@ mod tests {
             lint.findings.is_empty(),
             "disjoint grafts must not collide, got {lint:#?}"
         );
+    }
+
+    // ---------- Phase 9: codegen kernel-cause-tags ----------
+
+    /// `emit_kernel_cause_tags_rs` produces a sorted slice + macro
+    /// scaffolding. Verify the slice contains the supplied tags in
+    /// sorted order and that the assert_kernel_cause_tag! macro
+    /// definition appears.
+    #[test]
+    fn codegen_kernel_cause_tags_emits_slice_and_macro() {
+        let mut tags = std::collections::BTreeSet::new();
+        tags.insert("settle-register".to_string());
+        tags.insert("g-set".to_string());
+        tags.insert("snapshot-root".to_string());
+        let path = PathBuf::from("hoon/app/app.hoon");
+        let src = emit_kernel_cause_tags_rs(&path, "deadbeef", &tags);
+        assert!(src.contains("pub const KERNEL_CAUSE_TAGS: &[&str] = &["));
+        // BTreeSet iteration order is sorted: g-set < settle-register < snapshot-root
+        let g_pos = src.find("\"g-set\"").expect("g-set should be present");
+        let s_pos = src
+            .find("\"settle-register\"")
+            .expect("settle-register should be present");
+        let sn_pos = src
+            .find("\"snapshot-root\"")
+            .expect("snapshot-root should be present");
+        assert!(g_pos < s_pos);
+        assert!(s_pos < sn_pos);
+        assert!(src.contains("macro_rules! assert_kernel_cause_tag"));
+        assert!(src.contains("Source: hoon/app/app.hoon sha256:deadbeef"));
+    }
+
+    /// `extract_domain_cause_tags` skips the placeholder `[%cause ~]`
+    /// variant when the codegen builds its tag set — the placeholder
+    /// is a syntactic anchor, not a real cause.
+    #[test]
+    fn codegen_skips_placeholder_cause() {
+        // The codegen filter lives in run_codegen_kernel_cause_tags;
+        // simulate the filtering here so the test runs without I/O.
+        let domain_lines: Vec<String> = "+$  cause\n  $%  [%cause ~]\n      [%real-tag @t]\n      ::  nockup:cause\n  =="
+            .lines()
+            .map(String::from)
+            .collect();
+        let raw: Vec<String> = extract_domain_cause_tags(&domain_lines);
+        assert!(raw.contains(&"cause".to_string()));
+        let filtered: Vec<&String> = raw.iter().filter(|t| t.as_str() != "cause").collect();
+        assert_eq!(filtered, vec![&"real-tag".to_string()]);
     }
 
     /// Domain cause-tag colliding with a graft cause-tag fires a
