@@ -10,10 +10,9 @@
 //! /  `note`). The `settle` method remains as a deprecated alias so
 //! existing tests outside this repo keep compiling for one release.
 
-use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
 use nock_noun_rs::{jam_to_bytes, make_atom_in, make_tag_in, new_stack};
@@ -91,12 +90,16 @@ impl GraftTestHarness {
     /// `(soft cause)` short-circuit). Use when a test needs to assert
     /// on the kernel's diagnostics, not just on the effect tags.
     ///
-    /// Capture is per-thread: if multiple harnesses call this method
-    /// concurrently from different threads, each scoops only its own
-    /// thread's slogs. Within a single thread, capture is per-call —
-    /// each invocation drains the buffer before running the poke.
+    /// Capture is process-global: the kernel emits slogs from whichever
+    /// tokio worker thread runs the poke, so a thread-local buffer
+    /// would miss them. The global buffer is drained at the start of
+    /// every call. Concurrent `poke_slab_report` calls from the same
+    /// process interleave their slogs into a single window — fine for
+    /// the typical one-test-at-a-time integration setup, but tests that
+    /// run multiple harnesses in parallel within the same process should
+    /// fall back to `poke_slab` and parse stderr themselves.
     pub async fn poke_slab_report(&mut self, slab: NounSlab) -> Result<PokeReport> {
-        clear_thread_capture();
+        clear_capture();
         let effects = self
             .app
             .poke(SystemWire.to_wire(), slab)
@@ -104,7 +107,7 @@ impl GraftTestHarness {
             .map_err(|e| anyhow::anyhow!("poke failed: {e}"))?;
         Ok(PokeReport {
             effect_tags: effect_tags(&effects),
-            slog_warnings: drain_thread_capture(),
+            slog_warnings: drain_capture(),
         })
     }
 
@@ -380,22 +383,27 @@ pub fn decode_cause_tag(noun: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-// -- thread-local capture --------------------------------------------------
+// -- process-global capture ------------------------------------------------
 
-thread_local! {
-    static CAPTURE: RefCell<Vec<SlogWarning>> = const { RefCell::new(Vec::new()) };
+static CAPTURE: Mutex<Vec<SlogWarning>> = Mutex::new(Vec::new());
+
+fn clear_capture() {
+    if let Ok(mut buf) = CAPTURE.lock() {
+        buf.clear();
+    }
 }
 
-fn clear_thread_capture() {
-    CAPTURE.with(|c| c.borrow_mut().clear());
+fn drain_capture() -> Vec<SlogWarning> {
+    CAPTURE
+        .lock()
+        .map(|mut buf| std::mem::take(&mut *buf))
+        .unwrap_or_default()
 }
 
-fn drain_thread_capture() -> Vec<SlogWarning> {
-    CAPTURE.with(|c| std::mem::take(&mut *c.borrow_mut()))
-}
-
-fn push_thread_capture(w: SlogWarning) {
-    CAPTURE.with(|c| c.borrow_mut().push(w));
+fn push_capture(w: SlogWarning) {
+    if let Ok(mut buf) = CAPTURE.lock() {
+        buf.push(w);
+    }
 }
 
 // -- tracing init + capture layer ------------------------------------------
@@ -447,7 +455,7 @@ where
         } else {
             SlogWarning::Other(msg)
         };
-        push_thread_capture(warning);
+        push_capture(warning);
     }
 }
 
