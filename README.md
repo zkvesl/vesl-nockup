@@ -211,10 +211,13 @@ The arms `graft-inject` installs for the vesl graft use a default hash-compariso
 ## Step 4 — compile the kernel
 
 ```bash
-hoonc hoon/app/app.hoon hoon/
+hoonc hoon/app/app.hoon hoon/ && [ -s out.jam ] || \
+  (echo "hoonc: silent-failed — exit 0 but no out.jam" >&2; exit 1)
 ```
 
 Produces `out.jam`, the compiled kernel your Rust driver will boot. (If you're iterating and want to bypass hoonc's cache, add `--new`.)
+
+The `[ -s out.jam ] || (...)` guard is load-bearing: hoonc's "no panic!" final line and exit 0 don't reliably correlate with `out.jam` being written. Structural type errors during eager-parse can leave the trace half-emitted with no panic message, the process still exits clean, and you walk into Step 5 against a stale kernel from your previous compile. RM1 DOC-GAP-1 and the RM2 F→G postscript are the empirical references — both bit ~10 minutes of debug time before the runner spotted the staleness.
 
 ## Step 5 — build and run
 
