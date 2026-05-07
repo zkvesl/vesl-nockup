@@ -488,6 +488,48 @@ If you already have a working nockapp, skip Step 1. The rest applies, with one e
 
 If `graft-inject` reports `warning — markers not found: ...`, you missed a marker or a two-space law violation. The tool is pure text — it does what the regex says.
 
+## State checkpoints
+
+Operators upgrading a kernel without losing state — adding a graft, fixing a transition bug, retuning a verification gate — need a way to capture the current kernel state, recompile, and rehydrate. `vesl-checkpoint` (synced from vesl-core into `crates/vesl-checkpoint/`) wraps the underlying `nockapp` export/import path with a typed snapshot bundle.
+
+```rust
+use vesl_checkpoint::{snapshot, resume};
+
+// 1. Boot + register a hull (any normal lifecycle).
+let mut harness = GraftTestHarness::boot("out.jam").await?;
+harness.register(1, &root).await?;
+
+// 2. Snapshot before re-composing the kernel.
+let snap_dir = std::path::Path::new("snapshots/before-mint-graft");
+let snap = snapshot(harness.app(), snap_dir, "hoon/app/app.hoon").await?;
+drop(harness);
+
+// 3. Re-run graft-inject + hoonc to add a graft, then resume.
+//    (snap.state_jam() points at the bundled state.jam — `resume`
+//     wires it through cli.state_jam internally.)
+let resumed = resume("out.jam", &snap, "after-mint-graft").await?;
+
+// 4. Peek the new kernel — pre-snapshot state survives.
+let peek_path = vesl_core::build_hull_peek_path("settle-root", 1);
+let result = resumed.peek(peek_path).await?;
+let stored_root = vesl_core::unwrap_triple_unit_atom(&result);
+assert_eq!(stored_root.as_deref(), Some(&root_bytes[..]));
+```
+
+Bundle layout written to disk:
+
+```
+snapshots/before-mint-graft/
+├── state.jam   (bincode-encoded ExportedState — same format
+│                that `nockapp::Cli::state_jam` accepts on import)
+└── meta.toml   ([snapshot] source_sha256, timestamp,
+                 vesl_checkpoint_version)
+```
+
+Schema migration is **out of scope** for v0.1. If the new kernel's `++load` arm rejects the snapshotted state shape, `resume` returns an error and the operator must downgrade or write a per-transition migrator by hand. That helper is deferred until actual cumulative-domain pressure surfaces what shape it should take.
+
+For test setups that need state-equivalence assertions, see `tools/graft-inject/tests/checkpoint_lifecycle.rs` — the canonical end-to-end pattern (compose → register → snapshot → drop → resume → peek).
+
 ## Customizing
 
 The grafted kernel is opinionated: default hash gate, single hull namespace, hardcoded state layout. Every app needs to override at least one of these.
