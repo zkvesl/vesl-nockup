@@ -1,30 +1,41 @@
-//! `vesl-test` — runtime kernel introspection bin (Tool 4).
+//! `vesl-test` — runtime kernel introspection + build-provenance bin.
 //!
-//! Boots a compiled out.jam through the standard `GraftTestHarness`,
-//! runs a peek against the kernel's `++peek` arm, and prints the
-//! result. The CLI wraps the three peek-path families that already
-//! ship with vesl-core (`build_keyless_peek_path`,
-//! `build_hull_peek_path`, `build_keyed_peek_path`) — Hoon-literal
-//! path parsing is deliberately out of scope for the v1 cut.
+//! Two subcommand families:
+//!
+//!   * `inspect peek` (Tool 4) — boots a compiled out.jam through the
+//!     standard `GraftTestHarness`, runs a peek against the kernel's
+//!     `++peek` arm, and prints the result. The CLI wraps the three
+//!     peek-path families that already ship with vesl-core
+//!     (`build_keyless_peek_path`, `build_hull_peek_path`,
+//!     `build_keyed_peek_path`) — Hoon-literal path parsing is
+//!     deliberately out of scope for the v1 cut.
+//!   * `verify-jam` (RM2 §2.1) — sentinel-based out.jam-staleness
+//!     check. Reads `.out-jam-source-fingerprint` (a `sha256sum`
+//!     sidecar listing app.hoon + manifests), recomputes current
+//!     hashes, exits 0 (fresh) / 1 (stale) / 2 (no fingerprint).
 //!
 //! Examples:
 //!   vesl-test inspect peek out.jam --path-tag log-len
 //!   vesl-test inspect peek out.jam --path-tag settle-registered --hull 1
 //!   vesl-test inspect peek out.jam --path-tag kv-value --key greeting
 //!   vesl-test inspect peek out.jam --path-tag log-len --json
+//!   vesl-test verify-jam .
+//!   vesl-test verify-jam path/to/project --json
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use nock_noun_rs::NounSlab;
 use nockvm::noun::Noun;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use vesl_core::{build_hull_peek_path, build_keyed_peek_path, build_keyless_peek_path};
 use vesl_test::GraftTestHarness;
 
 #[derive(Parser, Debug)]
-#[command(name = "vesl-test", about = "Runtime introspection for grafted NockApp kernels")]
+#[command(name = "vesl-test", about = "Runtime introspection + build-provenance for grafted NockApp kernels")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -36,6 +47,18 @@ enum Cmd {
     Inspect {
         #[command(subcommand)]
         sub: InspectCmd,
+    },
+    /// Verify out.jam is fresh against the source fingerprint sidecar.
+    /// Exit 0 = fresh, 1 = stale, 2 = no fingerprint.
+    VerifyJam {
+        /// Project directory containing out.jam and
+        /// .out-jam-source-fingerprint. Defaults to cwd.
+        #[arg(default_value = ".")]
+        project: PathBuf,
+        /// Emit a structured JSON document to stdout instead of the
+        /// human-readable form.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -65,9 +88,9 @@ enum InspectCmd {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
     let cli = Cli::parse();
-    match cli.cmd {
+    let result: Result<u8> = match cli.cmd {
         Cmd::Inspect { sub } => match sub {
             InspectCmd::Peek {
                 jam,
@@ -75,8 +98,18 @@ async fn main() -> Result<()> {
                 hull,
                 key,
                 json,
-            } => run_peek(&jam, &path_tag, hull, key.as_deref(), json).await,
+            } => run_peek(&jam, &path_tag, hull, key.as_deref(), json)
+                .await
+                .map(|()| 0),
         },
+        Cmd::VerifyJam { project, json } => run_verify_jam(&project, json).await,
+    };
+    match result {
+        Ok(code) => ExitCode::from(code),
+        Err(e) => {
+            eprintln!("vesl-test: {e:#}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -305,6 +338,196 @@ fn print_human_value(v: &Value, indent: usize) {
     }
 }
 
+// =============================================================================
+// verify-jam (RM2 §2.1) — sentinel-based out.jam-staleness check
+// =============================================================================
+
+/// Run `verify-jam` against `project`. Returns the exit code:
+/// 0 = fresh, 1 = stale (or fingerprinted file missing), 2 = no
+/// fingerprint sidecar. Errors are surfaced as anyhow bails (exit
+/// code 1 via the main dispatcher).
+async fn run_verify_jam(project: &Path, json_out: bool) -> Result<u8> {
+    let fingerprint_path = project.join(".out-jam-source-fingerprint");
+
+    if !fingerprint_path.exists() {
+        if json_out {
+            let doc = json!({
+                "fresh": false,
+                "exit_code": 2,
+                "fingerprint": fingerprint_path.display().to_string(),
+                "missing_fingerprint": true,
+                "diffs": [],
+            });
+            println!("{}", serde_json::to_string_pretty(&doc).expect("serializable"));
+        } else {
+            eprintln!(
+                "verify-jam: no fingerprint at {}",
+                fingerprint_path.display(),
+            );
+            eprintln!("  Generate one after a clean hoonc compile:");
+            eprintln!("    hoonc --new hoon/app/app.hoon hoon/ && [ -s out.jam ] || \\");
+            eprintln!("      (echo \"hoonc silent-failed\" >&2; exit 1)");
+            eprintln!(
+                "    sha256sum hoon/app/app.hoon hoon/lib/*.toml > .out-jam-source-fingerprint"
+            );
+        }
+        return Ok(2);
+    }
+
+    let entries = read_fingerprint(&fingerprint_path)?;
+    let diffs = compute_diffs(project, &entries)?;
+
+    let exit_code: u8 = if diffs.is_empty() { 0 } else { 1 };
+
+    if json_out {
+        let diffs_json: Vec<Value> = diffs
+            .iter()
+            .map(|d| {
+                json!({
+                    "path": d.rel_path.display().to_string(),
+                    "expected_sha256": d.expected,
+                    "actual_sha256": if d.missing {
+                        Value::Null
+                    } else {
+                        Value::String(d.actual.clone())
+                    },
+                    "missing": d.missing,
+                })
+            })
+            .collect();
+        let doc = json!({
+            "fresh": diffs.is_empty(),
+            "exit_code": exit_code,
+            "fingerprint": fingerprint_path.display().to_string(),
+            "missing_fingerprint": false,
+            "files_checked": entries.len(),
+            "diffs": diffs_json,
+        });
+        println!("{}", serde_json::to_string_pretty(&doc).expect("serializable"));
+    } else if diffs.is_empty() {
+        eprintln!(
+            "verify-jam: out.jam fresh ({} file(s) matched fingerprint)",
+            entries.len(),
+        );
+    } else {
+        eprintln!("verify-jam: STALE OUT.JAM");
+        for d in &diffs {
+            if d.missing {
+                eprintln!(
+                    "  {} — fingerprinted file no longer exists",
+                    d.rel_path.display(),
+                );
+            } else {
+                eprintln!(
+                    "  {} expected sha256:{} actual sha256:{}",
+                    d.rel_path.display(),
+                    d.expected,
+                    d.actual,
+                );
+            }
+        }
+        eprintln!();
+        eprintln!("  Re-run hoonc and refresh the fingerprint:");
+        eprintln!("    hoonc --new hoon/app/app.hoon hoon/ && [ -s out.jam ] || \\");
+        eprintln!("      (echo \"hoonc silent-failed\" >&2; exit 1)");
+        eprintln!(
+            "    sha256sum hoon/app/app.hoon hoon/lib/*.toml > .out-jam-source-fingerprint"
+        );
+    }
+
+    Ok(exit_code)
+}
+
+/// One row of the `.out-jam-source-fingerprint` sidecar.
+#[derive(Debug)]
+struct FingerprintEntry {
+    expected: String,
+    rel_path: PathBuf,
+}
+
+/// One staleness finding — fingerprinted file's hash diverged from
+/// current source, OR the file is now missing entirely.
+#[derive(Debug)]
+struct StalenessDiff {
+    rel_path: PathBuf,
+    expected: String,
+    actual: String,
+    missing: bool,
+}
+
+/// Parse a `sha256sum`-formatted file: each non-empty line is
+/// `<64-hex-chars>  <path>` (two-space separator). Comments (`#` and
+/// blank lines) are tolerated for human-edited fingerprints.
+fn read_fingerprint(path: &Path) -> Result<Vec<FingerprintEntry>> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("reading fingerprint {}", path.display()))?;
+    let mut entries = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        let raw = line.trim();
+        if raw.is_empty() || raw.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = raw.splitn(2, "  ").collect();
+        if parts.len() != 2 {
+            bail!(
+                "{}:{}: malformed fingerprint line (expected `<sha256>  <path>`): {}",
+                path.display(),
+                i + 1,
+                raw,
+            );
+        }
+        let sha = parts[0].trim();
+        if sha.len() != 64 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+            bail!(
+                "{}:{}: hash field is not a 64-char hex sha256: {}",
+                path.display(),
+                i + 1,
+                sha,
+            );
+        }
+        entries.push(FingerprintEntry {
+            expected: sha.to_lowercase(),
+            rel_path: PathBuf::from(parts[1].trim()),
+        });
+    }
+    Ok(entries)
+}
+
+/// For each fingerprint entry, recompute the file's current sha256 and
+/// flag divergences. Missing files are flagged as `missing: true`.
+fn compute_diffs(project: &Path, entries: &[FingerprintEntry]) -> Result<Vec<StalenessDiff>> {
+    let mut diffs = Vec::new();
+    for entry in entries {
+        let abs_path = if entry.rel_path.is_absolute() {
+            entry.rel_path.clone()
+        } else {
+            project.join(&entry.rel_path)
+        };
+        match std::fs::read(&abs_path) {
+            Ok(bytes) => {
+                let actual = format!("{:x}", Sha256::digest(&bytes));
+                if actual != entry.expected {
+                    diffs.push(StalenessDiff {
+                        rel_path: entry.rel_path.clone(),
+                        expected: entry.expected.clone(),
+                        actual,
+                        missing: false,
+                    });
+                }
+            }
+            Err(_) => {
+                diffs.push(StalenessDiff {
+                    rel_path: entry.rel_path.clone(),
+                    expected: entry.expected.clone(),
+                    actual: String::new(),
+                    missing: true,
+                });
+            }
+        }
+    }
+    Ok(diffs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +567,106 @@ mod tests {
         let expected = (0x74_6e_69_6d_2d_67u64).to_string();
         let dotted = add_dotted_thousands(&expected);
         assert_eq!(format_decimal_dotted(&bytes), dotted);
+    }
+
+    // -- verify-jam fingerprint parsing -------------------------------------
+
+    #[test]
+    fn fingerprint_parses_sha256sum_format() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!(
+            "vesl-test-fp-{}",
+            std::process::id(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fp = dir.join("fingerprint");
+        let mut f = std::fs::File::create(&fp).unwrap();
+        writeln!(
+            f,
+            "{}  hoon/app/app.hoon",
+            "0".repeat(64)
+        )
+        .unwrap();
+        writeln!(
+            f,
+            "{}  hoon/lib/settle-graft.toml",
+            "abcdef0123456789".repeat(4)
+        )
+        .unwrap();
+        writeln!(f, "# comment line").unwrap();
+        writeln!(f, "").unwrap();
+        drop(f);
+
+        let entries = read_fingerprint(&fp).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].rel_path, PathBuf::from("hoon/app/app.hoon"));
+        assert_eq!(entries[0].expected, "0".repeat(64));
+        assert_eq!(entries[1].rel_path, PathBuf::from("hoon/lib/settle-graft.toml"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn fingerprint_rejects_short_hash() {
+        let dir = std::env::temp_dir().join(format!(
+            "vesl-test-fp-bad-{}",
+            std::process::id(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fp = dir.join("fingerprint");
+        std::fs::write(&fp, "deadbeef  hoon/app/app.hoon\n").unwrap();
+        let err = read_fingerprint(&fp).unwrap_err();
+        assert!(
+            format!("{:#}", err).contains("not a 64-char hex sha256"),
+            "got: {err:#}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn compute_diffs_detects_stale_and_missing() {
+        let dir = std::env::temp_dir().join(format!(
+            "vesl-test-diffs-{}",
+            std::process::id(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // a.txt — present and matches expected
+        let a_path = dir.join("a.txt");
+        std::fs::write(&a_path, b"hello").unwrap();
+        let a_sha = format!("{:x}", Sha256::digest(b"hello"));
+
+        // b.txt — present but content drifted
+        let b_path = dir.join("b.txt");
+        std::fs::write(&b_path, b"actual").unwrap();
+        let b_old_sha = format!("{:x}", Sha256::digest(b"old"));
+
+        // c.txt — fingerprint claims it should exist but it's gone
+        let c_sha = format!("{:x}", Sha256::digest(b"never written"));
+
+        let entries = vec![
+            FingerprintEntry {
+                expected: a_sha.clone(),
+                rel_path: PathBuf::from("a.txt"),
+            },
+            FingerprintEntry {
+                expected: b_old_sha.clone(),
+                rel_path: PathBuf::from("b.txt"),
+            },
+            FingerprintEntry {
+                expected: c_sha.clone(),
+                rel_path: PathBuf::from("c.txt"),
+            },
+        ];
+
+        let diffs = compute_diffs(&dir, &entries).unwrap();
+        assert_eq!(diffs.len(), 2);
+        assert_eq!(diffs[0].rel_path, PathBuf::from("b.txt"));
+        assert!(!diffs[0].missing);
+        assert_ne!(diffs[0].actual, diffs[0].expected);
+        assert_eq!(diffs[1].rel_path, PathBuf::from("c.txt"));
+        assert!(diffs[1].missing);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
