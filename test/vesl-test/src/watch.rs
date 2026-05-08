@@ -11,7 +11,7 @@
 //! render loop can be tested without subprocess overhead.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use nockapp::NockApp;
@@ -599,6 +599,7 @@ where
         let slogs_json: Vec<Value> = slogs.iter().map(slog_to_json).collect();
         let v = json!({
             "event_num": event_num,
+            "wall_clock": now_secs(),
             "cause_tag": cause_tag,
             "ack": ack,
             "err": err,
@@ -700,6 +701,13 @@ fn slog_to_human(w: &SlogWarning) -> String {
         SlogWarning::InvalidCause { noun } => format!("invalid-cause {noun}"),
         SlogWarning::Other(s) => s.clone(),
     }
+}
+
+fn now_secs() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 fn slog_to_json(w: &SlogWarning) -> Value {

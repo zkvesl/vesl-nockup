@@ -961,6 +961,7 @@ watch: subscribed to out.jam (filter: none)
 { "kind": "heartbeat", "jam": "<path>", "filter": null }
 {
   "event_num": 1,
+  "wall_clock": 1746715723.488,     // unix seconds, fractional
   "cause_tag": "settle-register",   // from stdin command (poke-tag <tag>) or `tag=` annotation on poke-jam
   "ack": "ack",                     // "ack" | "nack" | "error"
   "err": null,                      // crown-error string if ack="error"
