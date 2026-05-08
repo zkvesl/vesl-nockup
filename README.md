@@ -103,6 +103,44 @@ You now have a grafted NockApp with on-kernel Merkle verification and replay-pro
 
 `vesl-core` exports `build_settle_verify_poke(note_id, hull, root, data)` for pure verification (no state transition), and `build_mint_commit_poke` / `build_guard_register_poke` / `build_guard_check_poke` / `build_forge_prove_poke` for the other three commitment primitives. See *Customizing* below for multi-leaf gates, signed gates, and STARK gates.
 
+### Cause-builder reference
+
+`vesl-core` ships a `build_*_poke` helper for every primary cause across all 12 graft families. The full per-graft tables — including refinement variants (`_with_data` closures, `_from_noun` payload builders, gate-specific settle forms) — live in the [zkVesl SDK reference](https://docs.zkvesl.dev/reference/sdk.html#graft-poke-builders). The table below is the visual quick-reference for the primary builders so you don't have to scroll back through Step 6 prose to recall a signature.
+
+> **Long-tag rule.** Cause tags >8 bytes panic at compile time under `tas!()` (e.g. `submit-artifact`, `register-thing`). Use `Atom::from_bytes(slab, &Bytes::copy_from_slice(b"<tag>"))` for any tag from `settle-register` upward. Wide `u64` values (hashes, IDs where the top bit is set) panic under `D(value)` with `Number is greater than DIRECT_MAX` — route them through `nock_noun_rs::atom_from_u64(slab, value)`.
+
+| Family | Builder | Effect(s) |
+|---|---|---|
+| Commitment | `build_settle_register_poke(hull: u64, root: &Tip5Hash) -> NounSlab` | `%settle-registered` / `%settle-error` |
+| Commitment | `build_settle_verify_poke(note_id: u64, hull: u64, root: &Tip5Hash, data: &[u8]) -> NounSlab` | `%settle-verified ok=?` |
+| Commitment | `build_settle_note_poke(note_id: u64, hull: u64, root: &Tip5Hash, data: &[u8]) -> NounSlab` | `%settle-noted` / `%settle-error` |
+| Commitment | `build_mint_commit_poke(hull: u64, root: &Tip5Hash) -> NounSlab` | `%mint-committed` / `%mint-error` (append-only) |
+| Commitment | `build_guard_register_poke(hull: u64, root: &Tip5Hash) -> NounSlab` | `%guard-registered` / `%guard-error` |
+| Commitment | `build_guard_check_poke(hull: u64, data: &[u8]) -> NounSlab` | `%guard-checked ok=?` (soft) / `%guard-error` on unregistered hull |
+| Commitment | `build_forge_prove_poke(hull: u64, note_id: u64, data: &[u8]) -> NounSlab` | `%forge-proved proof=@` / `%forge-error` |
+| State | `build_kv_set_poke(key: &str, value: &[u8]) -> NounSlab` | `%kv-stored` / `%kv-error` (capacity) |
+| State | `build_kv_delete_poke(key: &str) -> NounSlab` | `%kv-deleted` (idempotent on missing) |
+| State | `build_counter_increment_poke(name: &str) -> NounSlab` | `%counter-incremented value=@ud` / `%counter-error 'saturated'` past `u64::MAX` |
+| State | `build_counter_set_poke(name: &str, value: u64) -> NounSlab` | `%counter-set value=@ud` |
+| State | `build_counter_reset_poke(name: &str) -> NounSlab` | `%counter-reset` (idempotent — initializes unset names to 0) |
+| State | `build_queue_push_poke(body_jammed: &[u8]) -> NounSlab` | `%queue-pushed id=@ud` / `%queue-error` |
+| State | `build_queue_pop_poke() -> NounSlab` | `%queue-popped job=(unit [id body])` (`~` on empty) |
+| State | `build_queue_clear_poke() -> NounSlab` | `%queue-cleared` (next-id preserved) |
+| State | `build_rbac_grant_poke(pubkey: u64, perms: &[&str]) -> NounSlab` | `%rbac-granted added=(list @t)` (set diff only) |
+| State | `build_rbac_revoke_poke(pubkey: u64, perms: &[&str]) -> NounSlab` | `%rbac-revoked removed=(list @t)` (intersect-then-noop) |
+| State | `build_registry_put_poke(key: u64, record_jammed: &[u8]) -> NounSlab` | `%registry-stored` / `%registry-error` (strict create) |
+| State | `build_registry_update_poke(key: u64, record_jammed: &[u8]) -> NounSlab` | `%registry-updated old=* new=*` / `%registry-error` |
+| State | `build_registry_del_poke(key: u64) -> NounSlab` | `%registry-deleted` / `%registry-error` (strict delete) |
+| Behavior | `build_validate_init_poke(cause_tag: &str, rules: &[ValidateRule]) -> NounSlab` | `%validate-rules-installed` |
+| Behavior | `build_validate_clear_poke(cause_tag: &str) -> NounSlab` | `%validate-rules-cleared` (idempotent) |
+| Behavior | `build_log_append_poke(tag: &str, data_jammed: &[u8]) -> NounSlab` | `%log-appended seq=@ud` / `%log-error` (malformed payload) |
+| Behavior | `build_clock_tick_poke() -> NounSlab` | `%clock-ticked now=@da` |
+| Behavior | `build_batch_init_poke(threshold: u64) -> NounSlab` | `%batch-initialized threshold=@ud` |
+| Behavior | `build_batch_add_poke(intent_jammed: &[u8]) -> NounSlab` | `%batch-added id=@ud` (plus `%batch-flushed` on auto-flush) / `%batch-error` |
+| Behavior | `build_batch_flush_poke() -> NounSlab` | `%batch-flushed bundle count` (always emits — boundary signal) |
+
+Refinement variants — `_from_noun` for in-process payloads, `_with_data` closures for custom gate payloads, and the five gate-specific settle builders (`_schnorr`, `_ed25519`, `_membership`, `_bounded`, `_manifest`) — are documented in the SDK reference linked above.
+
 ## Serving over HTTP
 
 The same scaffold ships an HTTP server backed by the `vesl-hull` crate. Run the binary with the `serve` subcommand to boot the kernel and mount `/commit`, `/settle`, `/verify`, `/tx/:tx_id`, `/status`, and `/health` on `http://127.0.0.1:3000`:
