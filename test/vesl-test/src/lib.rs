@@ -350,14 +350,51 @@ impl PokeReport {
     }
 }
 
-/// Decode the leading tag of an `invalid cause` noun shown as
-/// dotted-decimal. `"499.918.253.415 138.296..."` → `Some("g-set")`.
-/// Hoon's `<...>` formatter prints atoms as little-endian decimal with
-/// dot separators every three digits; this reverses that for the head
-/// atom only. Returns None when the noun doesn't fit the expected
-/// `[head_atom rest...]` shape.
+/// Decode the leading tag of an `invalid cause` noun. Handles two
+/// canonical slog shapes:
+///
+/// 1. **Cord-decoded** (post-RM4 §3 / RM5 §1 templates/app.hoon):
+///    `"[%g-set ...] (full: [499.918.253.415 ...])"` → `Some("g-set")`.
+///    The `?@` ladder in the kernel's `?~ act` slog renders the head
+///    atom as `@tas` when it fits, and falls back to `%unknown` for
+///    cell-headed or non-tas shapes — in which case the original noun
+///    follows after `(full: ...)` and we try the dotted-decimal path
+///    against that.
+///
+/// 2. **Raw dotted-decimal** (pre-cord-decoder kernels, or `%unknown`
+///    fallback): `"[499.918.253.415 138.296...]"` → `Some("g-set")`.
+///    Hoon's `<...>` formatter prints atoms as little-endian decimal
+///    with dot separators every three digits; this reverses that for
+///    the head atom only.
+///
+/// Returns None when neither shape matches or the head atom is zero.
 pub fn decode_cause_tag(noun: &str) -> Option<String> {
-    let inner = noun.trim().trim_start_matches('[').trim_end_matches(']');
+    let trimmed = noun.trim();
+
+    if let Some(after_bracket) = trimmed.strip_prefix("[%") {
+        let tag_end = after_bracket
+            .find(|c: char| c.is_whitespace() || c == ']')
+            .unwrap_or(after_bracket.len());
+        let tag = &after_bracket[..tag_end];
+        if !tag.is_empty() && tag != "unknown" {
+            return Some(tag.to_string());
+        }
+        if let Some(full_start) = trimmed.find("(full: ") {
+            let full_str = &trimmed[full_start + "(full: ".len()..];
+            return decode_dotted_decimal_head(full_str);
+        }
+        return None;
+    }
+
+    decode_dotted_decimal_head(trimmed)
+}
+
+fn decode_dotted_decimal_head(noun: &str) -> Option<String> {
+    let inner = noun
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(')')
+        .trim_end_matches(']');
     let head = inner.split_whitespace().next()?;
     let digits: String = head.chars().filter(|c| c.is_ascii_digit()).collect();
     let mut value: u64 = digits.parse().ok()?;
@@ -496,5 +533,28 @@ mod tests {
         // `%foo` → 0x6f6f66 → 7.303.014 in the dotted format.
         let noun = "[7.303.014 ~]";
         assert_eq!(decode_cause_tag(noun).as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn decode_cause_tag_handles_cord_decoded_head() {
+        // Post-RM5 §1 cord-decoder ladder renders @tas heads as %<tag>
+        // inline, with the full noun after `(full: ...)`.
+        let noun = "[%g-mint ...] (full: [128.017.563.987.303 0])";
+        assert_eq!(decode_cause_tag(noun).as_deref(), Some("g-mint"));
+    }
+
+    #[test]
+    fn decode_cause_tag_falls_back_on_unknown_head() {
+        // %unknown means the cord-decoder couldn't fit the head as @tas
+        // (cell head, garbage atom, etc.). Fall back to dotted-decimal
+        // decode of the (full: ...) portion.
+        let noun = "[%unknown ...] (full: [499.918.253.415 1])";
+        assert_eq!(decode_cause_tag(noun).as_deref(), Some("g-set"));
+    }
+
+    #[test]
+    fn decode_cause_tag_unknown_with_zero_head_returns_none() {
+        let noun = "[%unknown ...] (full: [0 1])";
+        assert_eq!(decode_cause_tag(noun), None);
     }
 }
