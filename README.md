@@ -918,6 +918,67 @@ Output reports one of three states per peek:
 
 Hoon-literal path parsing (`[%kv-value @t %my-key]` directly) is out of scope for the v1 cut. The `--path-tag` + `--hull`/`--key` form covers every peek shape the v0.1 grafts use; richer paths land when a real consumer needs them.
 
+#### `watch` — REPL-style live-trace tool
+
+`inspect peek` is one-shot. When you need to see the kernel reacting to a sequence of pokes — what cause came in, what effects went out, which slogs fired — `vesl-test watch <out.jam>` is the redis-cli MONITOR analog. It boots the kernel, runs `app.run()` in the background, subscribes to its `effect_broadcast`, and prints one structured row per kernel event while reading poke/peek commands from stdin.
+
+```bash
+# interactive: type pokes at the prompt, watch effects render below
+cargo run -p vesl-test --bin watch -- out.jam
+
+# pipe a script of pokes from another terminal
+cat pokes.txt | cargo run -p vesl-test --bin watch -- out.jam --json
+
+# only show events whose cause is settle-register
+cargo run -p vesl-test --bin watch -- out.jam --filter cause=settle-register
+```
+
+**Stdin grammar.** One command per line:
+
+| Command | Meaning |
+|---------|---------|
+| `poke-tag <tag>` | Tag-only poke (`[%<tag> ~]`). |
+| `poke-jam <hex> [tag=<name>]` | Pre-jammed cause noun (hex-encoded). The optional `tag=` annotation lets the rendered row carry a meaningful `cause_tag`; without it the cause shows as `poke-jam`. Pair with `vesl_test::watch::jam_slab` + `hex_encode` from a Rust driver to round-trip pokes built with `vesl-core` poke-builders. |
+| `peek-tag <tag>` | Keyless peek (`[%<tag> ~]`). |
+| `peek-hull <tag> <decimal>` | Hull-keyed peek (`[%<tag> hull ~]`). |
+| `peek-key <tag> <string>` | Cord-keyed peek (`[%<tag> %key ~]`). |
+| `state` | Heartbeat — current event count + jam path. |
+| `quit` \| `exit` | Clean shutdown. |
+| `# anything` | Comment. Blank lines are ignored. |
+
+**Output (default human).** One row per command:
+
+```
+watch: subscribed to out.jam (filter: none)
+[#1] cause=settle-register ack=ack effects=[settle-registered]
+[#2] cause=settle-register ack=ack effects=[settle-registered]
+[#3] cause=settle-register ack=ack effects=[settle-registered]
+```
+
+**Output (`--json`).** One JSON object per line. Schema:
+
+```jsonc
+{ "kind": "heartbeat", "jam": "<path>", "filter": null }
+{
+  "event_num": 1,
+  "cause_tag": "settle-register",   // from stdin command (poke-tag <tag>) or `tag=` annotation on poke-jam
+  "ack": "ack",                     // "ack" | "nack" | "error"
+  "err": null,                      // crown-error string if ack="error"
+  "effect_tags": ["settle-registered"], // head-tags of every NounSlab on the broadcast within --effect-window-ms
+  "slogs": [],                      // [{kind:"invalid-cause"|"other", ...}]
+  "peek": null                      // only on peek-* commands: "present" | "absent"
+}
+{ "event_num": 4, "kind": "kernel-died", "reason": "kernel task panicked: ..." }
+```
+
+**Latency.** After each poke acks, `watch` drains the broadcast for `--effect-window-ms` (default 100 ms) before rendering. The kernel emits effects asynchronously from a spawned task post-ack, so the window is the floor on visible-event latency. Bump it if a slow kernel emits effects late, drop it for sharper render cadence on a hot machine.
+
+**Filter.** `--filter cause=<tag>` keeps only events whose cause matches the stdin command's tag (we know it pre-poke). `--filter effect=<tag>` keeps only events whose effect-list includes `<tag>` (we know it post-broadcast). No filter emits everything.
+
+**Kernel-died.** When the spawned `app.run()` task panics or returns an error, watch prints a `kernel-died: <reason>` row instead of itself crashing — see RM4 round.md HARD-BUG-1 for the surface this is built to diagnose.
+
+**When you'd reach for `watch` over `inspect peek`:** any time you can't tell from the bare poke return whether the kernel saw what you sent. The two HARD-BUGs in RM4 (registry-del crash + post-resume effect-loss) both presented as opaque return values from the driver side; with `watch` running next door, the cause is on the wire and the effect-list is structured.
+
 ## Troubleshooting
 
 **`graft-inject` reports `warning — markers not found: imports, state, ...`**
