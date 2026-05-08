@@ -45,8 +45,14 @@
   ++  load
     |=  old-state=versioned-state
     ^-  _state
-    ?:  =(-.old-state %v1)
-      old-state
+    ::  graft-inject codegen replaces the placeholder below with a
+    ::  `=/  defaults  ^*(versioned-state)` + `%_  defaults  ...  ==`
+    ::  overlay so resumed snapshots with a smaller noun shape get the
+    ::  current kernel's per-graft defaults instead of garbage at the
+    ::  new axes. See README "State checkpoints" for the schema-extension
+    ::  migration semantics.
+    ::
+    ::  nockup:load-defaults
     old-state
   ::
   ++  peek

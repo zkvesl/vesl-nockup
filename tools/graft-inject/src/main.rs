@@ -152,7 +152,7 @@ impl Graft {
             Marker::Peek => self.blocks.peek.as_ref(),
             // Codegen markers — synthesized by the inject pass, not
             // contributed per-graft.
-            Marker::DomainEffect | Marker::EffectUnion => None,
+            Marker::DomainEffect | Marker::EffectUnion | Marker::LoadDefaults => None,
         }
     }
 
@@ -560,10 +560,22 @@ enum Marker {
     /// `[graft.types].effect` plus `domain-effect` if DomainEffect is
     /// present.
     EffectUnion,
+    /// RM4 §1 HARD-BUG-2 v0.2: REPLACE-IF-PRESENT codegen target inside
+    /// the marker template's `++load` arm. graft-inject populates this
+    /// marker with a `%=  old-state ... ==` overlay block — one line per
+    /// composed graft, mapping each graft's state field to its
+    /// `++new-state` default. The overlay is sound regardless of the
+    /// resumed snapshot's noun shape: `%=` writes at axes computed from
+    /// `old-state`'s declared type (the kernel's current
+    /// `versioned-state`), so a smaller-shape snapshot resuming into a
+    /// larger kernel gets defaults at the new axes without panicking
+    /// when later pokes access them. Operators who need data
+    /// preservation under a schema change re-poke after resume.
+    LoadDefaults,
 }
 
 impl Marker {
-    const ALL: [Marker; 9] = [
+    const ALL: [Marker; 10] = [
         Marker::Imports,
         Marker::State,
         Marker::Cause,
@@ -573,6 +585,7 @@ impl Marker {
         Marker::Peek,
         Marker::DomainEffect,
         Marker::EffectUnion,
+        Marker::LoadDefaults,
     ];
 
     #[cfg(test)]
@@ -587,6 +600,7 @@ impl Marker {
             "peek" => Some(Self::Peek),
             "domain-effect" => Some(Self::DomainEffect),
             "effect-union" => Some(Self::EffectUnion),
+            "load-defaults" => Some(Self::LoadDefaults),
             _ => None,
         }
     }
@@ -602,6 +616,7 @@ impl Marker {
             Self::Peek => "peek",
             Self::DomainEffect => "domain-effect",
             Self::EffectUnion => "effect-union",
+            Self::LoadDefaults => "load-defaults",
         }
     }
 }
@@ -625,6 +640,8 @@ struct InjectReport {
     codegen: CodegenReport,
     /// Phase 03f Lever 1.5: weld-friction lint findings in domain code.
     weld_lint: WeldLint,
+    /// RM4 §1 v0.2: outcome of the `++load` defaults codegen pass.
+    load_defaults: LoadDefaultsReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -647,6 +664,18 @@ struct CodegenReport {
     /// Variant list spliced into `+$ effect $%(...)`. Empty when status
     /// is Skipped.
     variants: Vec<String>,
+}
+
+/// RM4 §1 v0.2: outcome of the load-defaults codegen pass. Mirrors
+/// `CodegenReport` but tracks the `++load` overlay block separately so
+/// the `print_report` line can call out the schema-migration scope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct LoadDefaultsReport {
+    status: CodegenStatus,
+    /// Graft state-field names (e.g. `["settle", "rbac"]`) emitted into
+    /// the `%=  old-state ... ==` overlay, in priority order. Empty when
+    /// status is Skipped.
+    fields: Vec<String>,
 }
 
 /// Phase 03f Lever 1.5: weld-friction lint.
@@ -822,6 +851,12 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
     // with the current graft set on every rerun.
     let codegen = emit_effect_union(&mut lines, grafts)?;
 
+    // RM4 §1 v0.2: load-defaults codegen runs after effect-union. Same
+    // REPLACE-IF-PRESENT shape; populates the `++load` overlay so
+    // resumed snapshots with a smaller noun shape get defaults at the
+    // current kernel's new graft axes.
+    let load_defaults = emit_load_defaults(&mut lines, grafts)?;
+
     // Phase 03f Lever 1.5: weld-friction lint scans developer code
     // (outside graft-inject banners) for narrow effect bindings that
     // will nest-fail at any cross-graft `(weld a b)` site. Advisory
@@ -847,6 +882,7 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
             pruned_grafts,
             codegen,
             weld_lint,
+            load_defaults,
         },
     ))
 }
@@ -863,9 +899,9 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
 ///
 /// Replaces RH1 step 2's `emit_position_preserving` dispatcher and the
 /// `*_single_at` emitters. Codegen-only markers (DomainEffect,
-/// EffectUnion) yield an empty slice from the caller's filter, so the
-/// early return covers them — `emit_effect_union` runs separately
-/// after the marker loop.
+/// EffectUnion, LoadDefaults) yield an empty slice from the caller's
+/// filter, so the early return covers them — `emit_effect_union` and
+/// `emit_load_defaults` run separately after the marker loop.
 fn canonicalize_marker_section(
     lines: &mut Vec<String>,
     marker: Marker,
@@ -1088,6 +1124,236 @@ fn render_effect_union_block(indent: &str, variants: &[String]) -> Vec<String> {
     }
     out.push(format!("{indent}  =="));
     out.push(format!("{indent}{}", codegen_end_banner(Marker::EffectUnion)));
+    out
+}
+
+/// RM4 §1 v0.2: synthesize the load-defaults overlay beneath the
+/// `nockup:load-defaults` marker. Same REPLACE-IF-PRESENT shape as
+/// `emit_effect_union` — the codegen owns everything between its
+/// banner pair, and re-running with the same graft set is byte-identical.
+///
+/// The emitted block is a `%=  old-state ... ==` overlay that maps each
+/// graft's state field (binding stub of the graft name; e.g.
+/// `rbac-graft` → `rbac`) to that graft's `++new-state` default. Grafts
+/// without a `[graft.blocks.state]` block (e.g. `forge-graft`) don't
+/// contribute a state field and are skipped.
+///
+/// Three states the codegen handles:
+///   1. Banner pair already present → REPLACE between them. Idempotent
+///      when the new content matches the existing.
+///   2. No banner pair → INSERT after the marker. The marker template
+///      ships with a placeholder `old-state` line below the marker; the
+///      INSERT places the codegen banner block after the marker without
+///      removing the placeholder, since the placeholder is the v0.1
+///      identity fallback (the migration arm sits ABOVE the placeholder
+///      via the version-dispatched `?:`). For the v0.2 default the
+///      generated block IS the body — when present, it replaces the
+///      identity load.
+///   3. Marker not present → Skipped (older templates pre-load-defaults).
+fn emit_load_defaults(
+    lines: &mut Vec<String>,
+    grafts: &[Graft],
+) -> Result<LoadDefaultsReport> {
+    let marker_idx = match find_marker(lines, Marker::LoadDefaults)? {
+        Some(i) => i,
+        None => {
+            return Ok(LoadDefaultsReport {
+                status: CodegenStatus::Skipped,
+                fields: Vec::new(),
+            });
+        }
+    };
+
+    let fields: Vec<String> = grafts
+        .iter()
+        .filter(|g| g.block(Marker::State).is_some())
+        .map(|g| binding_stub(&g.name).to_string())
+        .collect();
+
+    let indent = leading_whitespace(&lines[marker_idx]).to_string();
+    let new_block = render_load_defaults_block(&indent, grafts, &fields);
+
+    let begin_str = codegen_begin_banner(Marker::LoadDefaults);
+    let end_str = codegen_end_banner(Marker::LoadDefaults);
+
+    let mut begin_idx: Option<usize> = None;
+    let mut end_idx: Option<usize> = None;
+    for (i, line) in lines.iter().enumerate().skip(marker_idx + 1) {
+        let trimmed = line.trim();
+        if trimmed == begin_str {
+            if begin_idx.is_some() {
+                bail!(
+                    "duplicate `{}` at line {}; codegen owns one banner pair per kernel",
+                    begin_str,
+                    i + 1
+                );
+            }
+            begin_idx = Some(i);
+        } else if trimmed == end_str {
+            if begin_idx.is_none() {
+                bail!(
+                    "orphan `{}` at line {} (no matching begin banner)",
+                    end_str,
+                    i + 1
+                );
+            }
+            end_idx = Some(i);
+            break;
+        }
+    }
+
+    if begin_idx.is_some() && end_idx.is_none() {
+        bail!(
+            "orphan `{}` (begin without end) under nockup:load-defaults",
+            begin_str
+        );
+    }
+
+    match (begin_idx, end_idx) {
+        (Some(b), Some(e)) => {
+            let existing: Vec<String> = lines[b..=e].to_vec();
+            if existing == new_block {
+                return Ok(LoadDefaultsReport {
+                    status: CodegenStatus::Unchanged,
+                    fields,
+                });
+            }
+            lines.splice(b..=e, new_block);
+            Ok(LoadDefaultsReport {
+                status: CodegenStatus::Replaced,
+                fields,
+            })
+        }
+        (None, None) => {
+            // No banner pair. Find the placeholder line that the marker
+            // template ships below the marker — the `old-state` identity
+            // expression — and replace it with the codegen banner block.
+            // Scan a small window after the marker; only `old-state` (or
+            // a previously-injected banner pair, handled above) is the
+            // legal placeholder shape, anything else is left alone.
+            let scan_end = lines.len().min(marker_idx + 6);
+            let mut placeholder_idx: Option<usize> = None;
+            for (i, line) in lines.iter().enumerate().take(scan_end).skip(marker_idx + 1) {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with("::") {
+                    continue;
+                }
+                if trimmed == "old-state" {
+                    placeholder_idx = Some(i);
+                }
+                break;
+            }
+            match placeholder_idx {
+                Some(i) => {
+                    lines.splice(i..=i, new_block);
+                }
+                None => {
+                    for (offset, line) in new_block.into_iter().enumerate() {
+                        lines.insert(marker_idx + 1 + offset, line);
+                    }
+                }
+            }
+            Ok(LoadDefaultsReport {
+                status: CodegenStatus::Inserted,
+                fields,
+            })
+        }
+        _ => unreachable!("orphan banner cases bail above"),
+    }
+}
+
+/// Render the load-defaults overlay block as a vector of lines, each
+/// pre-indented to match the marker's leading whitespace.
+///
+/// The body is shaped:
+///
+///     =/  defaults  ^*(versioned-state)
+///     %_  defaults
+///         settle  =/  s  (mole |.(settle.old-state))  ?~(s ^*(settle-state) u.s)
+///         mint    =/  m  (mole |.(mint.old-state))    ?~(m ^*(mint-state) u.m)
+///         ...
+///     ==
+///
+/// * `^*(versioned-state)` is the wide form of `^*  versioned-state`
+///   (kettar) — the bunt (type-default) of the kernel's full
+///   versioned-state shape. Domain-state fields (added by the developer
+///   beyond the `nockup:state` marker) get their type defaults this way
+///   without graft-inject needing to introspect them.
+/// * `%_` rebinds named slots in `defaults` and returns the modified
+///   subject. Hoon's `%_` and `%=` runes require their subject to be a
+///   wing (a name reference), not an arbitrary expression — so we bind
+///   the bunt to `defaults` first via `=/`.
+/// * Each graft's slot is probed via `(mole |.(<field>.old-state))`,
+///   which evaluates the field-access in a trap that catches axis
+///   crashes. If the resumed snapshot's noun has the field at the
+///   expected axis (same-composition resume, OR a smaller-shape
+///   snapshot whose surviving fields happen to align with the new
+///   kernel's axes), the probe returns Some(value) and we preserve
+///   the snapshot's data. If the access crashes (axis missing or at
+///   the wrong subtree), the probe returns None and we fall back to
+///   `^*(<field>-state)`, the bunt of the graft's state type. The
+///   per-field probing is the difference between a v0.1 silent-failure
+///   load (panic on first new-graft access post-resume) and the v0.2
+///   defaults-overlay migration: same-composition resumes preserve
+///   data, schema-extension resumes fall back to defaults at exactly
+///   the fields whose axes shifted.
+/// * `++new-state` arms across grafts share the same `new-state`
+///   name and would collide under splat imports; using the type bunt
+///   (`^*(<field>-state)`) sidesteps that. For grafts whose
+///   `++new-state` differs from the type bunt (queue/log default
+///   counters to 1, the type bunts to 0), v0.2 takes the type-bunt
+///   value at the fallback path — operators who need the seed counter
+///   re-poke after resume.
+/// * The cast `^- _state` on the load arm body type-checks the result
+///   against the kernel's compiled state type.
+///
+/// The empty-fields case (no stateful grafts in the composition; e.g.
+/// forge-only) emits a bare `^*(versioned-state)` so the load arm
+/// stays a valid `_state`-typed expression and isn't a `%_  X  ==`
+/// zero-mutation no-op.
+fn render_load_defaults_block(indent: &str, grafts: &[Graft], fields: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(fields.len() + 5);
+    out.push(format!(
+        "{indent}{}",
+        codegen_begin_banner(Marker::LoadDefaults)
+    ));
+    if fields.is_empty() {
+        out.push(format!("{indent}^*(versioned-state)"));
+    } else {
+        out.push(format!("{indent}=/  defaults  ^*(versioned-state)"));
+        out.push(format!("{indent}%_  defaults"));
+        for g in grafts.iter().filter(|g| g.block(Marker::State).is_some()) {
+            let stub = binding_stub(&g.name);
+            // Single-letter probe-binding name — `s` for settle, `m`
+            // for mint, etc. — uses the first character of the stub so
+            // probes don't collide with each other in the `%_` body.
+            // Prepend `_` if the stub is empty (defensive; the
+            // `is_valid_graft_name` discovery check already rejects
+            // empty names, but we don't want a panic on a degenerate
+            // input).
+            let probe = stub
+                .chars()
+                .next()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "_".to_string());
+            // `;;(<field>-state ...)` is a runtime nest check inside
+            // the mole trap — it crashes if the field-access read
+            // returned a noun that doesn't structurally match the
+            // graft's state type. Without it, schema-extension reads
+            // at "deeper" axes can return garbage from inside an
+            // earlier graft's state instead of crashing cleanly, and
+            // the per-field probe would surface that garbage as a
+            // valid value.
+            out.push(format!(
+                "{indent}    {stub}  =/  {probe}  (mole |.(;;({stub}-state {stub}.old-state)))  ?~({probe} ^*({stub}-state) u.{probe})"
+            ));
+        }
+        out.push(format!("{indent}=="));
+    }
+    out.push(format!(
+        "{indent}{}",
+        codegen_end_banner(Marker::LoadDefaults)
+    ));
     out
 }
 
@@ -3751,12 +4017,12 @@ mod tests {
         assert!(out.contains("?.  =(~ settle-res)  settle-res"));
 
         // BARE_SCAFFOLD ships with the seven non-codegen markers (imports,
-        // state, cause, poke-prelude, poke, poke-postlude, peek). The two
-        // codegen markers (domain-effect, effect-union) land via commit 7
-        // auto-migration and the commit 8 template refresh, so they are
+        // state, cause, poke-prelude, poke, poke-postlude, peek). The
+        // three codegen markers (domain-effect, effect-union, load-defaults)
+        // land via auto-migration and template refreshes, so they are
         // expected to be missing here.
         assert_eq!(report.markers_in_source.len(), 7);
-        assert_eq!(report.markers_missing.len(), 2);
+        assert_eq!(report.markers_missing.len(), 3);
         let settle = &report.grafts[0];
         assert_eq!(settle.name, "settle-graft");
         // settle-graft contributes 5 of the 7 non-codegen markers
@@ -5746,6 +6012,190 @@ body     = """
         assert!(
             out.contains("+$  effect  (list @t)"),
             "custom effect type must NOT be rewritten by codegen"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // RM4 §1 v0.2: load-defaults overlay codegen
+    // ---------------------------------------------------------------
+
+    /// Bare scaffold + a `nockup:load-defaults` marker placed inside an
+    /// `++load` arm body. The placeholder `old-state` line directly
+    /// after the marker mirrors the production marker template; the
+    /// codegen replaces it with a `=/  defaults  ^*(versioned-state)` +
+    /// `%_  defaults  ...  ==` overlay block.
+    const SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER: &str = "\
+::  test scaffold with load-defaults marker
+::  nockup:load-defaults
+old-state
+::  nockup:effect-union
+::
++$  cause
+  $%  [%cause ~]
+      ::  nockup:cause
+  ==
+--
+";
+
+    #[test]
+    fn load_defaults_skipped_without_marker() {
+        // BARE_SCAFFOLD has no `nockup:load-defaults` marker — codegen
+        // returns Skipped and the source is unchanged where the load
+        // arm lives.
+        let g = synthetic_graft("alpha", 10);
+        let (out, report) = inject(BARE_SCAFFOLD, &[g]).unwrap();
+        assert_eq!(report.load_defaults.status, CodegenStatus::Skipped);
+        assert!(report.load_defaults.fields.is_empty());
+        assert!(!out.contains("graft-inject:load-defaults:begin"));
+    }
+
+    #[test]
+    fn load_defaults_inserts_overlay_for_one_graft() {
+        let g = synthetic_graft("alpha", 10);
+        let (out, report) = inject(SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER, &[g]).unwrap();
+        assert_eq!(report.load_defaults.status, CodegenStatus::Inserted);
+        assert_eq!(report.load_defaults.fields, vec!["alpha"]);
+        assert!(out.contains("::  graft-inject:load-defaults:begin"));
+        assert!(out.contains("=/  defaults  ^*(versioned-state)"));
+        assert!(out.contains("%_  defaults"));
+        // The per-field overlay line wraps the field-access in
+        // `(mole |.(;;(<type> <field>.old-state)))` so same-composition
+        // resume preserves data and schema-extension resume falls back
+        // to defaults exactly where axes shifted.
+        assert!(out.contains("alpha  =/  a  (mole |.(;;(alpha-state alpha.old-state)))"));
+        assert!(out.contains("?~(a ^*(alpha-state) u.a)"));
+        assert!(out.contains("::  graft-inject:load-defaults:end"));
+        // The `old-state` placeholder line must be gone — the codegen
+        // owns that slot now.
+        let begin = out.find("graft-inject:load-defaults:begin").unwrap();
+        let end = out.find("graft-inject:load-defaults:end").unwrap();
+        let block = &out[begin..end];
+        assert!(
+            !block.contains("\n    old-state\n") && !block.ends_with("old-state"),
+            "raw `old-state` placeholder must be replaced by overlay\nblock:\n{block}"
+        );
+    }
+
+    #[test]
+    fn load_defaults_emits_fields_in_priority_order() {
+        let grafts = vec![
+            synthetic_graft("alpha", 10),
+            synthetic_graft("beta", 20),
+            synthetic_graft("gamma", 30),
+        ];
+        let (out, report) = inject(SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER, &grafts).unwrap();
+        assert_eq!(report.load_defaults.status, CodegenStatus::Inserted);
+        assert_eq!(report.load_defaults.fields, vec!["alpha", "beta", "gamma"]);
+        let begin = out.find("graft-inject:load-defaults:begin").unwrap();
+        let end = out.find("graft-inject:load-defaults:end").unwrap();
+        let block = &out[begin..end];
+        let alpha = block.find("alpha  =/  a  (mole").unwrap();
+        let beta = block.find("beta  =/  b  (mole").unwrap();
+        let gamma = block.find("gamma  =/  g  (mole").unwrap();
+        assert!(
+            alpha < beta && beta < gamma,
+            "fields out of priority order in:\n{block}"
+        );
+    }
+
+    #[test]
+    fn load_defaults_idempotent_unchanged_on_rerun() {
+        let g = synthetic_graft("alpha", 10);
+        let (first, _) =
+            inject(SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER, std::slice::from_ref(&g)).unwrap();
+        let (second, report) = inject(&first, &[g]).unwrap();
+        assert_eq!(first, second, "second run must be byte-identical");
+        assert_eq!(report.load_defaults.status, CodegenStatus::Unchanged);
+    }
+
+    #[test]
+    fn load_defaults_replace_grows_when_graft_added() {
+        let alpha = synthetic_graft("alpha", 10);
+        let beta = synthetic_graft("beta", 20);
+        let (one, _) =
+            inject(SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER, std::slice::from_ref(&alpha)).unwrap();
+        let (two, report) = inject(&one, &[alpha, beta]).unwrap();
+        assert_eq!(report.load_defaults.status, CodegenStatus::Replaced);
+        assert_eq!(report.load_defaults.fields, vec!["alpha", "beta"]);
+        assert!(two.contains("alpha  =/  a  (mole"));
+        assert!(two.contains("beta  =/  b  (mole"));
+    }
+
+    #[test]
+    fn load_defaults_replace_shrinks_when_graft_removed() {
+        let alpha = synthetic_graft("alpha", 10);
+        let beta = synthetic_graft("beta", 20);
+        let (two, _) =
+            inject(SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER, &[alpha.clone(), beta]).unwrap();
+        assert!(two.contains("beta  =/  b  (mole"));
+        let (one, report) = inject(&two, &[alpha]).unwrap();
+        assert_eq!(report.load_defaults.status, CodegenStatus::Replaced);
+        assert_eq!(report.load_defaults.fields, vec!["alpha"]);
+        let begin = one.find("graft-inject:load-defaults:begin").unwrap();
+        let end = one.find("graft-inject:load-defaults:end").unwrap();
+        let block = &one[begin..end];
+        assert!(
+            !block.contains("beta  =/  b  (mole"),
+            "removed graft's overlay line must be gone\nblock:\n{block}",
+        );
+    }
+
+    #[test]
+    fn load_defaults_empty_graft_set_emits_bunt() {
+        // A composition with no stateful grafts (e.g. forge-only)
+        // should still produce a valid `_state`-typed expression. The
+        // codegen emits a bare `^*(versioned-state)` so the load arm
+        // is the bunt of the kernel state shape.
+        let (out, report) = inject(SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER, &[]).unwrap();
+        assert_eq!(report.load_defaults.status, CodegenStatus::Inserted);
+        assert!(report.load_defaults.fields.is_empty());
+        assert!(out.contains("^*(versioned-state)"));
+        assert!(!out.contains("%_  defaults"));
+    }
+
+    #[test]
+    fn load_defaults_skips_graft_without_state_block() {
+        // A graft that doesn't declare a `[graft.blocks.state]` block
+        // (forge-graft pattern: stateless) doesn't contribute a state
+        // field to versioned-state, so it must NOT appear in the
+        // overlay either.
+        let with_state = synthetic_graft("alpha", 10);
+        let mut without_state = synthetic_graft("forge", 50);
+        without_state.blocks.state = None;
+        let (out, report) =
+            inject(SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER, &[with_state, without_state]).unwrap();
+        assert_eq!(report.load_defaults.fields, vec!["alpha"]);
+        assert!(out.contains("alpha  =/  a  (mole"));
+        assert!(
+            !out.contains("forge  =/  f  (mole"),
+            "stateless graft must not contribute a load-defaults overlay line\n{out}",
+        );
+    }
+
+    #[test]
+    fn load_defaults_orphan_end_banner_bails() {
+        // An orphan end banner (no matching begin) is structural
+        // corruption; the codegen must surface it via Result::Err
+        // rather than silently emit a duplicate banner pair.
+        let src = "\
+::  test
+::  nockup:load-defaults
+::  graft-inject:load-defaults:end
+old-state
+::  nockup:effect-union
+::
++$  cause
+  $%  [%cause ~]
+      ::  nockup:cause
+  ==
+--
+";
+        let g = synthetic_graft("alpha", 10);
+        let err = inject(src, &[g]).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("orphan") && msg.contains("load-defaults"),
+            "expected orphan-banner error, got: {msg}"
         );
     }
 }
