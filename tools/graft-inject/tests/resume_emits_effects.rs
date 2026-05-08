@@ -18,7 +18,7 @@ use nockapp::wire::{SystemWire, Wire};
 use nockapp::NockApp;
 use vesl_checkpoint::{resume, snapshot};
 use vesl_core::{
-    build_log_append_poke, build_rbac_grant_poke, build_registry_put_poke,
+    build_log_append_poke, build_rbac_grant_poke, build_registry_put_poke, effect_head_tags,
 };
 use vesl_test::GraftTestHarness;
 
@@ -189,19 +189,5 @@ async fn poke_via_app(app: &mut NockApp, slab: NounSlab) -> Result<Vec<String>> 
         .poke(SystemWire.to_wire(), slab)
         .await
         .map_err(|e| anyhow::anyhow!("poke failed: {e}"))?;
-    Ok(effects
-        .iter()
-        .filter_map(|effect| {
-            let noun = unsafe { effect.root() };
-            let cell = noun.as_cell().ok()?;
-            let tag = cell.head().as_atom().ok()?;
-            let bytes = tag.as_ne_bytes();
-            Some(
-                std::str::from_utf8(bytes)
-                    .unwrap_or("?")
-                    .trim_end_matches('\0')
-                    .to_string(),
-            )
-        })
-        .collect())
+    Ok(effect_head_tags(&effects))
 }
