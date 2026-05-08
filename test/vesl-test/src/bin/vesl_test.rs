@@ -21,9 +21,12 @@
 //!   vesl-test inspect peek out.jam --path-tag log-len --json
 //!   vesl-test verify-jam .
 //!   vesl-test verify-jam path/to/project --json
+//!   vesl-test watch out.jam
+//!   vesl-test watch out.jam --json --filter cause=settle-register
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -33,6 +36,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use vesl_core::{build_hull_peek_path, build_keyed_peek_path, build_keyless_peek_path};
 use vesl_test::GraftTestHarness;
+use vesl_test::watch::{self, DEFAULT_EFFECT_WINDOW_MS, WatchOpts};
 
 #[derive(Parser, Debug)]
 #[command(name = "vesl-test", about = "Runtime introspection + build-provenance for grafted NockApp kernels")]
@@ -59,6 +63,28 @@ enum Cmd {
         /// human-readable form.
         #[arg(long)]
         json: bool,
+    },
+    /// REPL-style live-trace tool: boot a kernel, run `app.run()` in
+    /// the background, subscribe to its effect_broadcast, and render
+    /// one structured row per kernel event while reading poke/peek
+    /// commands from stdin. See README §"Inspecting a kernel from the
+    /// outside" for the stdin grammar and JSON schema.
+    Watch {
+        /// Compiled `out.jam` to boot.
+        jam: PathBuf,
+        /// `cause=<tag>` keeps only events whose cause matches; `effect=<tag>`
+        /// keeps only events whose effect-list contains `<tag>`. Without a
+        /// filter, every event is emitted.
+        #[arg(long)]
+        filter: Option<String>,
+        /// Emit one JSON object per line instead of the human table.
+        #[arg(long)]
+        json: bool,
+        /// Per-event drain window (ms) for the broadcast tap. After a
+        /// poke acks, drain effects for this many ms before rendering.
+        /// Default 100 ms (RM4 §6 acceptance #2 latency bound).
+        #[arg(long, default_value_t = DEFAULT_EFFECT_WINDOW_MS)]
+        effect_window_ms: u64,
     },
 }
 
@@ -103,6 +129,14 @@ async fn main() -> ExitCode {
                 .map(|()| 0),
         },
         Cmd::VerifyJam { project, json } => run_verify_jam(&project, json).await,
+        Cmd::Watch {
+            jam,
+            filter,
+            json,
+            effect_window_ms,
+        } => run_watch(jam, filter, json, effect_window_ms)
+            .await
+            .map(|()| 0),
     };
     match result {
         Ok(code) => ExitCode::from(code),
@@ -111,6 +145,21 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+async fn run_watch(
+    jam: PathBuf,
+    filter: Option<String>,
+    json: bool,
+    effect_window_ms: u64,
+) -> Result<()> {
+    let opts = WatchOpts {
+        jam,
+        json,
+        filter: watch::parse_filter(filter.as_deref())?,
+        effect_window: Duration::from_millis(effect_window_ms),
+    };
+    watch::run_with_jam(opts).await
 }
 
 async fn run_peek(

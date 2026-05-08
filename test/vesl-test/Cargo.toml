@@ -9,14 +9,6 @@ license = "MIT OR Apache-2.0"
 name = "vesl-test"
 path = "src/bin/vesl_test.rs"
 
-# `watch` (RM4 Tool 4 deferred) — REPL-style live-trace tool that boots
-# a kernel from out.jam, subscribes to its effect_broadcast, and prints
-# one structured row per kernel event while reading poke/peek commands
-# from stdin. Run as `cargo run -p vesl-test --bin watch -- <out.jam>`.
-[[bin]]
-name = "watch"
-path = "src/bin/watch.rs"
-
 [dependencies]
 # vesl-core crates live inside vesl-nockup/crates/ (bundled copy synced
 # from upstream by sync.sh). Tip5Hash + tip5_to_atom_le_bytes flow through
@@ -43,11 +35,12 @@ serde_json = "1"
 # verify-jam subcommand recomputes sha256s of source files listed in
 # the .out-jam-source-fingerprint sidecar (RM2 §2.1).
 sha2 = "0.10"
-# `watch` reads stdin (io-std), spawns the run loop and a render task
-# (rt-multi-thread), uses `tokio::sync::broadcast` to subscribe to the
-# kernel's effect_broadcast (sync), and bounds per-event effect drains
-# with `tokio::time::sleep` (time). `select!` + the `tokio::main` macro
-# need `macros`. The rest of the bin family doesn't depend on these
+# The `vesl-test watch` subcommand (RM4 Tool 4) reads stdin (io-std),
+# spawns the run loop and a render task (rt-multi-thread), uses
+# `tokio::sync::broadcast` to subscribe to the kernel's
+# effect_broadcast (sync), and bounds per-event effect drains with
+# `tokio::time::sleep` (time). `select!` + the `tokio::main` macro need
+# `macros`. The other subcommands don't depend on the additional
 # features — they're additive.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "time"] }
 tracing = "0.1"

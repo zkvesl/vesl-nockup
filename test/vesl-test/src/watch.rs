@@ -5,10 +5,11 @@
 //! EFFECT-OBSERVATION friction class flagged in
 //! `vesl-nockup/.dev/debug/log-meta/RM4/round.md` §"Tool gap analysis".
 //!
-//! The bin (`src/bin/watch.rs`) is a thin clap wrapper over
-//! [`run_with_jam`]; the integration test in `tests/watch_smoke.rs`
-//! drives [`drive`] directly with in-process readers and writers so the
-//! render loop can be tested without subprocess overhead.
+//! Wired into the `vesl-test` bin as the `Watch` subcommand
+//! (`vesl-test watch <out.jam>`); see `src/bin/vesl_test.rs::run_watch`.
+//! The integration test in `tests/watch_smoke.rs` drives [`drive`]
+//! directly with in-process readers and writers so the render loop can
+//! be tested without subprocess overhead.
 
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

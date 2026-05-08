@@ -924,13 +924,13 @@ Hoon-literal path parsing (`[%kv-value @t %my-key]` directly) is out of scope fo
 
 ```bash
 # interactive: type pokes at the prompt, watch effects render below
-cargo run -p vesl-test --bin watch -- out.jam
+vesl-test watch out.jam
 
 # pipe a script of pokes from another terminal
-cat pokes.txt | cargo run -p vesl-test --bin watch -- out.jam --json
+cat pokes.txt | vesl-test watch out.jam --json
 
 # only show events whose cause is settle-register
-cargo run -p vesl-test --bin watch -- out.jam --filter cause=settle-register
+vesl-test watch out.jam --filter cause=settle-register
 ```
 
 **Stdin grammar.** One command per line:
