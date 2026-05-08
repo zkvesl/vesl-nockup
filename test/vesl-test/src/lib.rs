@@ -21,7 +21,7 @@ use nockapp::kernel::boot;
 use nockapp::noun::slab::NounSlab;
 use nockapp::wire::{SystemWire, Wire};
 use nockvm::noun::{D, T};
-use vesl_core::{Tip5Hash, tip5_to_atom_le_bytes};
+use vesl_core::{Tip5Hash, effect_head_tags, tip5_to_atom_le_bytes};
 
 // -- public test vectors ----------------------------------------------------
 
@@ -89,7 +89,7 @@ impl GraftTestHarness {
             .poke(SystemWire.to_wire(), slab)
             .await
             .map_err(|e| anyhow::anyhow!("poke failed: {e}"))?;
-        Ok(effect_tags(&effects))
+        Ok(effect_head_tags(&effects))
     }
 
     /// Like [`poke_slab`] but also returns any slog warnings emitted
@@ -113,7 +113,7 @@ impl GraftTestHarness {
             .await
             .map_err(|e| anyhow::anyhow!("poke failed: {e}"))?;
         Ok(PokeReport {
-            effect_tags: effect_tags(&effects),
+            effect_tags: effect_head_tags(&effects),
             slog_warnings: drain_capture(),
         })
     }
@@ -255,26 +255,6 @@ pub fn jam_graft_payload(note_id: u64, hull: u64, root: &Tip5Hash, data: &[u8]) 
 
     let mut stack = new_stack();
     jam_to_bytes(&mut stack, payload_noun)
-}
-
-// -- effect parsing --------------------------------------------------------
-
-/// Extract the head-atom tag from each effect as a string.
-fn effect_tags(effects: &[NounSlab]) -> Vec<String> {
-    let mut out = Vec::new();
-    for effect in effects {
-        let noun = unsafe { effect.root() };
-        if let Ok(cell) = noun.as_cell()
-            && let Ok(tag) = cell.head().as_atom() {
-                let bytes = tag.as_ne_bytes();
-                let s = std::str::from_utf8(bytes)
-                    .unwrap_or("?")
-                    .trim_end_matches('\0')
-                    .to_string();
-                out.push(s);
-            }
-    }
-    out
 }
 
 // -- suite report ----------------------------------------------------------
