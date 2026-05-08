@@ -545,9 +545,11 @@ snapshots/before-mint-graft/
                  vesl_checkpoint_version)
 ```
 
-Schema migration is **out of scope** for v0.1. **Same-composition resume** (the new kernel has the same set of grafts as the snapshot) roundtrips cleanly — both pre- and post-resume pokes emit effects. **Schema-extension resume** (the new kernel adds grafts that weren't in the snapshot) is currently a silent-failure case: the marker template's `++load` arm is identity, so new graft state fields end up at undefined nockvm axes; subsequent pokes against those grafts panic inside the wrapper's mule guard and return `Ok(vec![])` instead of a clear error. The fix — graft-inject codegen for a `nockup:load-defaults` marker populated with each graft's `++new-state` default — is deferred to v0.2 (RM4 §1). Until then, treat resume as same-composition only and re-run the full poke sequence after any composition change rather than relying on snapshot+resume.
+**Same-composition resume** (the new kernel has the same set of grafts as the snapshot) roundtrips cleanly — both pre- and post-resume pokes emit effects. State is reset to per-graft defaults on every resume because v0.2 takes the simpler defaults-overlay migration path; operators who need data preservation re-poke after resume to restore the desired state.
 
-For test setups that need state-equivalence assertions, see `tools/graft-inject/tests/checkpoint_lifecycle.rs` (state survives same-composition resume) and `tools/graft-inject/tests/resume_emits_effects.rs` (post-resume effect emission across priority bands; the schema-extension variant is `#[ignore]`-gated until v0.2).
+**Schema-extension resume** (the new kernel adds grafts that weren't in the snapshot) works in v0.2 via graft-inject codegen at the `nockup:load-defaults` marker. The marker template ships an identity `++load` placeholder; graft-inject replaces it with a `=/  defaults  ^*(versioned-state)` + `%_  defaults  <field>  ^*(<field>-state)  ...  ==` overlay so resumed snapshots with a smaller noun shape get type defaults at the new graft axes instead of panicking inside the wrapper's mule guard. Pre-v0.2 (no marker, identity load) silently dropped effects on every graft past the first added priority band; the fix landed under RM4 §1 v0.2.
+
+For test setups that need state-equivalence assertions, see `tools/graft-inject/tests/checkpoint_lifecycle.rs` (state survives same-composition resume modulo the v0.2 defaults overlay) and `tools/graft-inject/tests/resume_emits_effects.rs` (post-resume effect emission across priority bands, including the schema-extension test that flipped from `#[ignore]` to active under v0.2).
 
 ## Customizing
 
