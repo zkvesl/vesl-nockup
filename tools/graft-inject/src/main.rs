@@ -5404,7 +5404,7 @@ body     = """
     #[test]
     fn codegen_idempotent_unchanged_on_rerun() {
         let g = synthetic_graft_with_effect("alpha", 10);
-        let (first, _) = inject(SCAFFOLD_WITH_UNION_MARKER, &[g.clone()]).unwrap();
+        let (first, _) = inject(SCAFFOLD_WITH_UNION_MARKER, std::slice::from_ref(&g)).unwrap();
         let (second, report) = inject(&first, &[g]).unwrap();
         assert_eq!(first, second, "second run must be byte-identical");
         assert_eq!(report.codegen.status, CodegenStatus::Unchanged);
@@ -5414,7 +5414,7 @@ body     = """
     fn codegen_replace_grows_when_graft_added() {
         let alpha = synthetic_graft_with_effect("alpha", 10);
         let beta = synthetic_graft_with_effect("beta", 20);
-        let (one, _) = inject(SCAFFOLD_WITH_UNION_MARKER, &[alpha.clone()]).unwrap();
+        let (one, _) = inject(SCAFFOLD_WITH_UNION_MARKER, std::slice::from_ref(&alpha)).unwrap();
         let (two, report) = inject(&one, &[alpha, beta]).unwrap();
         assert_eq!(report.codegen.status, CodegenStatus::Replaced);
         assert_eq!(

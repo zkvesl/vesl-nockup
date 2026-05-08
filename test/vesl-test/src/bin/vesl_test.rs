@@ -179,7 +179,7 @@ fn classify(result: &NounSlab) -> Outcome {
         Err(_) => return Outcome::Unrecognized,
     };
     let inner = outer_cell.tail();
-    if let Ok(_) = inner.as_atom() {
+    if inner.as_atom().is_ok() {
         // `[~ ~]` shape — atom 0 in the tail position.
         return Outcome::Absent;
     }
@@ -594,7 +594,7 @@ mod tests {
         )
         .unwrap();
         writeln!(f, "# comment line").unwrap();
-        writeln!(f, "").unwrap();
+        writeln!(f).unwrap();
         drop(f);
 
         let entries = read_fingerprint(&fp).unwrap();
