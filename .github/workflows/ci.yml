@@ -103,3 +103,40 @@ jobs:
               echo "::endgroup::"
             fi
           done
+
+  graft-inject-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout vesl-nockup
+        uses: actions/checkout@v4
+        with:
+          path: vesl-nockup
+
+      - name: Checkout nockchain (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: nockchain/nockchain
+          ref: ${{ env.NOCK_PIN }}
+          path: nockchain
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vesl-nockup/tools/graft-inject
+
+      - name: Install graft-inject from current src/
+        working-directory: vesl-nockup
+        run: cargo install --path tools/graft-inject --force
+
+      - name: Verify staleness warning is silent post-rebuild
+        run: |
+          # warn_if_stale() prints a one-line stderr warning when the
+          # installed binary's build-time src/ hash diverges from the
+          # current src/ tree. After a forced rebuild the hashes must
+          # match — if the warning persists, the staleness check itself
+          # has regressed (build.rs hash and runtime hash drifted).
+          if graft-inject --version 2>&1 | grep -q "binary built from src/ hash"; then
+            echo "::error::graft-inject staleness warning persists post-rebuild — build.rs hash and runtime hash check have diverged" >&2
+            exit 1
+          fi
