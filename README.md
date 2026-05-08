@@ -636,6 +636,20 @@ fn submit_artifact(name: &[u8], hash: u64, submitter: u64) -> NounSlab {
 
 The rule of thumb: byte-strings and short tas-atoms go through `Atom::from_bytes`; any integer wider than `DIRECT_MAX` (hashes, hull-ids, submitter IDs with the top bit set) goes through `atom_from_u64`; direct atoms ≤ `DIRECT_MAX` can stay on `D(v)`. Order arguments in `T(&[...])` to match the cause tuple layout in your `app.hoon`.
 
+**Jam-shape payloads.** Grafts that store structured data (`registry`, `log`, `queue`, `batch`) take a pre-jammed `&[u8]` for the payload — the kernel re-cues inside a mule, so a raw atom passes the type check but cues to garbage. Always jam your payload first, or use the `_from_noun` paired helper:
+
+```rust
+// Direct (when you already have jammed bytes — e.g., forwarded from another graft):
+let slab = build_registry_put_poke(key, &jammed_bytes);
+
+// Via NounSlab (when you have a structured payload in-process):
+let mut record = NounSlab::new();
+record.set_root(your_noun);
+let slab = build_registry_put_poke_from_noun(key, &record);
+```
+
+The `_from_noun` helper jams internally; the raw-bytes form trusts the caller. Currently shipped paired helpers: `build_registry_put_poke_from_noun`, `build_registry_update_poke_from_noun`, `build_log_append_poke_from_noun`, `build_queue_push_poke_from_noun`, `build_batch_add_poke_from_noun`. For the cross-graft seam where bytes come from a cue-emitting source (`%queue-popped` body) and need to land in a cue-consuming graft (`%batch-add`, `%registry-put`), pair the byte-taking builder with `vesl_core::rejam_atom` — the popped atom isn't jam-encoded, so feeding it straight in fails or hangs `cue` on pathological back-refs.
+
 Seven lines of custom Hoon total for the 1-arg example, eleven for the 3-arg. Two of those (the state field and the cause variant) are pure type declarations; the rest is the arm itself. The arm's `:_ state(...)` / `^- (list effect)` / `~[[...]]` shape is NockApp's required `[effects state]` return — the same in any nockapp, graft or no graft.
 
 The vesl arms stay put. You're adding arms, not replacing them.
