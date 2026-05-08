@@ -18,7 +18,8 @@ use nockapp::wire::{SystemWire, Wire};
 use nockapp::NockApp;
 use vesl_checkpoint::{resume, snapshot};
 use vesl_core::{
-    build_log_append_poke, build_rbac_grant_poke, build_registry_put_poke, effect_head_tags,
+    build_guard_register_poke, build_log_append_poke, build_mint_commit_poke,
+    build_rbac_grant_poke, build_registry_put_poke, effect_head_tags,
 };
 use vesl_test::GraftTestHarness;
 
@@ -96,23 +97,21 @@ async fn resume_preserves_effect_emission_across_priority_bands() -> Result<()> 
 /// at higher priorities. Mirrors the actual A→B dogfood transition
 /// (snapshot post-A had settle+mint+guard; B added rbac+registry+log).
 ///
-/// **Currently a documented v0.1 limitation, not an active regression
-/// target.** The marker template's `++load` arm is identity, so when
-/// the resumed kernel has more state fields than the snapshot, the
-/// new fields end up at undefined nockvm axes and `~(has by ...)` /
-/// other map operations on those slots silently fail inside the
-/// wrapper's mule guard — effects come back empty.
+/// Active under the v0.2 load-defaults codegen (`nockup:load-defaults`
+/// marker populated by graft-inject). The codegen replaces the marker
+/// template's identity `++load` body with a `=/  defaults
+/// ^*(versioned-state)` + `%_  defaults  <field>  ^*(<graft>-state) ...
+/// ==` overlay, so the resumed kernel sees a fully-shaped state at B's
+/// type rather than A's smaller noun — every B-graft poke arm reads its
+/// state field at a defined axis. Pre-v0.2 builds (no marker, identity
+/// load) silently dropped effects on every graft past the first
+/// added-priority-band; this test is the regression guard.
 ///
-/// The fix lives in graft-inject's codegen: the `++load` arm needs a
-/// new marker (e.g., `nockup:load-defaults`) populated with each
-/// graft's `++new-state` default for the schema-extension migration
-/// case. That's v0.2 scope (deferred per resolution.md §1.2 risk
-/// note). When that lands, remove the `#[ignore]` and this test gates
-/// the migration.
-///
-/// The same-kernel test above is the regression guard for what does
-/// work today: snapshot/resume against a single composition.
-#[ignore = "RM4 §1 — schema-change resume requires graft-inject migration codegen (v0.2)"]
+/// Tradeoff: the overlay resets ALL graft state to type defaults on
+/// resume, including state that existed in both A and B (settle/mint/
+/// guard). Operators who need data preservation under a schema change
+/// re-poke after resume. See README §"State checkpoints" for the
+/// migration-semantics writeup.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resume_into_larger_kernel_emits_effects_for_added_grafts() -> Result<()> {
     // Kernel A: settle + mint + guard (commitment family only — no
@@ -190,4 +189,132 @@ async fn poke_via_app(app: &mut NockApp, slab: NounSlab) -> Result<Vec<String>> 
         .await
         .map_err(|e| anyhow::anyhow!("poke failed: {e}"))?;
     Ok(effect_head_tags(&effects))
+}
+
+/// RM4 §1 v0.2 — exhaustive 3→6 graft schema-extension regression.
+///
+/// Mirrors the canonical A→B dogfood transition with intermediate poke
+/// state on every original graft (settle/mint/guard) before the
+/// snapshot, then asserts each pre-snapshot poke emitted its expected
+/// effect AND each post-resume poke against both the original and the
+/// added grafts emits. This is the broader cousin of
+/// `resume_into_larger_kernel_emits_effects_for_added_grafts` — that
+/// test only exercises one pre-snapshot poke (settle-register).
+///
+/// Per-poke-band coverage:
+/// - settle (priority 60): %settle-register, %settle-registered effect
+/// - mint   (priority 70): %mint-commit, %mint-committed effect
+/// - guard  (priority 75): %guard-register, %guard-registered effect
+/// - rbac   (priority 80): %rbac-grant, %rbac-granted effect
+/// - registry (priority 90): %registry-put, %registry-stored effect
+/// - log    (priority 130): %log-append, %log-appended effect
+///
+/// Pre-snapshot covers settle/mint/guard; post-resume covers all six.
+/// The test does NOT assert state-equivalence across resume — the v0.2
+/// codegen resets graft state to type defaults on schema-extension
+/// resume. The contract verified here is: every poke arm runs cleanly
+/// and emits, regardless of whether the snapshot's noun shape matches
+/// the resumed kernel's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resume_3_to_6_grafts_emits_for_old_and_new_grafts() -> Result<()> {
+    let kernel_a = fixtures::compose_and_compile(
+        "resume_3_to_6_a",
+        &["settle-graft", "mint-graft", "guard-graft"],
+    )?;
+    let app_hoon_a = kernel_a
+        .parent()
+        .expect("kernel_a out.jam has a parent")
+        .join("hoon/app/app.hoon");
+    let kernel_b = fixtures::compose_and_compile(
+        "resume_3_to_6_b",
+        &[
+            "settle-graft",
+            "mint-graft",
+            "guard-graft",
+            "rbac-graft",
+            "registry-graft",
+            "log-graft",
+        ],
+    )?;
+
+    // Boot kernel A and exercise each commitment-family graft so the
+    // snapshot has non-trivial state on every A-graft slot.
+    let mut harness_a = GraftTestHarness::boot(&kernel_a).await?;
+    let mut mint_helper = vesl_core::Mint::new();
+    let root = mint_helper.commit(&[b"resume-3-to-6-payload".as_ref()]);
+
+    let tags = harness_a.register(1, &root).await?;
+    assert!(
+        tags.iter().any(|t| t == "settle-registered"),
+        "pre-snapshot settle-register: {tags:?}",
+    );
+    let tags = harness_a
+        .poke_slab(build_mint_commit_poke(1, &root))
+        .await?;
+    assert!(
+        tags.iter().any(|t| t == "mint-committed"),
+        "pre-snapshot mint-commit: {tags:?}",
+    );
+    let tags = harness_a
+        .poke_slab(build_guard_register_poke(1, &root))
+        .await?;
+    assert!(
+        tags.iter().any(|t| t == "guard-registered"),
+        "pre-snapshot guard-register: {tags:?}",
+    );
+
+    // Snapshot kernel A. Drop the harness so the kernel actor frees
+    // its state-jam handle before resume opens it.
+    let snap_dir = tempfile::tempdir()?;
+    let snap = snapshot(harness_a.app(), snap_dir.path(), &app_hoon_a).await?;
+    drop(harness_a);
+
+    // Resume into kernel B — A's snapshot has 3 graft fields, B's
+    // versioned-state has 6, so `++load`'s overlay is exercised.
+    let mut resumed = resume(&kernel_b, &snap, "rm4-load-defaults-3-to-6").await?;
+
+    // Each post-resume poke must emit its effect tag. The original
+    // grafts (settle/mint/guard) hit fields whose axes happen to align
+    // between A and B; the new grafts (rbac/registry/log) hit fields
+    // that didn't exist in A's noun and would have crashed the wrapper
+    // pre-v0.2.
+    let payload = vec![0x02u8];
+    let new_root = mint_helper.commit(&[b"post-resume-payload".as_ref()]);
+
+    let tags = poke_via_app(
+        &mut resumed,
+        vesl_core::build_settle_register_poke(2, &new_root),
+    )
+    .await?;
+    assert!(
+        tags.iter().any(|t| t == "settle-registered"),
+        "POST-RESUME settle-register (priority 60): {tags:?}",
+    );
+    let tags = poke_via_app(&mut resumed, build_mint_commit_poke(2, &new_root)).await?;
+    assert!(
+        tags.iter().any(|t| t == "mint-committed"),
+        "POST-RESUME mint-commit (priority 70): {tags:?}",
+    );
+    let tags = poke_via_app(&mut resumed, build_guard_register_poke(2, &new_root)).await?;
+    assert!(
+        tags.iter().any(|t| t == "guard-registered"),
+        "POST-RESUME guard-register (priority 75): {tags:?}",
+    );
+    let tags = poke_via_app(&mut resumed, build_rbac_grant_poke(1, &["read"])).await?;
+    assert!(
+        tags.iter().any(|t| t == "rbac-granted"),
+        "POST-RESUME rbac-grant (priority 80, RM4 fail point): {tags:?}",
+    );
+    let tags = poke_via_app(&mut resumed, build_registry_put_poke(1, &payload)).await?;
+    assert!(
+        tags.iter().any(|t| t == "registry-stored"),
+        "POST-RESUME registry-put (priority 90, RM4 fail point): {tags:?}",
+    );
+    let tags = poke_via_app(&mut resumed, build_log_append_poke("audit", &payload)).await?;
+    assert!(
+        tags.iter().any(|t| t == "log-appended"),
+        "POST-RESUME log-append (priority 130, RM4 fail point): {tags:?}",
+    );
+
+    Ok(())
 }
