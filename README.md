@@ -552,9 +552,9 @@ snapshots/before-mint-graft/
                  vesl_checkpoint_version)
 ```
 
-Schema migration is **out of scope** for v0.1. If the new kernel's `++load` arm rejects the snapshotted state shape, `resume` returns an error and the operator must downgrade or write a per-transition migrator by hand. That helper is deferred until actual cumulative-domain pressure surfaces what shape it should take.
+Schema migration is **out of scope** for v0.1. **Same-composition resume** (the new kernel has the same set of grafts as the snapshot) roundtrips cleanly — both pre- and post-resume pokes emit effects. **Schema-extension resume** (the new kernel adds grafts that weren't in the snapshot) is currently a silent-failure case: the marker template's `++load` arm is identity, so new graft state fields end up at undefined nockvm axes; subsequent pokes against those grafts panic inside the wrapper's mule guard and return `Ok(vec![])` instead of a clear error. The fix — graft-inject codegen for a `nockup:load-defaults` marker populated with each graft's `++new-state` default — is deferred to v0.2 (RM4 §1). Until then, treat resume as same-composition only and re-run the full poke sequence after any composition change rather than relying on snapshot+resume.
 
-For test setups that need state-equivalence assertions, see `tools/graft-inject/tests/checkpoint_lifecycle.rs` — the canonical end-to-end pattern (compose → register → snapshot → drop → resume → peek).
+For test setups that need state-equivalence assertions, see `tools/graft-inject/tests/checkpoint_lifecycle.rs` (state survives same-composition resume) and `tools/graft-inject/tests/resume_emits_effects.rs` (post-resume effect emission across priority bands; the schema-extension variant is `#[ignore]`-gated until v0.2).
 
 ## Customizing
 
