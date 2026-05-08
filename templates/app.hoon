@@ -66,7 +66,13 @@
     ^-  [(list effect) _state]
     =/  act  ((soft cause) cause.input.ovum)
     ?~  act
-      ~>  %slog.[1 (crip "invalid cause {<cause.input.ovum>}")]
+      ::  Soft-cast can fail on atom-typed input as well as cells with
+      ::  unknown heads, so guard both before reading the tag.
+      =/  tag=@tas
+        ?@  cause.input.ovum  `@tas`cause.input.ovum
+        ?@  -.cause.input.ovum  `@tas`-.cause.input.ovum
+        %unknown
+      ~>  %slog.[1 (crip "invalid cause [{<tag>} ...] (full: {<cause.input.ovum>})")]
       [~ state]
     ::  nockup:poke-prelude
     =/  out=[efx=(list effect) new=_state]
