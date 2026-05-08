@@ -281,15 +281,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 async fn poke(app: &mut NockApp, slab: NounSlab) -> Result<(), Box<dyn Error>> {
     let effects = app.poke(SystemWire.to_wire(), slab).await?;
-    for e in &effects {
-        let n = unsafe { e.root() };
-        if let Ok(cell) = n.as_cell() {
-            if let Ok(tag) = cell.head().as_atom() {
-                let s = std::str::from_utf8(tag.as_ne_bytes())
-                    .unwrap_or("?").trim_end_matches('\0');
-                println!("  effect: %{s}");
-            }
-        }
+    for tag in vesl_core::effect_head_tags(&effects) {
+        println!("  effect: %{tag}");
     }
     Ok(())
 }
