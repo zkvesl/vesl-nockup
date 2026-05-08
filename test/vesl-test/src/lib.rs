@@ -10,6 +10,8 @@
 //! /  `note`). The `settle` method remains as a deprecated alias so
 //! existing tests outside this repo keep compiling for one release.
 
+pub mod watch;
+
 use std::fs;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
@@ -374,13 +376,20 @@ pub fn decode_cause_tag(noun: &str) -> Option<String> {
 
 static CAPTURE: Mutex<Vec<SlogWarning>> = Mutex::new(Vec::new());
 
-fn clear_capture() {
+/// Reset the process-global slog buffer. Called at the start of every
+/// `poke_slab_report` so each report's slogs don't accumulate from
+/// previous calls. Exposed publicly so the `watch` bin can frame
+/// per-event slog windows the same way.
+pub fn clear_capture() {
     if let Ok(mut buf) = CAPTURE.lock() {
         buf.clear();
     }
 }
 
-fn drain_capture() -> Vec<SlogWarning> {
+/// Drain and return every `SlogWarning` captured since the last
+/// [`clear_capture`]. Public so the `watch` bin can interleave slogs
+/// with effect-broadcast events without duplicating the capture stack.
+pub fn drain_capture() -> Vec<SlogWarning> {
     CAPTURE
         .lock()
         .map(|mut buf| std::mem::take(&mut *buf))
@@ -401,8 +410,9 @@ static TRACING_INIT: OnceLock<()> = OnceLock::new();
 /// readable output) + EnvFilter (RUST_LOG, default "info") + a custom
 /// layer that scoops `target: "slogger"` events into the per-thread
 /// capture buffer. Subsequent calls are a no-op so multiple harnesses
-/// in the same test process don't double-init.
-fn init_capture_tracing(_cli: &boot::Cli) {
+/// in the same test process don't double-init. Public so the `watch`
+/// bin can install the same capture stack from outside the harness.
+pub fn init_capture_tracing(_cli: &boot::Cli) {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::{EnvFilter, fmt};
