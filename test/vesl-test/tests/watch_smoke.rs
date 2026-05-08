@@ -104,7 +104,7 @@ async fn watch_smoke_captures_three_events() -> Result<()> {
             .unwrap_or_else(|| panic!("effect_tags missing on event {i}: {v}"));
         let tags: Vec<&str> = effects.iter().filter_map(Value::as_str).collect();
         assert!(
-            tags.iter().any(|t| *t == "settle-registered"),
+            tags.contains(&"settle-registered"),
             "event {i} missing settle-registered: tags={tags:?} (full: {v})"
         );
         assert_eq!(

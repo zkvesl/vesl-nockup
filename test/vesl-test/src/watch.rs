@@ -405,10 +405,10 @@ where
     let effect_tags = effect_head_tags(&effects);
     let slogs = drain_capture();
 
-    if let Some(Filter::Effect(needle)) = &opts.filter {
-        if !effect_tags.iter().any(|t| t == needle) {
-            return Ok(());
-        }
+    if let Some(Filter::Effect(needle)) = &opts.filter
+        && !effect_tags.iter().any(|t| t == needle)
+    {
+        return Ok(());
     }
 
     write_event(
@@ -508,7 +508,7 @@ fn cue_jammed(bytes: &[u8]) -> Result<NounSlab> {
 
 fn decode_hex(s: &str) -> Result<Vec<u8>> {
     let s = s.strip_prefix("0x").unwrap_or(s);
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         bail!("odd-length hex string ({} chars)", s.len());
     }
     let mut out = Vec::with_capacity(s.len() / 2);
