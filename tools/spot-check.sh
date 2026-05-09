@@ -27,9 +27,9 @@
 set -euo pipefail
 
 PROFILE="${1:-G}"
-SKIP_DIR="${HOME}/projects/nockchain/vesl-dogfood-meta-skip"
-META_DIR="${HOME}/projects/nockchain/vesl-dogfood-meta"
-NOCKUP_DIR="${HOME}/projects/nockchain/vesl-nockup"
+SKIP_DIR="${SKIP_DIR:-${HOME}/projects/nockchain/vesl-dogfood-meta-skip}"
+META_DIR="${META_DIR:-${HOME}/projects/nockchain/vesl-dogfood-meta}"
+NOCKUP_DIR="${NOCKUP_DIR:-${HOME}/projects/nockchain/vesl-nockup}"
 
 # Cumulative graft sets per profile letter, matching DOGFOOD.md
 # §"Exercise Profiles" + meta-mode cumulative-domain semantics:
