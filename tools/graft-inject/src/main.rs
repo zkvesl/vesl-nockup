@@ -2734,6 +2734,16 @@ fn find_last_bare_tilde(lines: &[String], marker_idx: usize) -> Option<usize> {
 // CLI
 // ---------------------------------------------------------------------------
 
+// 3D VESL logomark — shown via clap `after_help` to keep the vesl identity visible behind the `nockup graft` proxy.
+const ASCII_LOGO: &str = r#"
+██╗   ██╗███████╗███████╗██╗
+██║   ██║██╔════╝██╔════╝██║
+██║   ██║█████╗  ███████╗██║
+╚██╗ ██╔╝██╔══╝  ╚════██║██║
+ ╚████╔╝ ███████╗███████║███████╗
+  ╚═══╝  ╚══════╝╚══════╝╚══════╝
+"#;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "graft-inject",
@@ -2749,6 +2759,7 @@ fn find_last_bare_tilde(lines: &[String], marker_idx: usize) -> Option<usize> {
                   (`graft-inject <PATH> --grafts ...`). That form is deprecated; prefer\n\
                   `graft-inject inject <PATH>` so the operation is explicit. Run\n\
                   `graft-inject <subcommand> --help` for subcommand-specific options.",
+    after_help = ASCII_LOGO,
 )]
 struct Cli {
     /// Top-level subcommand. When omitted, the legacy bare-invocation
