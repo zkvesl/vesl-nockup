@@ -1,26 +1,36 @@
 # vesl-nockup
 
-Add vesl to a nockup project in 15 minutes.
+Add vesl to a nockup project in three commands.
+
+```bash
+nockup project init                                  # fetches vesl template + zkvesl/vesl-graft
+nockup graft inject --apply hoon/app/app.hoon        # composes grafts into the kernel
+cargo +nightly run                                   # builds out.jam, runs the kernel
+```
+
+The new-project flow uses the `vesl` template shipped from this repo via nockup's `template_git` extension hook. No Cargo.toml fixups, no `[patch.crates-io] ibig` block to remember by hand.
 
 ## Prerequisites
 
-You need `hoonc`, `nockchain`, `nockup`, and Rust nightly on your PATH. All four ship from the [nockchain monorepo](https://github.com/nockchain/nockchain) — follow that repo's install instructions, then install `graft-inject` from this repo:
+- `nockup` (which bundles `hoonc`, `nockchain`, and the project scaffolder) — follow the [nockchain monorepo](https://github.com/nockchain/nockchain) install instructions.
+- Rust nightly — `rustup toolchain install nightly`.
+- `nockup-graft` (the vesl-flavored graft composer; sidecar binary built from this repo):
+
+  ```bash
+  cargo install --git https://github.com/zkvesl/vesl-nockup --bin nockup-graft
+  ```
+
+  After install, `nockup graft <subcmd>` resolves the binary via nockup's plugin discovery. The standalone `graft-inject` binary stays available too (`cargo install --path tools/graft-inject` builds both from one source).
+
+Verify:
 
 ```bash
-cd tools/graft-inject && cargo install --path .
+hoonc --version && nockchain --version && nockup --help >/dev/null && cargo +nightly --version && nockup-graft --version
 ```
 
-`cargo install --path .` drops the binary in `~/.cargo/bin/`, which is already on the Rust-nightly PATH. Verify the full toolchain:
+## Three-command setup
 
-```bash
-hoonc --version && nockchain --version && nockup --help >/dev/null && cargo +nightly --version && graft-inject --version
-```
-
-If those all resolve, you're ready.
-
-## Step 1 — scaffold a project
-
-From whatever directory you want your project to live under, write a `nockapp.toml` describing the package, then let nockup create the project subdir:
+Write `nockapp.toml` declaring the package and the `vesl` template source:
 
 ```bash
 cat > nockapp.toml <<'TOML'
@@ -28,271 +38,48 @@ cat > nockapp.toml <<'TOML'
 name = "my-app"
 version = "0.1.0"
 description = "grafted NockApp"
-template = "basic"
+template = "vesl"
+template_git = "https://github.com/zkvesl/vesl-nockup"
+template_path = "templates"
+
+[dependencies]
+"zkvesl/vesl-graft" = "latest"
 TOML
 
 nockup project init
 cd my-app
 ```
 
-`nockup project init` reads `nockapp.toml` from the current directory and creates `my-app/` containing `hoon/app/app.hoon`, `src/main.rs`, `Cargo.toml`, and `build.rs` — the empty nockup scaffold. The filename must be exactly `nockapp.toml`; nockup won't pick it up under any other name.
+`nockup project init` fetches the `vesl` template, scaffolds `my-app/`, and runs `nockup package install` to drop the graft library into `hoon/lib/`. The scaffolded `Cargo.toml` already has the path-deps to sibling `nockchain/` and `vesl-core/` checkouts plus the two `[patch]` blocks (the nockchain git unifier and the `[patch.crates-io] ibig` block).
 
-The nockup `basic` template is generic and needs three one-time fixups before vesl deps will compile. Apply these inside `my-app/`:
+Layout assumed by the template's path-deps:
 
-1. **`Cargo.toml`** — the scaffolded nockchain deps git-pin a specific upstream rev (under nockup 1.0.0, `rev = "485e914b389a1e518d4aaaa24f5f079d0ad894be"` for `nockapp` / `nockvm` / `nockvm_macros`). When you're working from a local nockchain checkout, replace them with path deps so vesl-core's transitive git deps resolve against the same source tree. As of Phase 6.5b the `vesl-core` / `nock-noun-rs` crates live in the main `vesl` repo, not `vesl-nockup`; point the project at them there. For a local dev checkout of the nockchain monorepo, replace the whole `[dependencies]` section and add a `[patch]` block so vesl-core's transitive git deps resolve to the same checkout:
+```
+<root>/
+├── nockchain/         # https://github.com/nockchain/nockchain
+├── vesl-core/         # https://github.com/zkvesl/vesl-core
+└── my-app/            # this project
+```
 
-   ```toml
-   [dependencies]
-   nockapp       = { path = "../../nockchain/crates/nockapp", default-features = false }
-   nockvm        = { path = "../../nockchain/crates/nockvm/rust/nockvm" }
-   nockvm_macros = { path = "../../nockchain/crates/nockvm/rust/nockvm_macros" }
-
-   vesl-core    = { path = "../../vesl-core/crates/vesl-core" }
-   nock-noun-rs = { path = "../../vesl-core/crates/nock-noun-rs" }
-
-   tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-
-   [patch."https://github.com/nockchain/nockchain.git"]
-   nockapp         = { path = "../../nockchain/crates/nockapp" }
-   nockvm          = { path = "../../nockchain/crates/nockvm/rust/nockvm" }
-   nockvm_macros   = { path = "../../nockchain/crates/nockvm/rust/nockvm_macros" }
-   nockchain-math  = { path = "../../nockchain/crates/nockchain-math" }
-   nockchain-types = { path = "../../nockchain/crates/nockchain-types" }
-   noun-serde      = { path = "../../nockchain/crates/noun-serde" }
-   ibig            = { path = "../../nockchain/crates/nockvm/rust/ibig" }
-
-   [patch.crates-io]
-   ibig = { path = "../../nockchain/crates/nockvm/rust/ibig" }
-   ```
-
-   Adjust `../../` to wherever your `nockchain` and `vesl` checkouts live relative to the project. The `[patch.crates-io] ibig` block is mandatory: vesl-core's transitive `vesl-signing` dep declares `ibig = "0.3"` from crates.io, while vesl-core's signing module uses the nockchain-vendored `ibig` at the path above — same upstream (tczajka/ibig-rs v0.3.6), but Cargo treats them as distinct crates and signing.rs fails to type-check unless you unify them here. If `nockup package add` resolves `zkvesl/vesl-graft` for you (Step 2 below), the two `vesl-core` / `nock-noun-rs` lines will be written for you — leave them out of this block. Everything else stays.
-
-2. **`build.rs`** — Vesl compiles `out.jam` via an explicit `hoonc` call in Step 4, so `build.rs` doesn't need to invoke the compiler (and the scaffolded call wasn't producing a jam consumers could link against). Collapse it to a no-op that just declares the `out.jam` rebuild dependency:
-
-   ```rust
-   fn main() {
-       println!("cargo:rerun-if-changed=out.jam");
-   }
-   ```
-
-3. **`src/main.rs`** — the scaffold wraps the CLI in `Some(cli)` and imports a handful of unused symbols. Step 6 below replaces this file wholesale, so you can leave it alone for now — just know that the driver template here is the one that compiles.
-
-## Step 2 — install the vesl graft packages
+If your layout differs, adjust the `../../...` prefixes in `Cargo.toml`.
 
 ```bash
-nockup package add zkvesl/vesl-graft -v latest
+nockup graft inject hoon/app/app.hoon            # preview
+nockup graft inject --apply hoon/app/app.hoon    # write
 ```
 
-(`-v latest` is required; nockup refuses a bare `add` without a version spec.)
-
-The `zkvesl/vesl-graft` package ships the full graft catalog across families 1–5. See [zkvesl-docs/guides/grafting.md](https://github.com/zkvesl/zkvesl-docs/blob/main/docs/guides/grafting.md) for the canonical 13-graft table with priorities and per-graft semantics. The most-used grafts in Step 3 below are `settle-graft` (commitment baseline at priority 10), the state-pattern grafts `kv-graft` / `counter-graft` / `queue-graft` / `rbac-graft` / `registry-graft` (priorities 50–90), and the behavior grafts `validate-graft` / `log-graft` / `clock-graft` / `batch-graft` (priorities 100–145). `intent-graft` (priority 200) is a placeholder reserved for multi-party coordination.
-
-Each graft ships its own `<name>-graft.hoon` library and a sibling `<name>-graft.toml` manifest that `graft-inject` consumes in Step 3. Install gives you the full shipped catalog; Step 3 picks which ones compose into your kernel. The 5-family lattice — commitment (10–40), verification gates (library, not a graft, selectable per-graft via `[graft.gates]`), state (50–99), behavior (100–149), intent placeholder (200–299) — lives in [`docs/graft-manifest.md`](docs/graft-manifest.md).
-
-When the package resolves, `nockup package add` records the dep in `nockapp.toml` and installs on the next `nockup project init` / `nockup package install` — run from the **parent** of the project dir, not from inside (`nockup package install` walks `./<package-name>/` and will error `Project directory '<package-name>' not found. Run nockup project init first.` if you run it from within the project). A successful install drops eight Hoon files into `hoon/lib/` (the four `<name>-graft.hoon` libraries and their `.toml` manifests), plus `vesl-merkle.hoon` and — for forge — `vesl-prover.hoon` / `vesl-lower.hoon`. The tip5 hash tree lands in `hoon/common/` (`zeke.hoon`, `ztd/*.hoon`); forge additionally pulls in the STARK prover tree (`common/v0-v1/`, `common/v2/`, `common/stark/`, `dat/softed-constraints.hoon`, and the pre-jammed constraint tables in `jams/`). Nothing touches your Rust `src/` or `hoon/app/app.hoon`.
-
-**Verify the install succeeded.** `nockup package install` silently skips dependencies it can't resolve, so a clean `✓ No dependencies to install` output does not mean vesl landed. Check that the expected graft files are on disk:
-
-```bash
-ls hoon/lib/settle-graft.hoon hoon/lib/settle-graft.toml hoon/lib/vesl-merkle.hoon
-```
-
-If any of those three paths are missing, the registry did not resolve `zkvesl/vesl-graft` — fall through to *If the registry hasn't resolved* below.
-
-Then copy the marker template over the scaffolded (and markerless) `app.hoon`:
-
-```bash
-cp <path-to-vesl-nockup>/templates/app.hoon hoon/app/app.hoon
-```
-
-The nockup `basic` template's `app.hoon` does not contain the nine `::  nockup:*` markers that `graft-inject` wires against. `templates/app.hoon` is the same minimal kernel with the markers pre-placed at the correct structural points.
-
-### If the registry hasn't resolved `zkvesl/vesl-graft` yet
-
-Until the package lands in nockup's resolver, mirror what `package add` would have done by copying directly out of your local `vesl-nockup` checkout. (Skip `nockup package add` / `package install` entirely — they won't resolve, and `install` will error from inside the project dir anyway.)
-
-```bash
-# Always-required libs + the settle graft.
-cp <vesl-nockup>/hoon/lib/settle-graft.hoon hoon/lib/
-cp <vesl-nockup>/hoon/lib/settle-graft.toml hoon/lib/
-cp <vesl-nockup>/hoon/lib/vesl-merkle.hoon  hoon/lib/
-cp <vesl-nockup>/hoon/common/zeke.hoon      hoon/common/
-mkdir -p hoon/common/ztd
-cp <vesl-nockup>/hoon/common/ztd/*.hoon     hoon/common/ztd/
-
-# Optional: pick any subset of the other three primitives.
-cp <vesl-nockup>/hoon/lib/mint-graft.{hoon,toml}   hoon/lib/
-cp <vesl-nockup>/hoon/lib/guard-graft.{hoon,toml}  hoon/lib/
-
-# Forge requires the STARK prover tree — copy the lot or skip it.
-cp <vesl-nockup>/hoon/lib/forge-graft.{hoon,toml}  hoon/lib/
-cp <vesl-nockup>/hoon/lib/vesl-prover.hoon         hoon/lib/
-cp <vesl-nockup>/hoon/lib/vesl-lower.hoon          hoon/lib/
-cp -r <vesl-nockup>/hoon/common/v0-v1              hoon/common/
-cp -r <vesl-nockup>/hoon/common/v2                 hoon/common/
-cp -r <vesl-nockup>/hoon/common/stark              hoon/common/
-cp -r <vesl-nockup>/hoon/dat                       hoon/
-cp -r <vesl-nockup>/hoon/jams                      hoon/
-```
-
-The two `vesl-core` / `nock-noun-rs` Rust deps are already in your `Cargo.toml` from Step 1's fixup — nothing to add here. Proceed to the marker copy above.
-
-## Step 3 — wire the kernel
-
-```bash
-graft-inject inject hoon/app/app.hoon            # preview
-graft-inject inject --apply hoon/app/app.hoon    # write
-```
-
-The `app.hoon` you copied in Step 2 has nine `::  nockup:*` marker comments at fixed structural points — seven content markers (where graft bodies splice in) and two codegen markers (`domain-effect` and `effect-union`, anchors for the Phase 03f typed effect-union pass). `graft-inject inject` discovers every `<name>-graft.toml` under `hoon/lib/`, composes their per-marker blocks, and prints the result — imports, state fields, cause-union branches, poke prelude/postlude wrappers, `?-` poke arms, a chained peek dispatcher, and the synthesized `+$  effect  $%(...)` union. About 80 lines per graft, written for you. The tool is idempotent — re-running after `--apply` skips anything already wired.
-
-**Preview by default.** A bare invocation prints the composed kernel to stdout and a per-manifest sha256 summary to stderr. Nothing is written until you pass `--apply`. This keeps a compromised `hoon/lib/` — pulled by `sync.sh`, a bad `cp`, or a dependency bump — from silently composing hostile Hoon into your kernel source. See `docs/graft-manifest.md` for the trust model.
-
-`graft-inject` ships four subcommands. Run `graft-inject --help` for the index, or `graft-inject <subcmd> --help` for per-subcommand flags:
-
-```
-inject     compose grafts into app.hoon (preview-by-default; --apply to write)
-list       list discovered grafts under --lib-dir
-lint       run pre-apply structural validations on app.hoon (see "Pre-apply linting" below)
-help       print the index
-```
-
-Legacy bare invocation — `graft-inject hoon/app/app.hoon ...` and `graft-inject --list` — still parses for back-compat but emits a one-line deprecation hint. Migrate scripts to the explicit `inject` / `list` subcommand form.
-
-Selective composition:
-
-```bash
-graft-inject list                                                              # see what's available
-graft-inject inject --grafts settle-graft,mint-graft --apply hoon/app/app.hoon # explicit subset
-graft-inject inject --exclude forge-graft --apply hoon/app/app.hoon            # everything but forge
-```
-
-### Pre-apply linting
-
-`graft-inject lint <app.hoon>` runs read-only structural validations before any potential `--apply`. Four lint families ship today:
-
-- **`bare-tilde-ambiguity`** — flags domain `?-` switch arms whose body ends with a `~`-only line. The peek-chain rebuilder's `find_last_bare_tilde` scan would otherwise mistake that `~` for the chain terminator and corrupt the file (RM1 HARD-BUG-2). Refactor to `\`(list effect)\`~` or `^- (list effect) ~` on a single line.
-- **`collision-check`** — flags duplicate cause-tag names and state-field names across grafts and between grafts and the domain. Cross-references manifest declarations against the domain `nockup:cause` / `nockup:state` regions. Surfaces RM1 META-COLLISION-1/2/3 at scaffold time rather than at hoonc nest-fail time.
-- **`transitive-imports`** — walks every `.hoon` reachable from `<app.hoon>` via `/+`, `/=`, `/-`, `/#` imports AND eagerly scans every `.hoon` under `hoon/common/`. Reports each unsatisfied edge with the source file, the import token, the expected target path, and the BFS chain. hoonc eager-parses `hoon/common/` regardless of import-graph reachability — unsatisfied edges there leave hoonc exit 0 with no `out.jam` (the "no panic!" silent-fail). Surfaced empirically in RM2 seed-A.md DOC-GAP-1.
-- **`internal-dupes`** — flags literal duplicate variant heads in the composed `+$ cause $%(...)` union and literal duplicate field names in `+$ versioned-state $:(...)`. Differs from `collision-check` by scanning the already-composed source unions including graft-injected banner content, so post-injection duplicates that the manifest-side pass misses (e.g. two grafts contributing the same `[%<tag> ...]` head despite distinct manifest names) get caught here.
-
-Exit code is `1` on any finding so CI can gate `--apply` on the lint passing. Pass `--json` for a stable machine-readable schema:
-
-```json
-{
-  "bare_tilde_ambiguity": [{"line": 354, "arm": "ping"}],
-  "collision": [{"kind": "cause_tag", "name": "enqueue-job",
-                 "owners": ["queue-graft", "pipeline-graft"]}],
-  "transitive_imports": [{"source": "hoon/common/nock-prover.hoon",
-                          "rune": "/#", "name": "softed-constraints",
-                          "target": "hoon/dat/softed-constraints.hoon",
-                          "reachable_from": ["hoon/common/nock-prover.hoon"]}],
-  "internal_dupes": [{"kind": "cause_tag", "name": "enqueue-job",
-                      "lines": [167, 213]}]
-}
-```
-
-Expected output for an all-four compose (with `--apply`):
-
-```
-graft-inject: hoon/app/app.hoon
-  settle-graft     sha256:a9c72bbe7dc1 injected 5/5 (imports, state, cause, poke, peek)
-  mint-graft       sha256:4b2e...       injected 5/5 (imports, state, cause, poke, peek)
-  guard-graft      sha256:c310...       injected 5/5 (imports, state, cause, poke, peek)
-  forge-graft      sha256:f721...       injected 3/3 (imports, cause, poke)
-  markers in source: 7 (imports, state, cause, poke-prelude, poke, poke-postlude, peek)
-  markers populated: 5 (imports, state, cause, poke, peek)
-```
-
-`forge-graft` ships three blocks (no state, no peek — forge is stateless). The denominator is per-graft: each graft reports against the blocks *it* declares, not a fixed 7.
-
-The arms `graft-inject` installs for the vesl graft use a default hash-comparison gate: the kernel tip5-hashes the raw payload and checks it against the registered root. That's enough to verify single-leaf commitments. For anything richer — Merkle manifests, signatures, ZK proofs — see *Customizing* below.
-
-## Step 4 — compile the kernel
+The template's `app.hoon` ships with nine `::  nockup:*` markers. `nockup graft inject` discovers every `<name>-graft.toml` under `hoon/lib/`, composes their per-marker blocks, and (with `--apply`) writes the result. About 80 lines per graft. Preview is the default — nothing lands on disk until `--apply`. See [Wire with graft-inject](https://github.com/zkvesl/zkvesl-docs/blob/main/docs/build/wire.md) for marker semantics, lint families, and the per-graft sha256 banner.
 
 ```bash
 hoonc hoon/app/app.hoon hoon/ && [ -s out.jam ] || \
   (echo "hoonc: silent-failed — exit 0 but no out.jam" >&2; exit 1)
-```
 
-Produces `out.jam`, the compiled kernel your Rust driver will boot. (If you're iterating and want to bypass hoonc's cache, add `--new`.)
-
-The `[ -s out.jam ] || (...)` guard is load-bearing: hoonc's "no panic!" final line and exit 0 don't reliably correlate with `out.jam` being written. Structural type errors during eager-parse can leave the trace half-emitted with no panic message, the process still exits clean, and you walk into Step 5 against a stale kernel from your previous compile. RM1 DOC-GAP-1 and the RM2 F→G postscript are the empirical references — both bit ~10 minutes of debug time before the runner spotted the staleness.
-
-For a structured alternative — covering both the silent-fail case AND the case where `out.jam` exists but is stale (kernel sources edited without recompile) — pair the hoonc invocation with `vesl-test verify-jam`:
-
-```bash
-hoonc --new hoon/app/app.hoon hoon/ && [ -s out.jam ] || exit 1
-sha256sum hoon/app/app.hoon hoon/lib/*.toml > .out-jam-source-fingerprint
-vesl-test verify-jam .   # exit 0 fresh, 1 stale, 2 no fingerprint
-```
-
-The fingerprint sidecar pins the source bytes the current `out.jam` was compiled from. Re-run `verify-jam` whenever you'd otherwise wonder "is this `out.jam` actually the build I think it is?" — most useful right before driving a kernel that took 10+ minutes to compile.
-
-## Step 5 — build and run
-
-With `Cargo.toml` set up from Step 1 and the vesl crates from Step 2, build the driver:
-
-```bash
-cargo +nightly build
-```
-
-First build compiles the full nockchain stack — expect 2–5 minutes with path deps (faster on subsequent builds) or longer if the nockchain git deps resolve over the network.
-
-## Step 6 — exercise the full lifecycle
-
-Replace `src/main.rs` with a driver that registers a Merkle root and settles a note against it. The poke construction lives in `vesl-core` — you only write the orchestration:
-
-```rust
-use std::error::Error;
-use std::fs;
-
-use nockapp::NockApp;
-use nockapp::kernel::boot;
-use nockapp::noun::slab::NounSlab;
-use nockapp::wire::{SystemWire, Wire};
-use vesl_core::{
-    Mint, Tip5Hash,
-    build_settle_register_poke, build_settle_note_poke,
-};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let cli = boot::default_boot_cli(false);
-    boot::init_default_tracing(&cli);
-    let kernel = fs::read("out.jam")?;
-    let mut app: NockApp = boot::setup(&kernel, cli, &[], "my-app", None).await?;
-
-    // 1. Commit data to a Merkle tree.
-    //    Default hash-gate verifies single-leaf commits only; see Customizing
-    //    below for multi-leaf / signed / STARK gates.
-    let items: [&[u8]; 1] = [b"first"];
-    let mut mint = Mint::new();
-    let root: Tip5Hash = mint.commit(&items);
-
-    // 2. Register the root under hull_id = 1
-    poke(&mut app, build_settle_register_poke(1, &root)).await?;
-
-    // 3. Settle a note committing to `first` (note_id = 1, hull = 1)
-    poke(&mut app, build_settle_note_poke(1, 1, &root, items[0])).await?;
-
-    Ok(())
-}
-
-async fn poke(app: &mut NockApp, slab: NounSlab) -> Result<(), Box<dyn Error>> {
-    let effects = app.poke(SystemWire.to_wire(), slab).await?;
-    for tag in vesl_core::effect_head_tags(&effects) {
-        println!("  effect: %{tag}");
-    }
-    Ok(())
-}
-```
-
-```bash
 cargo +nightly run
 ```
 
-Expected output:
+The `[ -s out.jam ]` guard is load-bearing: hoonc can exit 0 with no jam written under structural type errors. First Cargo build compiles the full nockchain stack — expect 2–5 minutes with path deps.
+
+## Expected output
 
 ```
   effect: %settle-registered
@@ -301,11 +88,21 @@ Expected output:
 
 You now have a grafted NockApp with on-kernel Merkle verification and replay-protected settlement.
 
-`vesl-core` also exports `build_settle_verify_poke(note_id, hull, root, data)` for pure verification (no state transition). All three builders take the same shape: primitives in, ready-to-poke `NounSlab` out.
+`vesl-core` exports `build_settle_verify_poke(note_id, hull, root, data)` for pure verification (no state transition), and `build_mint_commit_poke` / `build_guard_register_poke` / `build_guard_check_poke` / `build_forge_prove_poke` for the other three commitment primitives. See *Customizing* below for multi-leaf gates, signed gates, and STARK gates.
 
-### Driver/kernel drift detection
+## What the template ships
 
-Each shipped scaffold's `build.rs` runs `graft-inject codegen kernel-cause-tags` after `hoonc` and writes `kernel_cause_tags.rs` into `OUT_DIR`. The path is exposed as the `KERNEL_CAUSE_TAGS_PATH` env var (mirroring `COMPILED_HOON_PATH`). Pull it into your driver:
+- `Cargo.toml` — pre-fixed with path-deps and both `[patch]` blocks
+- `build.rs` — no-op (just declares the `out.jam` rerun-if-changed)
+- `src/main.rs` — 30-line driver registering a Merkle root and settling a note
+- `hoon/app/app.hoon` — markered kernel template
+- `hoon/lib/lib.hoon` — domain-library stub
+
+The template lives at `templates/vesl/` in this repo. `templates/graft-scaffold/` is the older starter that requires manual fixups; the `vesl` template supersedes it for new projects.
+
+## Driver/kernel drift detection
+
+Each shipped scaffold's `build.rs` runs `nockup graft codegen kernel-cause-tags` after `hoonc` and writes `kernel_cause_tags.rs` into `OUT_DIR`. The path is exposed as the `KERNEL_CAUSE_TAGS_PATH` env var (mirroring `COMPILED_HOON_PATH`). Pull it into your driver:
 
 ```rust
 include!(env!("KERNEL_CAUSE_TAGS_PATH"));
@@ -316,21 +113,20 @@ fn build_settle_register_poke(hull: u64, root: &Tip5Hash) -> NounSlab {
 }
 ```
 
-`assert_kernel_cause_tag!` runs a const-time membership check against `KERNEL_CAUSE_TAGS`. A kernel rename (e.g. `%settle-register` → `%settle-write`) without re-running the codegen now fails `cargo build` at the macro invocation, surfacing the drift as a compile error rather than a silent `Ok(vec![])` from `app.poke(...)` at runtime. Closes RM1 HARD-BUG-3 and HARD-FRICTION-4 symmetrically.
+`assert_kernel_cause_tag!` runs a const-time membership check against `KERNEL_CAUSE_TAGS`. A kernel rename (e.g. `%settle-register` → `%settle-write`) without re-running the codegen now fails `cargo build` at the macro invocation, surfacing the drift as a compile error rather than a silent `Ok(vec![])` from `app.poke(...)` at runtime.
 
-`KERNEL_CAUSE_TAGS` is derived from the literal `+$ cause` definition in `app.hoon`, not from the union of every `--lib-dir` manifest. Two consequences (RM2 §2.2):
+`KERNEL_CAUSE_TAGS` is derived from the literal `+$ cause` definition in `app.hoon`, not from the union of every `--lib-dir` manifest. Two consequences:
 
-- **Domain causes are covered.** `[%submit-artifact ...]`, `[%emit-license ...]`, etc. — the inline variants you added directly to your domain — show up in `KERNEL_CAUSE_TAGS`. `assert_kernel_cause_tag!("submit-artifact")` compiles. Kernel rename → driver compile error, same way as the graft-side renames.
-- **Inactive grafts contribute nothing.** A graft sitting under `hoon/lib/` but never referenced from `+$ cause $%(...)` (or `+$ cause <type-alias>`) doesn't pollute the slice with its tags. `assert_kernel_cause_tag!("kv-set")` only compiles when `kv-graft`'s `kv-cause` actually appears in your kernel's union.
+- **Domain causes are covered.** `[%submit-artifact ...]`, `[%emit-license ...]`, etc. — the inline variants you added directly to your domain — show up in `KERNEL_CAUSE_TAGS`. `assert_kernel_cause_tag!("submit-artifact")` compiles.
+- **Inactive grafts contribute nothing.** A graft sitting under `hoon/lib/` but never referenced from `+$ cause $%(...)` doesn't pollute the slice. `assert_kernel_cause_tag!("kv-set")` only compiles when `kv-graft`'s `kv-cause` actually appears in your kernel's union.
 
-If `graft-inject` isn't installed in the build environment, the codegen step emits a `cargo:warning` and leaves `KERNEL_CAUSE_TAGS_PATH` unset — drivers that gate the include on `cfg(env_var = "KERNEL_CAUSE_TAGS_PATH")` continue to build. Drift detection is opt-in per driver.
+If `nockup-graft` isn't installed in the build environment, the codegen step emits a `cargo:warning` and leaves `KERNEL_CAUSE_TAGS_PATH` unset — drivers that gate the include on `cfg(env_var = "KERNEL_CAUSE_TAGS_PATH")` continue to build. Drift detection is opt-in per driver.
 
 ```bash
-graft-inject codegen kernel-cause-tags hoon/app/app.hoon --out src/kernel_cause_tags.rs   # ad-hoc
-graft-inject codegen kernel-cause-tags hoon/app/app.hoon --json                           # JSON for non-Rust consumers
+nockup graft codegen kernel-cause-tags hoon/app/app.hoon --out src/kernel_cause_tags.rs
+nockup graft codegen kernel-cause-tags hoon/app/app.hoon --json
 ```
 
-**Why a single-leaf commit?** The default verification gate that `graft-inject` installs tip5-hashes the raw payload bytes and compares the digest against the registered root. That equality holds only when the committed tree has one leaf (root ≡ `hash-leaf(data)`). The moment you commit two or more leaves, the registered root becomes the Merkle hash of the subtree and the default gate returns `%.n` on settle — which triggers a deterministic crash (see Troubleshooting). For multi-leaf commitments, replace the gate per *Customizing → Replace the default verification gate*.
 
 ### mint / guard / forge: the other three primitives
 
@@ -486,26 +282,26 @@ Peek path is `[%registry-entry key=@]`. Registry has the heaviest C1 surface in 
 
 ## Adding vesl to an existing nockup project
 
-If you already have a working nockapp, skip Step 1. The rest applies, with one extra step: you have an `app.hoon` already — you need to *annotate* it with markers rather than copy the template over it.
+If you already have a working nockapp, the three-command flow above doesn't directly apply — your existing `app.hoon` needs marker annotation rather than a fresh template. The five-step path:
 
-1. `nockup package add zkvesl/vesl-graft -v latest && nockup package install` — same as Step 2 above.
-2. **Annotate your existing `app.hoon` with the nine `::  nockup:*` markers.** `graft-inject` looks for exact marker comments at specific structural points:
-   - `::  nockup:imports` — at the top of the file, near your other `/+` imports
-   - `::  nockup:state` — inside your `versioned-state` `$:` block, above the closing `==`
-   - `::  nockup:cause` — inside your `cause` `$%` union, above the closing `==`
-   - `::  nockup:poke-prelude` — immediately before the `?-` poke switch (Phase 03b — bracket for behavior-graft guards / pre-state captures)
-   - `::  nockup:poke` — inside your `?-` poke switch, as the last item before `==`
-   - `::  nockup:poke-postlude` — immediately after the `?-` switch (Phase 03b — bracket for postlude transforms over the switch's `[(list effect) _state]` result)
-   - `::  nockup:peek` — inside your peek handler's `?+` default arm (or on the line above a bare `~` fallthrough)
-   - `::  nockup:domain-effect` — placement anchor for *your* `+$  domain-effect  $%(...)` declaration (Phase 03f Lever 1; graft-inject does not own the body, only checks the marker is present)
-   - `::  nockup:effect-union` — REPLACE-IF-PRESENT codegen target where graft-inject synthesizes the typed `+$  effect  $%(<each graft's effect> domain-effect ==)` union (Phase 03f Lever 1)
+1. **Add the package**: `nockup package add zkvesl/vesl-graft -v latest && nockup package install` drops the graft library into `hoon/lib/` and `hoon/common/`.
+2. **Patch `Cargo.toml`** to match the `vesl` template's path-deps and `[patch]` blocks. Compare against `templates/vesl/Cargo.toml` in this repo. Once the in-flight patches-engine PR merges into upstream nockup, this step automates via the package's `[[patches]]` block.
+3. **Annotate `app.hoon` with the nine `::  nockup:*` markers** — `nockup graft inject` looks for exact comments at specific structural points:
+   - `::  nockup:imports` — top of file, near other `/+` imports
+   - `::  nockup:state` — inside the `versioned-state` `$:` block
+   - `::  nockup:cause` — inside the `cause` `$%` union
+   - `::  nockup:poke-prelude` — immediately before the `?-` poke switch
+   - `::  nockup:poke` — inside the `?-` poke switch, last item before `==`
+   - `::  nockup:poke-postlude` — immediately after the `?-` switch
+   - `::  nockup:peek` — inside the peek handler's `?+` default arm
+   - `::  nockup:domain-effect` — anchor for your `+$ domain-effect $%(...)` declaration
+   - `::  nockup:effect-union` — codegen target for the typed `+$ effect` union
 
-   See `templates/app.hoon` for a reference placement. Two-space law applies — `::` followed by exactly two spaces, then `nockup:<name>`.
-3. `graft-inject inject --apply hoon/app/app.hoon` — same as Step 3 above. Safe to run against a populated kernel; it only edits marker lines. Bare invocation (no `--apply`) previews.
-4. Recompile (`hoonc hoon/app/app.hoon hoon/`) and rebuild (`cargo +nightly build`).
-5. Call `vesl_core::build_settle_register_poke`, `build_settle_note_poke`, `build_settle_verify_poke` from your existing `main.rs` alongside your domain pokes. No rewrite needed.
+   See `templates/app.hoon` for canonical placement. Two-space law: `::` followed by exactly two spaces, then `nockup:<name>`.
+4. `nockup graft inject --apply hoon/app/app.hoon` — composes graft bodies. Idempotent; safe to run against a populated kernel.
+5. Recompile (`hoonc hoon/app/app.hoon hoon/`) and rebuild (`cargo +nightly build`). Call `vesl_core::build_settle_register_poke`, `build_settle_note_poke`, `build_settle_verify_poke` from your existing `main.rs` alongside your domain pokes.
 
-If `graft-inject` reports `warning — markers not found: ...`, you missed a marker or a two-space law violation. The tool is pure text — it does what the regex says.
+If `nockup graft inject` reports `warning — markers not found: ...`, you missed a marker or a two-space law violation. The tool is pure text — it does what the regex says.
 
 ## State checkpoints
 
