@@ -196,3 +196,46 @@ jobs:
             tools/spot-check.sh "$P" || exit 1
             echo "::endgroup::"
           done
+
+  e2e-init-simulation:
+    # End-to-end smoke test of `nockup project init` against the local
+    # vesl template + a file:// registry fixture. Verifies the three
+    # extension hooks (template_git, plugin discovery, registry
+    # override) compose into a no-fixup scaffold. Runs before the
+    # zkvesl/vesl-graft package is published to typhoon, which is why
+    # we depend on a fixture rather than the upstream registry.
+    #
+    # NOCKUP_PIN is the commit of nockchain/master that carries the
+    # extension-hooks PR. Bump when that PR moves.
+    runs-on: ubuntu-latest
+    env:
+      NOCKUP_PIN: extension-hooks
+    steps:
+      - name: Checkout vesl-nockup
+        uses: actions/checkout@v4
+        with:
+          path: vesl-nockup
+          fetch-depth: 0  # the harness pins template_commit to HEAD
+
+      - name: Checkout nockchain (extension-hooks branch)
+        uses: actions/checkout@v4
+        with:
+          repository: nockchain/nockchain
+          ref: ${{ env.NOCKUP_PIN }}
+          path: nockchain
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: nockchain
+
+      - name: Build nockup with extension hooks
+        working-directory: nockchain
+        run: cargo build -p nockup --release
+
+      - name: Run init-simulation harness
+        working-directory: vesl-nockup
+        env:
+          NOCKUP_BIN: ${{ github.workspace }}/nockchain/target/release/nockup
+        run: tools/test-registry/run-init.sh
