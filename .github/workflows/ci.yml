@@ -140,3 +140,59 @@ jobs:
             echo "::error::graft-inject staleness warning persists post-rebuild — build.rs hash and runtime hash check have diverged" >&2
             exit 1
           fi
+
+  spot-check-path-independence:
+    runs-on: ubuntu-latest
+    needs: graft-inject-check
+    steps:
+      - name: Checkout vesl-nockup
+        uses: actions/checkout@v4
+        with:
+          path: vesl-nockup
+
+      - name: Checkout nockchain (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: nockchain/nockchain
+          ref: ${{ env.NOCK_PIN }}
+          path: nockchain
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vesl-nockup
+
+      - name: Install hoonc
+        run: cargo install --path nockchain/hoonc --force
+
+      - name: Install graft-inject
+        working-directory: vesl-nockup
+        run: cargo install --path tools/graft-inject --force
+
+      - name: Pre-stage cumulative meta sandbox at depth J
+        run: |
+          # spot-check.sh assumes a meta sandbox already swept through
+          # the deepest profile in scope. We stage one at depth J (12
+          # grafts, the cumulative union for H/I/J) so the script's
+          # subsequent skip-profile spot-checks have a reference tree.
+          export META_DIR=/tmp/spot-check-meta
+          mkdir -p "$META_DIR/meta-evolving-app/hoon/app"
+          cp -r vesl-nockup/templates/graft-scaffold "$META_DIR/meta-evolving-app/scaffold"
+          cp -r vesl-nockup/hoon "$META_DIR/meta-evolving-app/"
+          cp vesl-nockup/templates/app.hoon "$META_DIR/meta-evolving-app/hoon/app/app.hoon"
+          graft-inject inject \
+            --grafts settle-graft,mint-graft,guard-graft,registry-graft,rbac-graft,log-graft,validate-graft,counter-graft,clock-graft,batch-graft,queue-graft,kv-graft \
+            --apply "$META_DIR/meta-evolving-app/hoon/app/app.hoon"
+
+      - name: Run spot-check across profiles A B F G J
+        working-directory: vesl-nockup
+        run: |
+          export NOCKUP_DIR=$PWD
+          export META_DIR=/tmp/spot-check-meta
+          export SKIP_DIR=/tmp/spot-check-skip
+          for P in A B F G J; do
+            echo "::group::profile $P"
+            tools/spot-check.sh "$P" || exit 1
+            echo "::endgroup::"
+          done
