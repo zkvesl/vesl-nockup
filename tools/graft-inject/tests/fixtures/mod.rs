@@ -144,12 +144,16 @@ fn compose_and_compile_inner(
     overrides: &[ManifestOverride<'_>],
 ) -> Result<PathBuf> {
     let repo_root = repo_root();
-    let scratch = repo_root.join("target").join(scratch_subdir);
-
-    if scratch.exists() {
-        fs::remove_dir_all(&scratch)
-            .with_context(|| format!("clean {}", scratch.display()))?;
-    }
+    // Per-test tempdir prevents parallel test workers from racing on a
+    // shared `target/<scratch_subdir>/` tree. `into_path()` persists the
+    // directory so it survives the function's lifetime; /tmp rotation
+    // handles cleanup. The `scratch_subdir` becomes a debug-readable
+    // prefix on failure.
+    let scratch = tempfile::Builder::new()
+        .prefix(&format!("graft-inject-{}-", scratch_subdir))
+        .tempdir()
+        .with_context(|| format!("create tempdir for {}", scratch_subdir))?
+        .into_path();
     let hoon_app = scratch.join("hoon/app");
     let hoon_lib = scratch.join("hoon/lib");
     let hoon_common = scratch.join("hoon/common");
