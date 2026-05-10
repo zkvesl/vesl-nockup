@@ -81,7 +81,7 @@ nockup graft inject hoon/app/app.hoon            # preview
 nockup graft inject --apply hoon/app/app.hoon    # write
 ```
 
-The template's `app.hoon` ships with ten `::  nockup:*` markers. `nockup graft inject` discovers every `<name>-graft.toml` under `hoon/lib/`, composes their per-marker blocks, and (with `--apply`) writes the result. About 80 lines per graft. Preview is the default — nothing lands on disk until `--apply`. See [Wire with graft-inject](https://github.com/zkvesl/zkvesl-docs/blob/main/docs/build/wire.md) for marker semantics, lint families, and the per-graft sha256 banner.
+The template's `app.hoon` ships with ten `::  nockup:*` markers. `nockup graft inject` discovers every `<name>-graft.toml` under `hoon/lib/`, composes their per-marker blocks, and (with `--apply`) writes the result. About 80 lines per graft. Preview is the default — nothing lands on disk until `--apply`. See [Inject](https://github.com/zkvesl/zkvesl-docs/blob/main/docs/build/inject.md) for marker semantics, lint families, and the per-graft sha256 banner.
 
 ```bash
 hoonc hoon/app/app.hoon hoon/ && [ -s out.jam ] || \
