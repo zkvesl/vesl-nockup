@@ -107,15 +107,15 @@ You now have a grafted NockApp with on-kernel Merkle verification and replay-pro
 
 - `Cargo.toml` — vesl-graft's `[[patches]]` rewrites it to git-deps + both `[patch]` blocks at install time (path-deps remain in the pre-patch template as a fallback for ejected / sibling-clone workflows)
 - `build.rs` — no-op (just declares the `out.jam` rerun-if-changed)
-- `src/main.rs` — 30-line driver registering a Merkle root and settling a note
+- `src/main.rs` — 30-line hull registering a Merkle root and settling a note
 - `hoon/app/app.hoon` — markered kernel template
 - `hoon/lib/lib.hoon` — domain-library stub
 
 The template lives at `templates/vesl/` in this repo. `templates/graft-scaffold/` is the older starter that requires manual fixups; the `vesl` template supersedes it for new projects.
 
-## Driver/kernel drift detection
+## Hull/kernel drift detection
 
-Each shipped scaffold's `build.rs` runs `nockup graft codegen kernel-cause-tags` after `hoonc` and writes `kernel_cause_tags.rs` into `OUT_DIR`. The path is exposed as the `KERNEL_CAUSE_TAGS_PATH` env var (mirroring `COMPILED_HOON_PATH`). Pull it into your driver:
+Each shipped scaffold's `build.rs` runs `nockup graft codegen kernel-cause-tags` after `hoonc` and writes `kernel_cause_tags.rs` into `OUT_DIR`. The path is exposed as the `KERNEL_CAUSE_TAGS_PATH` env var (mirroring `COMPILED_HOON_PATH`). Pull it into your hull:
 
 ```rust
 include!(env!("KERNEL_CAUSE_TAGS_PATH"));
@@ -133,7 +133,7 @@ fn build_settle_register_poke(hull: u64, root: &Tip5Hash) -> NounSlab {
 - **Domain causes are covered.** `[%submit-artifact ...]`, `[%emit-license ...]`, etc. — the inline variants you added directly to your domain — show up in `KERNEL_CAUSE_TAGS`. `assert_kernel_cause_tag!("submit-artifact")` compiles.
 - **Inactive grafts contribute nothing.** A graft sitting under `hoon/lib/` but never referenced from `+$ cause $%(...)` doesn't pollute the slice. `assert_kernel_cause_tag!("kv-set")` only compiles when `kv-graft`'s `kv-cause` actually appears in your kernel's union.
 
-If `nockup-graft` isn't installed in the build environment, the codegen step emits a `cargo:warning` and leaves `KERNEL_CAUSE_TAGS_PATH` unset — drivers that gate the include on `cfg(env_var = "KERNEL_CAUSE_TAGS_PATH")` continue to build. Drift detection is opt-in per driver.
+If `nockup-graft` isn't installed in the build environment, the codegen step emits a `cargo:warning` and leaves `KERNEL_CAUSE_TAGS_PATH` unset — hulls that gate the include on `cfg(env_var = "KERNEL_CAUSE_TAGS_PATH")` continue to build. Drift detection is opt-in per hull.
 
 ```bash
 nockup graft codegen kernel-cause-tags hoon/app/app.hoon --out src/kernel_cause_tags.rs
@@ -687,11 +687,11 @@ A write that doesn't land emits `Ok(vec![])` from `app.poke().await?` — and th
 | Gate clean-deny | Hoon `?>` deterministic Exit (e.g. `set-membership-verify` returns `%.n`, `sig-verify-schnorr` finds an invalid signature) | `vec![]` | `mule`-trace dump (~30 lines) starting at `<gate-graft>.hoon::[…]` | The cause was rejected by policy; user must re-submit with valid input. |
 | Gate crash | Gate panicked inside `mule`; settle-graft wraps the crash | `[%settle-error msg='settle-graft: verify gate crashed']` | (no extra) | The gate has a bug; investigate the gate body or the data shape. |
 | Pre-gate failure | Replay (note-id reused) or root mismatch | `[%settle-error msg='<reason>']` | (silent) | The poke was rejected before reaching the gate; check note-id uniqueness or registered-root match. |
-| Rbac denial | Orchestrator-side: `[%rbac-has-perm pubkey perm ~]` peek returned `false`; the poke was never sent | `vec![]` (driver-side) | (silent) | The acting pubkey lacks the required perm; grant first or reject the request. |
+| Rbac denial | Orchestrator-side: `[%rbac-has-perm pubkey perm ~]` peek returned `false`; the poke was never sent | `vec![]` (hull-side) | (silent) | The acting pubkey lacks the required perm; grant first or reject the request. |
 
-**Driver-side discipline:** log every rbac decision before the poke split so post-hoc audit shows which layer denied. Stderr alone distinguishes gate-deny from rbac-deny; only the driver knows whether the poke was sent at all.
+**Hull-side discipline:** log every rbac decision before the poke split so post-hoc audit shows which layer denied. Stderr alone distinguishes gate-deny from rbac-deny; only the hull knows whether the poke was sent at all.
 
-**Multi-graft caveat (Profile J observation).** In kernels with ≥10 grafts, the `mule`-trace dump on gate clean-deny can be large enough to terminate the driver process after the poke returns. Treat gate clean-deny as TERMINAL for the kernel session in multi-graft deployments — restart the kernel rather than continuing.
+**Multi-graft caveat (Profile J observation).** In kernels with ≥10 grafts, the `mule`-trace dump on gate clean-deny can be large enough to terminate the hull process after the poke returns. Treat gate clean-deny as TERMINAL for the kernel session in multi-graft deployments — restart the kernel rather than continuing.
 
 ## Testing with `vesl-test`
 
@@ -719,7 +719,7 @@ The standard suite covers register, duplicate-register, verify, settle, replay, 
 
 ### Inspecting a kernel from the outside
 
-Once a kernel is compiled, you don't always want to write a Rust driver to ask "what's the current value of state X?" — `vesl-test` ships a CLI bin that boots an `out.jam` and runs a peek for you.
+Once a kernel is compiled, you don't always want to write a Rust hull to ask "what's the current value of state X?" — `vesl-test` ships a CLI bin that boots an `out.jam` and runs a peek for you.
 
 ```bash
 # keyless: [%log-len ~]
@@ -762,7 +762,7 @@ vesl-test watch out.jam --filter cause=settle-register
 | Command | Meaning |
 |---------|---------|
 | `poke-tag <tag>` | Tag-only poke (`[%<tag> ~]`). |
-| `poke-jam <hex> [tag=<name>]` | Pre-jammed cause noun (hex-encoded). The optional `tag=` annotation lets the rendered row carry a meaningful `cause_tag`; without it the cause shows as `poke-jam`. Pair with `vesl_test::watch::jam_slab` + `hex_encode` from a Rust driver to round-trip pokes built with `vesl-core` poke-builders. |
+| `poke-jam <hex> [tag=<name>]` | Pre-jammed cause noun (hex-encoded). The optional `tag=` annotation lets the rendered row carry a meaningful `cause_tag`; without it the cause shows as `poke-jam`. Pair with `vesl_test::watch::jam_slab` + `hex_encode` from a Rust hull to round-trip pokes built with `vesl-core` poke-builders. |
 | `peek-tag <tag>` | Keyless peek (`[%<tag> ~]`). |
 | `peek-hull <tag> <decimal>` | Hull-keyed peek (`[%<tag> hull ~]`). |
 | `peek-key <tag> <string>` | Cord-keyed peek (`[%<tag> %key ~]`). |
@@ -802,7 +802,7 @@ watch: subscribed to out.jam (filter: none)
 
 **Kernel-died.** When the spawned `app.run()` task panics or returns an error, watch prints a `kernel-died: <reason>` row instead of itself crashing — see RM4 round.md HARD-BUG-1 for the surface this is built to diagnose.
 
-**When you'd reach for `watch` over `inspect peek`:** any time you can't tell from the bare poke return whether the kernel saw what you sent. The two HARD-BUGs in RM4 (registry-del crash + post-resume effect-loss) both presented as opaque return values from the driver side; with `watch` running next door, the cause is on the wire and the effect-list is structured.
+**When you'd reach for `watch` over `inspect peek`:** any time you can't tell from the bare poke return whether the kernel saw what you sent. The two HARD-BUGs in RM4 (registry-del crash + post-resume effect-loss) both presented as opaque return values from the hull side; with `watch` running next door, the cause is on the wire and the effect-list is structured.
 
 ## Troubleshooting
 
@@ -831,7 +831,7 @@ A `u64` you're feeding into `D()` has its top bit set. Use `nock_noun_rs::atom_f
 The verify-gate returned `%.n`. The `?>` in `lib/settle-graft.hoon`'s `%settle-note` arm crashes on gate failure by design — a rejected payload must remain an unprovable STARK state rather than an emitted error. From the Rust side, `app.poke(...).await` resolves `Ok(effects)` with `effects.len() == 0`; treat that as a gate rejection and inspect stderr for the trace. The most common cause is committing multiple leaves with the default single-leaf hash-gate (see Step 6's *Why a single-leaf commit?* note).
 
 **Poke resolves `Ok(vec![])` and stderr shows `slog: invalid cause [%<tag> ...] (full: <noun>)`**
-The driver emitted a cause-tag the kernel's `+$ cause` union doesn't accept, so `(soft cause)` returned `~` and the wrapper short-circuited before any arm ran. The diagnostic prints at the default tracing level (priority 1) — no `RUST_LOG=trace` needed. The bracketed `[%<tag> ...]` is the cord-decoded head of the rejected cause; the trailing `(full: <noun>)` is the complete cause cell for advanced inspection. If the head shows `%unknown`, the cause noun was either an atom or a cell whose head is itself a cell — both are malformed shapes for `[%tag args...]` causes. Common causes: typo in the driver-side bytestring; kernel rename without a corresponding driver update; new graft installed but the kernel hasn't been re-composed via `graft-inject inject --apply`. To catch this at compile time, see *Step 6 → Driver/kernel drift detection*.
+The hull emitted a cause-tag the kernel's `+$ cause` union doesn't accept, so `(soft cause)` returned `~` and the wrapper short-circuited before any arm ran. The diagnostic prints at the default tracing level (priority 1) — no `RUST_LOG=trace` needed. The bracketed `[%<tag> ...]` is the cord-decoded head of the rejected cause; the trailing `(full: <noun>)` is the complete cause cell for advanced inspection. If the head shows `%unknown`, the cause noun was either an atom or a cell whose head is itself a cell — both are malformed shapes for `[%tag args...]` causes. Common causes: typo in the hull-side bytestring; kernel rename without a corresponding hull update; new graft installed but the kernel hasn't been re-composed via `graft-inject inject --apply`. To catch this at compile time, see *Step 6 → Hull/kernel drift detection*.
 
 **Peek returns `~` on what looks like a valid path**
 Settle-graft's peek paths are **namespaced**: `[%settle-registered hull ~]`, `[%settle-noted note-id ~]`, `[%settle-root hull ~]`, `[%settle-epoch ~]`, `[%settle-count ~]`. Pre-Phase-10 unprefixed forms (`%registered` / `%settled` / `%root` / `%epoch`) and the transitional Phase-10 `%vesl-*` forms are both retired — Phase 12A landed `%settle-*` as the final naming. Rust callers going through `vesl-core` are unaffected; the builders construct pokes, not peek paths.
