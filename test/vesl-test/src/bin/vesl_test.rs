@@ -391,6 +391,30 @@ fn print_human_value(v: &Value, indent: usize) {
 // verify-jam (RM2 §2.1) — sentinel-based out.jam-staleness check
 // =============================================================================
 
+/// Read `[project].kernel_name` from `<project>/nockapp.toml`. Returns
+/// `None` for any failure path (missing file, malformed toml, missing
+/// field) so callers can fall back to defaults silently. Mirrors the
+/// helper of the same name in `tools/graft-inject/src/main.rs` so the
+/// two surfaces resolve the same value.
+fn read_kernel_name(project_root: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(project_root.join("nockapp.toml")).ok()?;
+    let value: toml::Value = toml::from_str(&raw).ok()?;
+    value
+        .get("project")?
+        .get("kernel_name")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Project-relative kernel path for verify-jam's hint output. Pastes
+/// into shell verbatim — `hoon/app/<kernel_name>.hoon` if the project
+/// has set kernel_name (via `nockup graft rename-kernel`), else the
+/// pre-rename default `hoon/app/app.hoon`.
+fn kernel_rel_path(project_root: &Path) -> String {
+    let name = read_kernel_name(project_root).unwrap_or_else(|| "app".into());
+    format!("hoon/app/{name}.hoon")
+}
+
 /// Run `verify-jam` against `project`. Returns the exit code:
 /// 0 = fresh, 1 = stale (or fingerprinted file missing), 2 = no
 /// fingerprint sidecar. Errors are surfaced as anyhow bails (exit
@@ -409,15 +433,16 @@ async fn run_verify_jam(project: &Path, json_out: bool) -> Result<u8> {
             });
             println!("{}", serde_json::to_string_pretty(&doc).expect("serializable"));
         } else {
+            let kernel_rel = kernel_rel_path(project);
             eprintln!(
                 "verify-jam: no fingerprint at {}",
                 fingerprint_path.display(),
             );
             eprintln!("  Generate one after a clean hoonc compile:");
-            eprintln!("    hoonc --new hoon/app/app.hoon hoon/ && [ -s out.jam ] || \\");
+            eprintln!("    hoonc --new {kernel_rel} hoon/ && [ -s out.jam ] || \\");
             eprintln!("      (echo \"hoonc silent-failed\" >&2; exit 1)");
             eprintln!(
-                "    sha256sum hoon/app/app.hoon hoon/lib/*.toml > .out-jam-source-fingerprint"
+                "    sha256sum {kernel_rel} hoon/lib/*.toml > .out-jam-source-fingerprint"
             );
         }
         return Ok(2);
@@ -475,12 +500,13 @@ async fn run_verify_jam(project: &Path, json_out: bool) -> Result<u8> {
                 );
             }
         }
+        let kernel_rel = kernel_rel_path(project);
         eprintln!();
         eprintln!("  Re-run hoonc and refresh the fingerprint:");
-        eprintln!("    hoonc --new hoon/app/app.hoon hoon/ && [ -s out.jam ] || \\");
+        eprintln!("    hoonc --new {kernel_rel} hoon/ && [ -s out.jam ] || \\");
         eprintln!("      (echo \"hoonc silent-failed\" >&2; exit 1)");
         eprintln!(
-            "    sha256sum hoon/app/app.hoon hoon/lib/*.toml > .out-jam-source-fingerprint"
+            "    sha256sum {kernel_rel} hoon/lib/*.toml > .out-jam-source-fingerprint"
         );
     }
 
