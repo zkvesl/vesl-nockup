@@ -153,7 +153,7 @@ fn compose_and_compile_inner(
         .prefix(&format!("graft-inject-{}-", scratch_subdir))
         .tempdir()
         .with_context(|| format!("create tempdir for {}", scratch_subdir))?
-        .into_path();
+        .keep();
     let hoon_app = scratch.join("hoon/app");
     let hoon_lib = scratch.join("hoon/lib");
     let hoon_common = scratch.join("hoon/common");
