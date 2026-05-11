@@ -11,6 +11,7 @@ members = [
     "tools/graft-inject",
     "test/vesl-test",
 ]
+exclude = ["templates"]
 
 # Workspace members path-dep a handful of nockchain crates, and the bundled
 # vesl-core in crates/ path-deps the rest. Any stale git-dep references
