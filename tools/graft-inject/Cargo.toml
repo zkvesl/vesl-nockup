@@ -5,18 +5,6 @@ edition = "2021"
 description = "Inject Vesl graft wiring into a nockup app.hoon kernel"
 license = "MIT OR Apache-2.0"
 
-[[bin]]
-name = "graft-inject"
-path = "src/main.rs"
-
-# Same source, different binary name. Lets nockup's plugin-discovery hook
-# (`nockup graft <subcmd>` → execs `nockup-graft <subcmd>` from $PATH)
-# delegate to graft-inject without an upstream subcommand. `cargo install
-# --path .` installs both binaries to ~/.cargo/bin/.
-[[bin]]
-name = "nockup-graft"
-path = "src/main.rs"
-
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }

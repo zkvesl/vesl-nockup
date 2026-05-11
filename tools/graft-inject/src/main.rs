@@ -3003,7 +3003,7 @@ impl<'a> GraftSummary<'a> {
     }
 }
 
-fn main() -> ExitCode {
+pub fn main() -> ExitCode {
     warn_if_stale();
     let cli = Cli::parse();
     let result = dispatch(cli);
