@@ -38,18 +38,18 @@ struct Graft {
     #[serde(default)]
     after: Vec<String>,
     blocks: GraftBlocks,
-    /// Optional gate selection from `[graft.gates]`. EXPANSION Phase 01:
-    /// when set, the manifest's poke body has its default hash-gate
-    /// constructions rewritten to call into `vesl-gates`, and the imports
-    /// block gains a `/+  vesl-gates` line. See `apply_gate_selection`.
+    /// Optional gate selection from `[graft.gates]`. When set, the
+    /// manifest's poke body has its default hash-gate constructions
+    /// rewritten to call into `vesl-gates`, and the imports block gains
+    /// a `/+  vesl-gates` line. See `apply_gate_selection`.
     #[serde(default)]
     gates: Option<GateSelection>,
-    /// Optional `[graft.types]` table. Phase 03f Lever 1 (typed effect
-    /// union codegen): names the per-graft `effect` and `cause` types
-    /// so `graft-inject` can emit a typed `+$ effect $%(...)` union at
-    /// the `nockup:effect-union` marker. `cause` is read forward-compat
-    /// for Lever 3 (cause destructuring); current codegen reads only
-    /// `effect`. Manifests without this table parse with `types == None`.
+    /// Optional `[graft.types]` table. Names the per-graft `effect` and
+    /// `cause` types so `graft-inject` can emit a typed
+    /// `+$ effect $%(...)` union at the `nockup:effect-union` marker.
+    /// `cause` is read forward-compat for cause destructuring; current
+    /// codegen reads only `effect`. Manifests without this table parse
+    /// with `types == None`.
     #[serde(default)]
     types: Option<GraftTypes>,
     /// Hex sha256 of the raw TOML bytes. Populated by `load_manifest` at
@@ -71,13 +71,12 @@ struct GateSelection {
     gate_chain: Option<Vec<String>>,
 }
 
-/// `[graft.types]` declarations. Phase 03f Lever 1: lets the codegen
-/// pass emit a typed effect union without parsing Hoon. `effect` is the
-/// bare type name the graft exports for its effect variant (e.g.
-/// `settle-effect`); the codegen splats it into the `+$ effect $%(...)`
-/// union at the `nockup:effect-union` marker. `cause` is parsed for
-/// forward-compat with Lever 3 (cause destructuring) and currently
-/// unused.
+/// `[graft.types]` declarations. Lets the codegen pass emit a typed
+/// effect union without parsing Hoon. `effect` is the bare type name
+/// the graft exports for its effect variant (e.g. `settle-effect`);
+/// the codegen splats it into the `+$ effect $%(...)` union at the
+/// `nockup:effect-union` marker. `cause` is parsed for forward-compat
+/// with cause destructuring and currently unused.
 #[derive(Debug, Clone, Deserialize)]
 struct GraftTypes {
     #[serde(default)]
@@ -101,20 +100,20 @@ struct GraftBlocks {
     imports: Option<Block>,
     state: Option<Block>,
     cause: Option<Block>,
-    /// Phase 03b: code spliced ahead of the `?-  -.u.act` switch. Composes
-    /// as `?:` short-circuit guards (validate / fsm rejection paths) or as
-    /// `=/  pre-snapshot` bindings that scope through the rest of the gate
-    /// (index-graft pre-state capture). Multiple preludes stack in priority
-    /// order; the first to short-circuit ends the gate before the switch
-    /// runs. See docs/graft-manifest.md §poke-prelude.
+    /// Code spliced ahead of the `?-  -.u.act` switch. Composes as `?:`
+    /// short-circuit guards (validate / fsm rejection paths) or as
+    /// `=/  pre-snapshot` bindings that scope through the rest of the
+    /// gate (index-graft pre-state capture). Multiple preludes stack in
+    /// priority order; the first to short-circuit ends the gate before
+    /// the switch runs. See docs/graft-manifest.md §poke-prelude.
     #[serde(rename = "poke-prelude")]
     poke_prelude: Option<Block>,
     poke: Option<Block>,
-    /// Phase 03b: code spliced after the `?-  -.u.act` switch. The switch's
-    /// `[(list effect) _state]` result is bound to `out`; postludes rebind
-    /// `out` (e.g. `=/  out  (transform out)`) and the gate returns the
-    /// final `out`. Multiple postludes compose left-to-right in priority
-    /// order. See docs/graft-manifest.md §poke-postlude.
+    /// Code spliced after the `?-  -.u.act` switch. The switch's
+    /// `[(list effect) _state]` result is bound to `out`; postludes
+    /// rebind `out` (e.g. `=/  out  (transform out)`) and the gate
+    /// returns the final `out`. Multiple postludes compose left-to-right
+    /// in priority order. See docs/graft-manifest.md §poke-postlude.
     #[serde(rename = "poke-postlude")]
     poke_postlude: Option<Block>,
     peek: Option<Block>,
@@ -199,7 +198,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// Rejects duplicate graft names (AUDIT 2026-04-19 H-11), and rejects
 /// graft names that don't match the kebab-case shape the schema documents.
 /// Also validates `[graft.gates]` (C2) and applies any gate selection to
-/// the manifest's poke + imports blocks (EXPANSION Phase 01).
+/// the manifest's poke + imports blocks.
 fn discover_grafts(lib_dir: &Path) -> Result<Vec<Graft>> {
     let mut grafts: Vec<Graft> = Vec::new();
     let mut seen: HashMap<String, PathBuf> = HashMap::new();
@@ -540,21 +539,21 @@ enum Marker {
     Imports,
     State,
     Cause,
-    /// Phase 03b: spliced before the poke `?-` switch — guards (`?:`
-    /// short-circuits) and pre-state captures (`=/  pre-X`).
+    /// Spliced before the poke `?-` switch — guards (`?:` short-circuits)
+    /// and pre-state captures (`=/  pre-X`).
     PokePrelude,
     Poke,
-    /// Phase 03b: spliced after the `?-` switch — `out` rebinds that
-    /// transform the switch's `[(list effect) _state]` result.
+    /// Spliced after the `?-` switch — `out` rebinds that transform the
+    /// switch's `[(list effect) _state]` result.
     PokePostlude,
     Peek,
-    /// Phase 03f Lever 1: anchor for the developer's
-    /// `+$ domain-effect $%(...)` declaration. Marker only — grafts do
-    /// not contribute a block here. The codegen pass reads its presence
-    /// to decide whether to splat `domain-effect` into the union.
+    /// Anchor for the developer's `+$ domain-effect $%(...)` declaration.
+    /// Marker only — grafts do not contribute a block here. The codegen
+    /// pass reads its presence to decide whether to splat `domain-effect`
+    /// into the union.
     DomainEffect,
-    /// Phase 03f Lever 1: REPLACE-IF-PRESENT codegen target for the
-    /// typed effect union `+$ effect $%(<graft-effects> domain-effect ==)`.
+    /// REPLACE-IF-PRESENT codegen target for the typed effect union
+    /// `+$ effect $%(<graft-effects> domain-effect ==)`.
     /// Marker only — grafts do not contribute a block here. The
     /// codegen pass synthesizes the union body from each graft's
     /// `[graft.types].effect` plus `domain-effect` if DomainEffect is
@@ -636,9 +635,9 @@ struct InjectReport {
     /// auto-pruned. Carrier separate from `grafts` because no manifest
     /// is loaded for these names.
     pruned_grafts: Vec<GraftReport>,
-    /// Phase 03f Lever 1: outcome of the typed effect-union codegen pass.
+    /// Outcome of the typed effect-union codegen pass.
     codegen: CodegenReport,
-    /// Phase 03f Lever 1.5: weld-friction lint findings in domain code.
+    /// Weld-friction lint findings in domain code.
     weld_lint: WeldLint,
     /// RM4 §1 v0.2: outcome of the `++load` defaults codegen pass.
     load_defaults: LoadDefaultsReport,
@@ -678,7 +677,7 @@ struct LoadDefaultsReport {
     fields: Vec<String>,
 }
 
-/// Phase 03f Lever 1.5: weld-friction lint.
+/// Weld-friction lint.
 ///
 /// R5 dogfood (Profile G HULL_KEYED_KV) confirmed that the typed effect
 /// union does NOT auto-fix the cross-graft `weld` friction when the
@@ -846,9 +845,9 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
         canonicalize_marker_section(&mut lines, marker, &indent, &grafts_at_marker);
     }
 
-    // Phase 03f Lever 1: typed effect-union codegen runs after the
-    // marker loop. REPLACE-IF-PRESENT semantics keep the union in sync
-    // with the current graft set on every rerun.
+    // Typed effect-union codegen runs after the marker loop. REPLACE-
+    // IF-PRESENT semantics keep the union in sync with the current
+    // graft set on every rerun.
     let codegen = emit_effect_union(&mut lines, grafts)?;
 
     // RM4 §1 v0.2: load-defaults codegen runs after effect-union. Same
@@ -857,10 +856,10 @@ fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectReport)> {
     // current kernel's new graft axes.
     let load_defaults = emit_load_defaults(&mut lines, grafts)?;
 
-    // Phase 03f Lever 1.5: weld-friction lint scans developer code
-    // (outside graft-inject banners) for narrow effect bindings that
-    // will nest-fail at any cross-graft `(weld a b)` site. Advisory
-    // only; surfaces in the stderr report.
+    // Weld-friction lint scans developer code (outside graft-inject
+    // banners) for narrow effect bindings that will nest-fail at any
+    // cross-graft `(weld a b)` site. Advisory only; surfaces in the
+    // stderr report.
     let weld_lint = lint_weld_friction(&lines, &codegen.variants);
 
     // Preserve graft order in the report (per_graft is a HashMap).
@@ -965,8 +964,8 @@ fn emit_block(
     }
 }
 
-/// Phase 03f Lever 1: synthesize the typed effect union beneath the
-/// `nockup:effect-union` marker. REPLACE-IF-PRESENT semantics — the
+/// Synthesize the typed effect union beneath the `nockup:effect-union`
+/// marker. REPLACE-IF-PRESENT semantics — the
 /// emitted block lives between graft-inject's own banner pair, and the
 /// pass owns everything between them. Removing a graft from the
 /// composer's input shrinks the union on the next run.
@@ -1378,8 +1377,8 @@ fn is_bare_effect_open_type(s: &str) -> bool {
     parts.len() == 3 && parts[0] == "+$" && parts[1] == "effect" && parts[2] == "*"
 }
 
-/// Phase 03f Lever 1.5: scan domain code for narrow `(list <X>-effect)`
-/// bindings that will nest-fail at a cross-graft `weld`. Skips lines
+/// Scan domain code for narrow `(list <X>-effect)` bindings that will
+/// nest-fail at a cross-graft `weld`. Skips lines
 /// inside `graft-inject:<...>:begin / :end` banner regions (those are
 /// graft-injected bodies, not user code; the narrow types are correct
 /// there). Skips entirely when codegen status is Skipped or the variant
@@ -2286,11 +2285,11 @@ impl MigrationReport {
     }
 }
 
-/// Phase 03f Lever 1: rewrite a kernel's bare `+$  effect  *` line to
-/// the post-migration marker shape — placeholder `+$ domain-effect`
-/// block, `nockup:domain-effect` marker, `nockup:effect-union` marker,
-/// and a temporary `+$ effect *` that the codegen pass replaces on the
-/// same `--apply` run.
+/// Rewrite a kernel's bare `+$  effect  *` line to the post-migration
+/// marker shape — placeholder `+$ domain-effect` block,
+/// `nockup:domain-effect` marker, `nockup:effect-union` marker, and a
+/// temporary `+$ effect *` that the codegen pass replaces on the same
+/// `--apply` run.
 ///
 /// No-op (returns the input unchanged) when:
 ///   * the kernel already has a `nockup:effect-union` marker — codegen
@@ -2808,12 +2807,12 @@ struct Cli {
     #[arg(long)]
     apply: bool,
 
-    /// Skip the Phase 03f Lever 1 auto-migration of legacy
-    /// `+$  effect  *` to the marker-shape (`nockup:domain-effect` +
-    /// `nockup:effect-union` + bare `+$ effect *`). Default behavior
-    /// is to migrate transparently; `--no-migrate` is the opt-out for
-    /// paranoid review. The codegen pass still skips kernels without
-    /// the `nockup:effect-union` marker.
+    /// Skip the auto-migration of legacy `+$  effect  *` to the
+    /// marker-shape (`nockup:domain-effect` + `nockup:effect-union` +
+    /// bare `+$ effect *`). Default behavior is to migrate
+    /// transparently; `--no-migrate` is the opt-out for paranoid review.
+    /// The codegen pass still skips kernels without the
+    /// `nockup:effect-union` marker.
     #[arg(long = "no-migrate")]
     no_migrate: bool,
 }
@@ -2962,10 +2961,9 @@ struct GraftSummary<'a> {
     /// H-10: lets supply-chain reviewers pin expected digests without
     /// re-reading the file.
     sha256: &'a str,
-    /// Phase 03f Lever 1: per-graft `[graft.types]` table contents,
-    /// surfaced for tooling that wants to know which grafts contribute
-    /// to the typed effect union. `null` when the manifest omits the
-    /// table.
+    /// Per-graft `[graft.types]` table contents, surfaced for tooling
+    /// that wants to know which grafts contribute to the typed effect
+    /// union. `null` when the manifest omits the table.
     #[serde(skip_serializing_if = "Option::is_none")]
     types: Option<GraftTypesSummary<'a>>,
 }
@@ -3783,9 +3781,9 @@ fn run(cli: Cli) -> Result<()> {
     let raw_source = fs::read_to_string(path)
         .with_context(|| format!("reading {}", path.display()))?;
 
-    // Phase 03f Lever 1: optional auto-migration of legacy `+$ effect *`
-    // to the marker shape. Runs before the inject pass so the codegen
-    // can take over the rewritten line in the same `--apply` invocation.
+    // Optional auto-migration of legacy `+$ effect *` to the marker
+    // shape. Runs before the inject pass so the codegen can take over
+    // the rewritten line in the same `--apply` invocation.
     let (source, migration) = if cli.no_migrate {
         (raw_source, MigrationReport::skipped())
     } else {
@@ -4232,8 +4230,8 @@ mod tests {
         assert!(out.contains("%settle-register"));
         assert!(out.contains("%settle-verify"));
         assert!(out.contains("%settle-note"));
-        // Peek emits the chain shape (Phase 4): the legacy expression
-        // lives inside the `=/ settle-res ...` binding.
+        // Peek emits the chain shape: the legacy expression lives
+        // inside the `=/ settle-res ...` binding.
         assert!(out.contains("=/  settle-res  (settle-peek settle.state path)"));
         assert!(out.contains("?.  =(~ settle-res)  settle-res"));
 
@@ -4320,8 +4318,7 @@ mod tests {
     #[test]
     fn preserves_two_space_law() {
         // The two-space law applies to every Hoon rune in the manifest
-        // bodies. Scan the loaded `settle-graft.toml` rather than the
-        // (deleted) BLOCK_* constants — same content post-Phase 3.
+        // bodies. Scan the loaded `settle-graft.toml`.
         let graft = load_manifest(&settle_graft_manifest_path())
             .unwrap()
             .unwrap();
@@ -4664,7 +4661,7 @@ mod tests {
         assert_eq!(peek_lines[4].trim_start(), "~");
     }
 
-    // ---------- Phase 6: CLI tests ----------
+    // ---------- CLI tests ----------
 
     fn cli_with(lib_dir: PathBuf) -> Cli {
         Cli {
@@ -4740,7 +4737,7 @@ mod tests {
         assert_eq!(cli.grafts, vec!["foo".to_string()]);
     }
 
-    // ---------- Phase 7: bare-tilde-ambiguity lint ----------
+    // ---------- bare-tilde-ambiguity lint ----------
 
     /// RM1 HARD-BUG-2 reproduction: a domain `%ping` arm whose body
     /// is `^- (list effect)` then a bare `~` line should trip the
@@ -4816,7 +4813,7 @@ mod tests {
         assert!(lint.findings.is_empty());
     }
 
-    // ---------- Phase 8: collision-check lint ----------
+    // ---------- collision-check lint ----------
 
     /// Build a synthetic graft with named cause tags and state fields
     /// for collision-check tests. The block bodies follow the canonical
@@ -4939,7 +4936,7 @@ mod tests {
         );
     }
 
-    // ---------- Phase 9: codegen kernel-cause-tags ----------
+    // ---------- codegen kernel-cause-tags ----------
 
     /// `emit_kernel_cause_tags_rs` produces a sorted slice + macro
     /// scaffolding. Verify the slice contains the supplied tags in
@@ -5631,7 +5628,7 @@ body     = """
     }
 
     // ---------------------------------------------------------------
-    // [graft.gates] selection — EXPANSION Phase 01 / parametize_2
+    // [graft.gates] selection
     // ---------------------------------------------------------------
 
     /// Load settle-graft.toml and inject a `[graft.gates]` selection by
@@ -5782,7 +5779,7 @@ body     = """
     }
 
     // ---------------------------------------------------------------
-    // Phase 03f Lever 1: typed effect-union codegen
+    // typed effect-union codegen
     // ---------------------------------------------------------------
 
     /// Synthetic graft with a `[graft.types]` declaration. Reuses
@@ -6013,7 +6010,7 @@ body     = """
     }
 
     // ---------------------------------------------------------------
-    // Phase 03f Lever 1.5: weld-friction lint
+    // weld-friction lint
     // ---------------------------------------------------------------
 
     /// Scaffold + a domain `%set` arm that binds narrowly. Used to
@@ -6110,7 +6107,7 @@ body     = """
     }
 
     // ---------------------------------------------------------------
-    // Phase 03f Lever 1: migrate_legacy_effect
+    // migrate_legacy_effect
     // ---------------------------------------------------------------
 
     #[test]
