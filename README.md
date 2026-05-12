@@ -36,7 +36,7 @@ The new-project flow uses the `vesl` template shipped from this repo via nockup'
    cargo install --git https://github.com/zkvesl/vesl-nockup --bin nockup-graft
    ```
 
-   After install, `nockup graft <subcmd>` resolves the binary via nockup's plugin discovery. The standalone `graft-inject` binary stays available too (`cargo install --path tools/graft-inject` builds both from one source).
+   After install, `nockup graft <subcmd>` resolves the binary via nockup's plugin discovery.
 
 Verify:
 
@@ -143,7 +143,7 @@ nockup graft codegen kernel-cause-tags hoon/app/app.hoon --json
 
 ### mint / guard / forge: the other three primitives
 
-If your `graft-inject` call composed more than just `settle-graft`, `vesl-core` also exports builders for the other primitives. All take the same shape — primitives in, `NounSlab` out:
+If your `nockup graft inject` call composed more than just `settle-graft`, `vesl-core` also exports builders for the other primitives. All take the same shape — primitives in, `NounSlab` out:
 
 ```rust
 use vesl_core::{
@@ -186,7 +186,7 @@ The STARK verifier lives on the Rust side; see `vesl-core`'s forge module for th
 
 ### State grafts: app-state primitives without writing Hoon
 
-Beyond the four commitment grafts, `graft-inject` ships off-the-shelf state grafts in the 50–99 priority band so apps don't need to write Hoon for generic app-state. Two grafts have landed so far.
+Beyond the four commitment grafts, `nockup graft` ships off-the-shelf state grafts in the 50–99 priority band so apps don't need to write Hoon for generic app-state. Two grafts have landed so far.
 
 **`kv-graft` (priority 50)** — a loose key-value store keyed on `@t` cords with opaque atom values:
 
@@ -203,7 +203,7 @@ poke(&mut app, build_kv_delete_poke("greeting")).await?;
 // → %kv-deleted (idempotent — missing keys also emit %kv-deleted)
 ```
 
-Compose by listing the graft alongside the others: `graft-inject inject --grafts settle,mint,kv hoon/app/app.hoon`. Peek path is `[%kv-value key=@t]` returning the stored atom or `~`. The store is capped at 10M entries (`%kv-error 'capacity'` on overflow). Overwrite of an existing key bypasses the cap.
+Compose by listing the graft alongside the others: `nockup graft inject --grafts settle,mint,kv hoon/app/app.hoon`. Peek path is `[%kv-value key=@t]` returning the stored atom or `~`. The store is capped at 10M entries (`%kv-error 'capacity'` on overflow). Overwrite of an existing key bypasses the cap.
 
 `kv-graft` is the *loose* store: overwrite-on-set, noop on delete-missing. The strict counterpart (`registry-graft`) — error on overwrite, error on missing-update, structured `record=*` values — ships later in Phase 02. Pick by stance.
 
@@ -333,7 +333,7 @@ let snap_dir = std::path::Path::new("snapshots/before-mint-graft");
 let snap = snapshot(harness.app(), snap_dir, "hoon/app/app.hoon").await?;
 drop(harness);
 
-// 3. Re-run graft-inject + hoonc to add a graft, then resume.
+// 3. Re-run nockup graft inject + hoonc to add a graft, then resume.
 //    (snap.state_jam() points at the bundled state.jam — `resume`
 //     wires it through cli.state_jam internally.)
 let resumed = resume("out.jam", &snap, "after-mint-graft").await?;
@@ -357,7 +357,7 @@ snapshots/before-mint-graft/
 
 **Same-composition resume** (the new kernel has the same set of grafts as the snapshot) roundtrips cleanly — both pre- and post-resume pokes emit effects. State is reset to per-graft defaults on every resume because v0.2 takes the simpler defaults-overlay migration path; operators who need data preservation re-poke after resume to restore the desired state.
 
-**Schema-extension resume** (the new kernel adds grafts that weren't in the snapshot) works in v0.2 via graft-inject codegen at the `nockup:load-defaults` marker. The marker template ships an identity `++load` placeholder; graft-inject replaces it with a `=/  defaults  ^*(versioned-state)` + `%_  defaults  <field>  ^*(<field>-state)  ...  ==` overlay so resumed snapshots with a smaller noun shape get type defaults at the new graft axes instead of panicking inside the wrapper's mule guard. Pre-v0.2 (no marker, identity load) silently dropped effects on every graft past the first added priority band; the fix landed under RM4 §1 v0.2.
+**Schema-extension resume** (the new kernel adds grafts that weren't in the snapshot) works in v0.2 via `nockup graft inject` codegen at the `nockup:load-defaults` marker. The marker template ships an identity `++load` placeholder; `nockup graft inject` replaces it with a `=/  defaults  ^*(versioned-state)` + `%_  defaults  <field>  ^*(<field>-state)  ...  ==` overlay so resumed snapshots with a smaller noun shape get type defaults at the new graft axes instead of panicking inside the wrapper's mule guard. Pre-v0.2 (no marker, identity load) silently dropped effects on every graft past the first added priority band; the fix landed under RM4 §1 v0.2.
 
 For test setups that need state-equivalence assertions, see `tools/graft-inject/tests/checkpoint_lifecycle.rs` (state survives same-composition resume modulo the v0.2 defaults overlay) and `tools/graft-inject/tests/resume_emits_effects.rs` (post-resume effect emission across priority bands, including the schema-extension test that flipped from `#[ignore]` to active under v0.2).
 
@@ -464,13 +464,13 @@ Seven lines of custom Hoon total for the 1-arg example, eleven for the 3-arg. Tw
 
 The vesl arms stay put. You're adding arms, not replacing them.
 
-Future direction: `graft-inject` is being rearchitected (see `.dev/PARAMETIZATION.md`) so that user-defined domains can ship as their own grafts with a TOML manifest — which will mechanize the state-field and cause-variant declarations. The arm body is the part that stays yours.
+Future direction: `nockup graft` is being rearchitected (see `.dev/PARAMETIZATION.md`) so that user-defined domains can ship as their own grafts with a TOML manifest — which will mechanize the state-field and cause-variant declarations. The arm body is the part that stays yours.
 
 ### Coordinating multiple grafts in one arm
 
 When your domain arm threads state through more than one graft — increment a counter, write to a `kv` slot, append to the audit log, all in one poke — the hand-coded shape gets repetitive fast. Each graft poke is the same three lines (`=/  cause`, `=/  [efx state]  (graft-poke …)`, then a state-field update at the bottom), then a `(weld …)` to fold the effect lists together.
 
-`vesl-core` ships a small library, `domain-patterns`, that bundles those shapes into one-line helpers. Import it manually (it has no graft manifest, so `graft-inject` doesn't auto-wire it):
+`vesl-core` ships a small library, `domain-patterns`, that bundles those shapes into one-line helpers. Import it manually (it has no graft manifest, so `nockup graft inject` doesn't auto-wire it):
 
 ```hoon
 ::  near the top of your app.hoon, alongside the other /+ lines:
@@ -510,7 +510,7 @@ Worked example — an **`%audited-set` arm** that increments a per-key request c
 
 Five lines for three graft pokes plus a domain effect — the same arm written without the helpers runs to twelve lines (each graft poke gets its own `=/ cause`, `=/ [efx state]  (poke …)`, and the `state(counter …, kv …, log …)` update threads three field-updates on the bottom line). The R6 dogfood log measures a 6-line saving on this single arm; multi-arm domains scale that linearly.
 
-The convention `apply-<graft>` relies on: each graft's state lives at the field named after the graft (`counter.state`, `kv.state`, …). Every shipped template + the `graft-inject` codegen emits state fields with these names already, so the helpers compose with anything `graft-inject` produces. If your kernel renames the field (`cnt.state` instead of `counter.state`), `hoonc` rejects with `find . counter` at the `apply-counter` call site — loud, attributable.
+The convention `apply-<graft>` relies on: each graft's state lives at the field named after the graft (`counter.state`, `kv.state`, …). Every shipped template + the `nockup graft inject` codegen emits state fields with these names already, so the helpers compose with anything `nockup graft inject` produces. If your kernel renames the field (`cnt.state` instead of `counter.state`), `hoonc` rejects with `find . counter` at the `apply-counter` call site — loud, attributable.
 
 The full helper surface and the kernel-composite scope decisions live in `docs/graft-manifest.md` §"Library helpers — domain-patterns".
 
@@ -540,7 +540,7 @@ This makes `validate-graft` the right primitive for kernel-wide write policies (
 
 ### Add your own peek paths
 
-`graft-inject` wires each graft's peek handler into a chain: settle-peek, then mint-peek, then guard-peek, each one returning `~` to defer to the next. Your domain arm goes at the tail of that chain, below the last `?.  =(~ <graft>-res)  <graft>-res` line.
+`nockup graft inject` wires each graft's peek handler into a chain: settle-peek, then mint-peek, then guard-peek, each one returning `~` to defer to the next. Your domain arm goes at the tail of that chain, below the last `?.  =(~ <graft>-res)  <graft>-res` line.
 
 Worked example — a **`[%artifact-by-name @t ~]` lookup** against a `artifacts=(map @t artifact-meta)` state field:
 
@@ -563,7 +563,7 @@ The vesl peek chain follows the same convention — each graft's `<graft>-peek` 
 
 ### Replace the default verification gate
 
-`graft-inject` installs a gate that tip5-hashes the raw payload bytes and checks equality against the registered root. That works for single-leaf commitments (one piece of data → one root). It breaks the moment you have anything richer:
+`nockup graft inject` installs a gate that tip5-hashes the raw payload bytes and checks equality against the registered root. That works for single-leaf commitments (one piece of data → one root). It breaks the moment you have anything richer:
 
 - **Merkle manifests** (like verifiable RAG): payload is a structured manifest with multiple leaves + proofs; the gate walks each proof against the root.
 - **Signatures**: payload carries a signature; the gate verifies it against a public key committed in the root.
@@ -580,25 +580,25 @@ Inside each `%settle-*` arm, replace the gate body:
 
 `verify-gate` is `$-([note-id=@ data=* expected-root=@] ?)`. `note-id` is bound so domain gates can enforce `note-id == deterministic-fn(data)`, closing the pre-commit race (audit H-03). `data` is whatever your Rust side jammed into the `payload` atom; your gate casts it (`;;(manifest data)`, `;;(my-intent data)`, etc.) and returns a loobean. The caller decides what the data shape is — the graft doesn't care. The installed three-arg signature matches `hoon/lib/settle-graft.toml:34`.
 
-**Swapping a gate selection mid-project.** When you change `[graft.gates] gate = "..."` in a manifest (e.g., promoting a project from `sig-verify-schnorr` in development to `manifest-verify` in production), re-run `graft-inject inject --apply hoon/app/app.hoon` — the composer detects the manifest drift via the `sha256:<short>` prefix it embeds in each `::  graft-inject:<graft>:<marker>:begin` banner, strips the stale block, and re-injects from the new manifest. The drift event is announced on stderr (`graft-inject: settle-graft: manifest drift at poke (banner sha256 eec1fca7a063 → current 3c43c1086620). Re-injecting.`). Pre-Phase-03h kernels whose banners predate the sha256 suffix are detected as legacy and force-re-injected once on first run after the upgrade — the new format is stamped in place, no manual cleanup needed.
+**Swapping a gate selection mid-project.** When you change `[graft.gates] gate = "..."` in a manifest (e.g., promoting a project from `sig-verify-schnorr` in development to `manifest-verify` in production), re-run `nockup graft inject --apply hoon/app/app.hoon` — the composer detects the manifest drift via the `sha256:<short>` prefix it embeds in each `::  graft-inject:<graft>:<marker>:begin` banner, strips the stale block, and re-injects from the new manifest. The drift event is announced on stderr (`graft-inject: settle-graft: manifest drift at poke (banner sha256 eec1fca7a063 → current 3c43c1086620). Re-injecting.`). Pre-Phase-03h kernels whose banners predate the sha256 suffix are detected as legacy and force-re-injected once on first run after the upgrade — the new format is stamped in place, no manual cleanup needed.
 
 ### Removing a graft
 
 You added `rbac-graft` to try it; now you're taking it back out. Drop the name from `--grafts` and re-run with `--apply`:
 
 ```bash
-graft-inject inject --grafts settle-graft,registry-graft,log-graft --apply hoon/app/app.hoon
+nockup graft inject --grafts settle-graft,registry-graft,log-graft --apply hoon/app/app.hoon
 ```
 
-graft-inject auto-prunes the banner-pair-bounded blocks the dropped graft owned. The per-graft summary surfaces it:
+`nockup graft inject` auto-prunes the banner-pair-bounded blocks the dropped graft owned. The per-graft summary surfaces it:
 
 ```
   rbac-graft       no-manifest    pruned 5/5 (imports, state, cause, poke, peek) (orphan blocks from previous injection)
 ```
 
-The lib files (`hoon/lib/rbac-graft.hoon`, `hoon/lib/rbac-graft.toml`) stay where they are — graft-inject only edits `app.hoon`. Delete them manually if you want them gone for good. Re-add the graft later by putting its name back in `--grafts`; the round-trip is byte-identical.
+The lib files (`hoon/lib/rbac-graft.hoon`, `hoon/lib/rbac-graft.toml`) stay where they are — `nockup graft inject` only edits `app.hoon`. Delete them manually if you want them gone for good. Re-add the graft later by putting its name back in `--grafts`; the round-trip is byte-identical.
 
-If your installed `graft-inject` predates RH1 step 1, you'll see the orphan blocks left behind and `hoonc` will fail with a wall of `hoonc.hoon` internals (the orphan arms reference an `effect` union variant that's no longer there). The workaround is a sed-range delete:
+If your installed `nockup graft` predates RH1 step 1, you'll see the orphan blocks left behind and `hoonc` will fail with a wall of `hoonc.hoon` internals (the orphan arms reference an `effect` union variant that's no longer there). The workaround is a sed-range delete:
 
 ```bash
 sed -i '/graft-inject:rbac-graft:[a-z-]*:begin/,/:end/d' hoon/app/app.hoon
@@ -606,7 +606,7 @@ sed -i '/graft-inject:rbac-graft:[a-z-]*:begin/,/:end/d' hoon/app/app.hoon
 
 Then `cargo install --path tools/graft-inject --force` to upgrade and never need that workaround again.
 
-**`hoon/common/` transitive-import note.** When you slim the sandbox before a non-forge compile (a `rm hoon/lib/forge-graft.*` and `rm -rf hoon/dat hoon/jams` pass), strip the corresponding `hoon/common/` files too — `nock-prover.hoon`, `nock-verifier.hoon`, `pow.hoon`, `tx-engine{,-0,-1}.hoon`, and the `v0-v1`/`v2`/`stark` subtrees transitively `/#` into `hoon/dat/`. hoonc's eager-parse pass over the entire `hoon/common/` tree pulls them in regardless of whether your kernel reaches them, and the unsatisfied `/dat/` references show up as the misleading "no panic!" silent-fail (RM2 seed-A.md DOC-GAP-1 RECUR). vesl-core's `.dev/DOGFOOD.md` slim-cp recipe ships the canonical strip list. Pair the slim-cp with `graft-inject lint hoon/app/app.hoon` (RM2 §1.1 transitive-imports) to surface any further unsatisfied edges before hoonc runs.
+**`hoon/common/` transitive-import note.** When you slim the sandbox before a non-forge compile (a `rm hoon/lib/forge-graft.*` and `rm -rf hoon/dat hoon/jams` pass), strip the corresponding `hoon/common/` files too — `nock-prover.hoon`, `nock-verifier.hoon`, `pow.hoon`, `tx-engine{,-0,-1}.hoon`, and the `v0-v1`/`v2`/`stark` subtrees transitively `/#` into `hoon/dat/`. hoonc's eager-parse pass over the entire `hoon/common/` tree pulls them in regardless of whether your kernel reaches them, and the unsatisfied `/dat/` references show up as the misleading "no panic!" silent-fail (RM2 seed-A.md DOC-GAP-1 RECUR). vesl-core's `.dev/DOGFOOD.md` slim-cp recipe ships the canonical strip list. Pair the slim-cp with `nockup graft lint hoon/app/app.hoon` (RM2 §1.1 transitive-imports) to surface any further unsatisfied edges before hoonc runs.
 
 ### Drive a catalog gate from Rust
 
@@ -806,11 +806,11 @@ watch: subscribed to out.jam (filter: none)
 
 ## Troubleshooting
 
-**`graft-inject` reports `warning — markers not found: imports, state, ...`**
+**`nockup graft inject` reports `warning — markers not found: imports, state, ...`**
 You edited `app.hoon` without the marker comments, or your spacing is off. Two-space law: `::` followed by exactly two spaces, then `nockup:<name>`.
 
-**`graft-inject` errors with `unknown graft: <name>`**
-`--grafts <csv>` names a graft whose `.toml` isn't in `--lib-dir`. Check `graft-inject list` to see what's installed. Auto-discovery (bare invocation) won't produce this error — it just picks what's there.
+**`nockup graft inject` errors with `unknown graft: <name>`**
+`--grafts <csv>` names a graft whose `.toml` isn't in `--lib-dir`. Check `nockup graft list` to see what's installed. Auto-discovery (bare invocation) won't produce this error — it just picks what's there.
 
 **`hoonc` exits 0 but no `out.jam`**
 Type error in the kernel. Most common cause: your `effect` type is narrower than the union the grafted arms produce. Use `+$  effect  *` unless you've explicitly constrained it.
@@ -831,13 +831,13 @@ A `u64` you're feeding into `D()` has its top bit set. Use `nock_noun_rs::atom_f
 The verify-gate returned `%.n`. The `?>` in `lib/settle-graft.hoon`'s `%settle-note` arm crashes on gate failure by design — a rejected payload must remain an unprovable STARK state rather than an emitted error. From the Rust side, `app.poke(...).await` resolves `Ok(effects)` with `effects.len() == 0`; treat that as a gate rejection and inspect stderr for the trace. The most common cause is committing multiple leaves with the default single-leaf hash-gate (see Step 6's *Why a single-leaf commit?* note).
 
 **Poke resolves `Ok(vec![])` and stderr shows `slog: invalid cause [%<tag> ...] (full: <noun>)`**
-The hull emitted a cause-tag the kernel's `+$ cause` union doesn't accept, so `(soft cause)` returned `~` and the wrapper short-circuited before any arm ran. The diagnostic prints at the default tracing level (priority 1) — no `RUST_LOG=trace` needed. The bracketed `[%<tag> ...]` is the cord-decoded head of the rejected cause; the trailing `(full: <noun>)` is the complete cause cell for advanced inspection. If the head shows `%unknown`, the cause noun was either an atom or a cell whose head is itself a cell — both are malformed shapes for `[%tag args...]` causes. Common causes: typo in the hull-side bytestring; kernel rename without a corresponding hull update; new graft installed but the kernel hasn't been re-composed via `graft-inject inject --apply`. To catch this at compile time, see *Step 6 → Hull/kernel drift detection*.
+The hull emitted a cause-tag the kernel's `+$ cause` union doesn't accept, so `(soft cause)` returned `~` and the wrapper short-circuited before any arm ran. The diagnostic prints at the default tracing level (priority 1) — no `RUST_LOG=trace` needed. The bracketed `[%<tag> ...]` is the cord-decoded head of the rejected cause; the trailing `(full: <noun>)` is the complete cause cell for advanced inspection. If the head shows `%unknown`, the cause noun was either an atom or a cell whose head is itself a cell — both are malformed shapes for `[%tag args...]` causes. Common causes: typo in the hull-side bytestring; kernel rename without a corresponding hull update; new graft installed but the kernel hasn't been re-composed via `nockup graft inject --apply`. To catch this at compile time, see *Step 6 → Hull/kernel drift detection*.
 
 **Peek returns `~` on what looks like a valid path**
 Settle-graft's peek paths are **namespaced**: `[%settle-registered hull ~]`, `[%settle-noted note-id ~]`, `[%settle-root hull ~]`, `[%settle-epoch ~]`, `[%settle-count ~]`. Pre-Phase-10 unprefixed forms (`%registered` / `%settled` / `%root` / `%epoch`) and the transitional Phase-10 `%vesl-*` forms are both retired — Phase 12A landed `%settle-*` as the final naming. Rust callers going through `vesl-core` are unaffected; the builders construct pokes, not peek paths.
 
-**`out.jam` changed but graft-inject reported nothing**
-A comment-only or whitespace edit in a transitively-parsed `.hoon` library (anything under `hoon/lib/`, including helpers like `domain-patterns.hoon` that no marker imports directly) can shift `out.jam` even when graft-inject's per-graft summary reports `injected 0/N; skipped` across the board. The cause is hoonc-side, not graft-inject — something position-sensitive in the source (likely span metadata) bleeds into the jammed output. graft-inject is **manifest-keyed**: it re-injects only when a `<graft>.toml` digest changes, so library `.hoon` edits slip past it. If you need byte-stable `out.jam`, treat any `.hoon` edit as material — bump the corresponding `.toml`'s body to force a re-inject pass — even if you intended only a comment.
+**`out.jam` changed but `nockup graft inject` reported nothing**
+A comment-only or whitespace edit in a transitively-parsed `.hoon` library (anything under `hoon/lib/`, including helpers like `domain-patterns.hoon` that no marker imports directly) can shift `out.jam` even when `nockup graft inject`'s per-graft summary reports `injected 0/N; skipped` across the board. The cause is hoonc-side, not `nockup graft inject` — something position-sensitive in the source (likely span metadata) bleeds into the jammed output. `nockup graft inject` is **manifest-keyed**: it re-injects only when a `<graft>.toml` digest changes, so library `.hoon` edits slip past it. If you need byte-stable `out.jam`, treat any `.hoon` edit as material — bump the corresponding `.toml`'s body to force a re-inject pass — even if you intended only a comment.
 
 ## Reference
 
