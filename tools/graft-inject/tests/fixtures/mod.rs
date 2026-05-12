@@ -59,6 +59,21 @@ pub fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Paths produced by a single `compose_and_compile_*` run.
+///
+/// The basic [`compose_and_compile`] entry-point still hands back just
+/// the jam path because that's all 17+ lifecycle tests need. The
+/// extras-variant (phase03 prelude/postlude integration) needs to
+/// reach into the composed source to assert banner provenance and
+/// idempotence, so its wrapper returns this struct instead. `lib_dir`
+/// is exposed too: the idempotence re-runs need it for
+/// `graft-inject --lib-dir`.
+pub struct ComposedArtifacts {
+    pub jam_path: PathBuf,
+    pub source_path: PathBuf,
+    pub lib_dir: PathBuf,
+}
+
 /// Compose a graft-injected kernel and hoonc-compile it.
 ///
 /// Creates (and destroys) a scratch tree at `target/<scratch_subdir>/`
@@ -75,7 +90,7 @@ pub fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
 /// `hoonc` must be on `PATH` — same pre-req as every other build
 /// route in this repo.
 pub fn compose_and_compile(scratch_subdir: &str, grafts: &[&str]) -> Result<PathBuf> {
-    compose_and_compile_inner(scratch_subdir, grafts, &[], &[])
+    Ok(compose_and_compile_inner(scratch_subdir, grafts, &[], &[])?.jam_path)
 }
 
 /// Synthetic graft fixture inlined into a test's scratch hoon/lib/.
@@ -118,7 +133,7 @@ pub fn compose_and_compile_with_extras(
     scratch_subdir: &str,
     grafts: &[&str],
     extras: &[SyntheticGraft<'_>],
-) -> Result<PathBuf> {
+) -> Result<ComposedArtifacts> {
     compose_and_compile_inner(scratch_subdir, grafts, extras, &[])
 }
 
@@ -134,7 +149,7 @@ pub fn compose_and_compile_with_manifest_overrides(
     grafts: &[&str],
     overrides: &[ManifestOverride<'_>],
 ) -> Result<PathBuf> {
-    compose_and_compile_inner(scratch_subdir, grafts, &[], overrides)
+    Ok(compose_and_compile_inner(scratch_subdir, grafts, &[], overrides)?.jam_path)
 }
 
 fn compose_and_compile_inner(
@@ -142,7 +157,7 @@ fn compose_and_compile_inner(
     grafts: &[&str],
     extras: &[SyntheticGraft<'_>],
     overrides: &[ManifestOverride<'_>],
-) -> Result<PathBuf> {
+) -> Result<ComposedArtifacts> {
     let repo_root = repo_root();
     // Per-test tempdir prevents parallel test workers from racing on a
     // shared `target/<scratch_subdir>/` tree. `into_path()` persists the
@@ -225,7 +240,11 @@ fn compose_and_compile_inner(
     if !jam.exists() {
         bail!("hoonc succeeded but {} is missing", jam.display());
     }
-    Ok(jam)
+    Ok(ComposedArtifacts {
+        jam_path: jam,
+        source_path: hoon_app.join("app.hoon"),
+        lib_dir: hoon_lib,
+    })
 }
 
 /// Peek `[%<tag> hull ~]` on a commitment graft and extract the

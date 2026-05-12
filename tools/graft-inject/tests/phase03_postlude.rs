@@ -105,7 +105,8 @@ async fn postlude_transforms_switch_result() -> Result<()> {
         "phase03_postlude_single",
         &["settle-graft", "tap-graft"],
         &[tap_graft()],
-    )?;
+    )?
+    .jam_path;
     let mut harness = GraftTestHarness::boot(&jam_path).await?;
 
     // Poke %tap-poke. The arm emits %tap-poked. The postlude prepends
@@ -134,17 +135,12 @@ async fn postlude_transforms_switch_result() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postlude_banners_present_in_composed_source() -> Result<()> {
-    let _jam = compose_and_compile_with_extras(
+    let art = compose_and_compile_with_extras(
         "phase03_postlude_banners",
         &["settle-graft", "tap-graft"],
         &[tap_graft()],
     )?;
-
-    let scratch = fixtures::repo_root()
-        .join("target")
-        .join("phase03_postlude_banners")
-        .join("hoon/app/app.hoon");
-    let composed = std::fs::read_to_string(&scratch)?;
+    let composed = std::fs::read_to_string(&art.source_path)?;
 
     assert!(
         composed.contains("::  graft-inject:tap-graft:poke-postlude:begin"),
@@ -164,28 +160,24 @@ async fn postlude_banners_present_in_composed_source() -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn postlude_is_idempotent_under_rerun() -> Result<()> {
-    let _jam = compose_and_compile_with_extras(
+    let art = compose_and_compile_with_extras(
         "phase03_postlude_idempotent",
         &["settle-graft", "tap-graft"],
         &[tap_graft()],
     )?;
-    let scratch = fixtures::repo_root()
-        .join("target")
-        .join("phase03_postlude_idempotent")
-        .join("hoon/app/app.hoon");
-    let after_first = std::fs::read_to_string(&scratch)?;
+    let after_first = std::fs::read_to_string(&art.source_path)?;
 
     let status = std::process::Command::new(fixtures::graft_inject_bin())
         .arg("--lib-dir")
-        .arg(scratch.parent().unwrap().parent().unwrap().join("lib"))
+        .arg(&art.lib_dir)
         .arg("--grafts")
         .arg("settle-graft,tap-graft")
         .arg("--apply")
-        .arg(&scratch)
+        .arg(&art.source_path)
         .status()?;
     assert!(status.success(), "second graft-inject run failed");
 
-    let after_second = std::fs::read_to_string(&scratch)?;
+    let after_second = std::fs::read_to_string(&art.source_path)?;
     assert_eq!(
         after_first, after_second,
         "second graft-inject run must be byte-identical (idempotence)",

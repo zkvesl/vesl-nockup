@@ -105,7 +105,8 @@ async fn prelude_short_circuits_on_declared_cause() -> Result<()> {
         "phase03_prelude_single",
         &["settle-graft", "guard-test-graft"],
         &[guard_test_graft()],
-    )?;
+    )?
+    .jam_path;
     let mut harness = GraftTestHarness::boot(&jam_path).await?;
 
     // Poke %guard-trip. Prelude must short-circuit and emit
@@ -125,17 +126,12 @@ async fn prelude_banners_present_in_composed_source() -> Result<()> {
     // This test re-uses the scratch from the lifecycle test (does its
     // own compose under a distinct subdir) and inspects the composed
     // app.hoon for the per-graft banner pair.
-    let _jam = compose_and_compile_with_extras(
+    let art = compose_and_compile_with_extras(
         "phase03_prelude_banners",
         &["settle-graft", "guard-test-graft"],
         &[guard_test_graft()],
     )?;
-
-    let scratch = fixtures::repo_root()
-        .join("target")
-        .join("phase03_prelude_banners")
-        .join("hoon/app/app.hoon");
-    let composed = std::fs::read_to_string(&scratch)?;
+    let composed = std::fs::read_to_string(&art.source_path)?;
 
     assert!(
         composed.contains("::  graft-inject:guard-test-graft:poke-prelude:begin"),
@@ -158,29 +154,25 @@ async fn prelude_banners_present_in_composed_source() -> Result<()> {
 async fn prelude_is_idempotent_under_rerun() -> Result<()> {
     // Compose once, snapshot the source, compose again, assert
     // byte-identical output.
-    let _jam = compose_and_compile_with_extras(
+    let art = compose_and_compile_with_extras(
         "phase03_prelude_idempotent",
         &["settle-graft", "guard-test-graft"],
         &[guard_test_graft()],
     )?;
-    let scratch = fixtures::repo_root()
-        .join("target")
-        .join("phase03_prelude_idempotent")
-        .join("hoon/app/app.hoon");
-    let after_first = std::fs::read_to_string(&scratch)?;
+    let after_first = std::fs::read_to_string(&art.source_path)?;
 
     // Run graft-inject again on the already-injected file.
     let status = std::process::Command::new(fixtures::graft_inject_bin())
         .arg("--lib-dir")
-        .arg(scratch.parent().unwrap().parent().unwrap().join("lib"))
+        .arg(&art.lib_dir)
         .arg("--grafts")
         .arg("settle-graft,guard-test-graft")
         .arg("--apply")
-        .arg(&scratch)
+        .arg(&art.source_path)
         .status()?;
     assert!(status.success(), "second graft-inject run failed");
 
-    let after_second = std::fs::read_to_string(&scratch)?;
+    let after_second = std::fs::read_to_string(&art.source_path)?;
     assert_eq!(
         after_first, after_second,
         "second graft-inject run must be byte-identical (idempotence)",
