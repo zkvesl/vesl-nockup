@@ -641,3 +641,466 @@ pub(crate) struct CodegenTagsJson<'a> {
     pub(crate) source_sha256: &'a str,
     pub(crate) kernel_cause_tags: Vec<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::inject::inject;
+    use crate::manifest::discover_grafts;
+    use crate::test_support::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    // ---------------------------------------------------------------
+    // kernel-cause-tags emission
+    // ---------------------------------------------------------------
+
+    /// `emit_kernel_cause_tags_rs` produces a sorted slice + macro
+    /// scaffolding. Verify the slice contains the supplied tags in
+    /// sorted order and that the assert_kernel_cause_tag! macro
+    /// definition appears.
+    #[test]
+    fn codegen_kernel_cause_tags_emits_slice_and_macro() {
+        let mut tags = std::collections::BTreeSet::new();
+        tags.insert("settle-register".to_string());
+        tags.insert("g-set".to_string());
+        tags.insert("snapshot-root".to_string());
+        let path = PathBuf::from("hoon/app/app.hoon");
+        let src = emit_kernel_cause_tags_rs(&path, "deadbeef", &tags);
+        assert!(src.contains("pub const KERNEL_CAUSE_TAGS: &[&str] = &["));
+        // BTreeSet iteration order is sorted: g-set < settle-register < snapshot-root
+        let g_pos = src.find("\"g-set\"").expect("g-set should be present");
+        let s_pos = src
+            .find("\"settle-register\"")
+            .expect("settle-register should be present");
+        let sn_pos = src
+            .find("\"snapshot-root\"")
+            .expect("snapshot-root should be present");
+        assert!(g_pos < s_pos);
+        assert!(s_pos < sn_pos);
+        assert!(src.contains("macro_rules! assert_kernel_cause_tag"));
+        assert!(src.contains("Source: hoon/app/app.hoon sha256:deadbeef"));
+    }
+    // ---------------------------------------------------------------
+    // typed effect-union codegen
+    // ---------------------------------------------------------------
+
+    /// Synthetic graft with a `[graft.types]` declaration. Reuses
+    /// `synthetic_graft` (which leaves `types: None`) and overrides.
+    #[test]
+    fn codegen_skipped_without_marker() {
+        let g = synthetic_graft_with_effect("alpha", 10);
+        let (out, report) = inject(BARE_SCAFFOLD, &[g]).unwrap();
+        assert_eq!(report.codegen.status, CodegenStatus::Skipped);
+        assert!(report.codegen.variants.is_empty());
+        assert!(!out.contains("graft-inject:effect-union:begin"));
+    }
+
+    #[test]
+    fn codegen_inserts_with_one_graft() {
+        let g = synthetic_graft_with_effect("alpha", 10);
+        let (out, report) = inject(SCAFFOLD_WITH_UNION_MARKER, &[g]).unwrap();
+        assert_eq!(report.codegen.status, CodegenStatus::Inserted);
+        assert_eq!(report.codegen.variants, vec!["alpha-effect"]);
+        assert!(out.contains("::  graft-inject:effect-union:begin"));
+        assert!(out.contains("+$  effect"));
+        assert!(out.contains("$%  alpha-effect"));
+        assert!(out.contains("::  graft-inject:effect-union:end"));
+    }
+
+    #[test]
+    fn codegen_inserts_with_n_grafts() {
+        let grafts = vec![
+            synthetic_graft_with_effect("alpha", 10),
+            synthetic_graft_with_effect("beta", 20),
+            synthetic_graft_with_effect("gamma", 30),
+        ];
+        let (out, report) = inject(SCAFFOLD_WITH_UNION_MARKER, &grafts).unwrap();
+        assert_eq!(report.codegen.status, CodegenStatus::Inserted);
+        assert_eq!(
+            report.codegen.variants,
+            vec!["alpha-effect", "beta-effect", "gamma-effect"]
+        );
+        // Variant order in source matches the input slice (priority order).
+        let begin = out.find("graft-inject:effect-union:begin").unwrap();
+        let end = out.find("graft-inject:effect-union:end").unwrap();
+        let block = &out[begin..end];
+        let alpha = block.find("alpha-effect").unwrap();
+        let beta = block.find("beta-effect").unwrap();
+        let gamma = block.find("gamma-effect").unwrap();
+        assert!(alpha < beta && beta < gamma, "variants in priority order");
+    }
+
+    #[test]
+    fn codegen_includes_domain_effect_when_marker_present() {
+        let g = synthetic_graft_with_effect("alpha", 10);
+        let (out, report) = inject(SCAFFOLD_WITH_BOTH_MARKERS, &[g]).unwrap();
+        assert_eq!(report.codegen.status, CodegenStatus::Inserted);
+        assert_eq!(
+            report.codegen.variants,
+            vec!["alpha-effect", "domain-effect"]
+        );
+        assert!(out.contains("domain-effect"));
+        // Developer's `+$ domain-effect $%([%user-thing ~] ==)` declaration
+        // must survive the codegen pass untouched.
+        assert!(out.contains("[%user-thing ~]"));
+    }
+
+    #[test]
+    fn codegen_idempotent_unchanged_on_rerun() {
+        let g = synthetic_graft_with_effect("alpha", 10);
+        let (first, _) = inject(SCAFFOLD_WITH_UNION_MARKER, std::slice::from_ref(&g)).unwrap();
+        let (second, report) = inject(&first, &[g]).unwrap();
+        assert_eq!(first, second, "second run must be byte-identical");
+        assert_eq!(report.codegen.status, CodegenStatus::Unchanged);
+    }
+
+    #[test]
+    fn codegen_replace_grows_when_graft_added() {
+        let alpha = synthetic_graft_with_effect("alpha", 10);
+        let beta = synthetic_graft_with_effect("beta", 20);
+        let (one, _) = inject(SCAFFOLD_WITH_UNION_MARKER, std::slice::from_ref(&alpha)).unwrap();
+        let (two, report) = inject(&one, &[alpha, beta]).unwrap();
+        assert_eq!(report.codegen.status, CodegenStatus::Replaced);
+        assert_eq!(
+            report.codegen.variants,
+            vec!["alpha-effect", "beta-effect"]
+        );
+        assert!(two.contains("alpha-effect"));
+        assert!(two.contains("beta-effect"));
+    }
+
+    #[test]
+    fn codegen_replace_shrinks_when_graft_removed() {
+        let alpha = synthetic_graft_with_effect("alpha", 10);
+        let beta = synthetic_graft_with_effect("beta", 20);
+        let (two, _) = inject(SCAFFOLD_WITH_UNION_MARKER, &[alpha.clone(), beta]).unwrap();
+        assert!(two.contains("beta-effect"));
+        let (one, report) = inject(&two, &[alpha]).unwrap();
+        assert_eq!(report.codegen.status, CodegenStatus::Replaced);
+        assert_eq!(report.codegen.variants, vec!["alpha-effect"]);
+        // Codegen owns the union — the dropped variant must be gone.
+        let begin = one.find("graft-inject:effect-union:begin").unwrap();
+        let end = one.find("graft-inject:effect-union:end").unwrap();
+        let block = &one[begin..end];
+        assert!(!block.contains("beta-effect"), "beta-effect must be removed from union body");
+    }
+
+    #[test]
+    fn codegen_empty_graft_set_emits_placeholder() {
+        let (out, report) = inject(SCAFFOLD_WITH_UNION_MARKER, &[]).unwrap();
+        assert_eq!(report.codegen.status, CodegenStatus::Inserted);
+        assert_eq!(report.codegen.variants, vec!["[%effect-placeholder ~]"]);
+        assert!(out.contains("[%effect-placeholder ~]"));
+    }
+
+    #[test]
+    fn codegen_empty_graft_set_with_domain_effect() {
+        let (out, report) = inject(SCAFFOLD_WITH_BOTH_MARKERS, &[]).unwrap();
+        assert_eq!(report.codegen.status, CodegenStatus::Inserted);
+        assert_eq!(report.codegen.variants, vec!["domain-effect"]);
+        assert!(!out.contains("[%effect-placeholder ~]"));
+    }
+
+    #[test]
+    fn codegen_orphan_end_banner_bails() {
+        let src = "\
+::  test
+::
+::  nockup:effect-union
+::  graft-inject:effect-union:end
++$  cause
+  $%  [%cause ~]
+      ::  nockup:cause
+  ==
+--
+";
+        let g = synthetic_graft_with_effect("alpha", 10);
+        let result = inject(src, &[g]);
+        assert!(result.is_err());
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(msg.contains("orphan"), "error must mention orphan: {msg}");
+    }
+
+    #[test]
+    fn codegen_orphan_begin_banner_bails() {
+        let src = "\
+::  test
+::
+::  nockup:effect-union
+::  graft-inject:effect-union:begin
++$  effect
+  $%  alpha-effect
+  ==
++$  cause
+  $%  [%cause ~]
+      ::  nockup:cause
+  ==
+--
+";
+        let g = synthetic_graft_with_effect("alpha", 10);
+        let result = inject(src, &[g]);
+        assert!(result.is_err());
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(msg.contains("orphan"), "error must mention orphan: {msg}");
+    }
+
+    #[test]
+    fn codegen_replaces_post_migration_bare_effect_line() {
+        // Post-migration / pre-codegen state from commit 7: marker is
+        // present and a bare `+$  effect  *` line sits immediately
+        // beneath. Codegen must wrap-and-replace that single line.
+        let src = "\
+::  test
+::
+::  nockup:effect-union
++$  effect  *
+::
++$  cause
+  $%  [%cause ~]
+      ::  nockup:cause
+  ==
+--
+";
+        let g = synthetic_graft_with_effect("alpha", 10);
+        let (out, report) = inject(src, &[g]).unwrap();
+        assert_eq!(report.codegen.status, CodegenStatus::Inserted);
+        assert!(out.contains("+$  effect\n  $%  alpha-effect\n  ==\n"));
+        // The bare `+$  effect  *` line must be gone.
+        assert!(!out.lines().any(|l| l.trim() == "+$  effect  *"));
+    }
+    #[test]
+    fn duplicate_effect_type_bails() {
+        let dir = tempdir_for_test("duplicate_effect_type");
+        write_manifest_with_types(&dir, "a.toml", "alpha", "shared-effect", "alpha-cause");
+        write_manifest_with_types(&dir, "b.toml", "beta", "shared-effect", "beta-cause");
+        let err = discover_grafts(&dir).expect_err("duplicate type must bail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate [graft.types].effect `shared-effect`"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("a.toml"), "missing path a in: {msg}");
+        assert!(msg.contains("b.toml"), "missing path b in: {msg}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_cause_type_bails() {
+        let dir = tempdir_for_test("duplicate_cause_type");
+        write_manifest_with_types(&dir, "a.toml", "alpha", "alpha-effect", "shared-cause");
+        write_manifest_with_types(&dir, "b.toml", "beta", "beta-effect", "shared-cause");
+        let err = discover_grafts(&dir).expect_err("duplicate type must bail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate [graft.types].cause `shared-cause`"),
+            "got: {msg}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn distinct_effect_types_ok() {
+        // Sanity: different effect names across two manifests must NOT
+        // bail. Guards against an over-zealous uniqueness check.
+        let dir = tempdir_for_test("distinct_effect_types");
+        write_manifest_with_types(&dir, "a.toml", "alpha", "alpha-effect", "alpha-cause");
+        write_manifest_with_types(&dir, "b.toml", "beta", "beta-effect", "beta-cause");
+        let grafts = discover_grafts(&dir).expect("distinct types must load");
+        assert_eq!(grafts.len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn codegen_leaves_custom_effect_type_alone() {
+        // If the developer wrote `+$ effect (list @t)` (custom, not the
+        // bare `*`), the codegen INSERTs after the marker without
+        // touching the developer's line. The developer's definition
+        // ends up colliding with the synthesized one — which is hoonc's
+        // job to surface, not the codegen's. The point of this test is
+        // to confirm we don't silently rewrite bespoke types.
+        let src = "\
+::  test
+::
+::  nockup:effect-union
++$  effect  (list @t)
++$  cause
+  $%  [%cause ~]
+      ::  nockup:cause
+  ==
+--
+";
+        let g = synthetic_graft_with_effect("alpha", 10);
+        let (out, _report) = inject(src, &[g]).unwrap();
+        assert!(
+            out.contains("+$  effect  (list @t)"),
+            "custom effect type must NOT be rewritten by codegen"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // load-defaults overlay codegen (RM4 §1 v0.2)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn load_defaults_skipped_without_marker() {
+        // BARE_SCAFFOLD has no `nockup:load-defaults` marker — codegen
+        // returns Skipped and the source is unchanged where the load
+        // arm lives.
+        let g = synthetic_graft("alpha", 10);
+        let (out, report) = inject(BARE_SCAFFOLD, &[g]).unwrap();
+        assert_eq!(report.load_defaults.status, CodegenStatus::Skipped);
+        assert!(report.load_defaults.fields.is_empty());
+        assert!(!out.contains("graft-inject:load-defaults:begin"));
+    }
+
+    #[test]
+    fn load_defaults_inserts_overlay_for_one_graft() {
+        let g = synthetic_graft("alpha", 10);
+        let (out, report) = inject(SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER, &[g]).unwrap();
+        assert_eq!(report.load_defaults.status, CodegenStatus::Inserted);
+        assert_eq!(report.load_defaults.fields, vec!["alpha"]);
+        assert!(out.contains("::  graft-inject:load-defaults:begin"));
+        assert!(out.contains("=/  defaults  ^*(versioned-state)"));
+        assert!(out.contains("%_  defaults"));
+        // The per-field overlay line wraps the field-access in
+        // `(mole |.(;;(<type> <field>.old-state)))` so same-composition
+        // resume preserves data and schema-extension resume falls back
+        // to defaults exactly where axes shifted.
+        assert!(out.contains("alpha  =/  a  (mole |.(;;(alpha-state alpha.old-state)))"));
+        assert!(out.contains("?~(a ^*(alpha-state) u.a)"));
+        assert!(out.contains("::  graft-inject:load-defaults:end"));
+        // The `old-state` placeholder line must be gone — the codegen
+        // owns that slot now.
+        let begin = out.find("graft-inject:load-defaults:begin").unwrap();
+        let end = out.find("graft-inject:load-defaults:end").unwrap();
+        let block = &out[begin..end];
+        assert!(
+            !block.contains("\n    old-state\n") && !block.ends_with("old-state"),
+            "raw `old-state` placeholder must be replaced by overlay\nblock:\n{block}"
+        );
+    }
+
+    #[test]
+    fn load_defaults_emits_fields_in_priority_order() {
+        let grafts = vec![
+            synthetic_graft("alpha", 10),
+            synthetic_graft("beta", 20),
+            synthetic_graft("gamma", 30),
+        ];
+        let (out, report) = inject(SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER, &grafts).unwrap();
+        assert_eq!(report.load_defaults.status, CodegenStatus::Inserted);
+        assert_eq!(report.load_defaults.fields, vec!["alpha", "beta", "gamma"]);
+        let begin = out.find("graft-inject:load-defaults:begin").unwrap();
+        let end = out.find("graft-inject:load-defaults:end").unwrap();
+        let block = &out[begin..end];
+        let alpha = block.find("alpha  =/  a  (mole").unwrap();
+        let beta = block.find("beta  =/  b  (mole").unwrap();
+        let gamma = block.find("gamma  =/  g  (mole").unwrap();
+        assert!(
+            alpha < beta && beta < gamma,
+            "fields out of priority order in:\n{block}"
+        );
+    }
+
+    #[test]
+    fn load_defaults_idempotent_unchanged_on_rerun() {
+        let g = synthetic_graft("alpha", 10);
+        let (first, _) =
+            inject(SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER, std::slice::from_ref(&g)).unwrap();
+        let (second, report) = inject(&first, &[g]).unwrap();
+        assert_eq!(first, second, "second run must be byte-identical");
+        assert_eq!(report.load_defaults.status, CodegenStatus::Unchanged);
+    }
+
+    #[test]
+    fn load_defaults_replace_grows_when_graft_added() {
+        let alpha = synthetic_graft("alpha", 10);
+        let beta = synthetic_graft("beta", 20);
+        let (one, _) =
+            inject(SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER, std::slice::from_ref(&alpha)).unwrap();
+        let (two, report) = inject(&one, &[alpha, beta]).unwrap();
+        assert_eq!(report.load_defaults.status, CodegenStatus::Replaced);
+        assert_eq!(report.load_defaults.fields, vec!["alpha", "beta"]);
+        assert!(two.contains("alpha  =/  a  (mole"));
+        assert!(two.contains("beta  =/  b  (mole"));
+    }
+
+    #[test]
+    fn load_defaults_replace_shrinks_when_graft_removed() {
+        let alpha = synthetic_graft("alpha", 10);
+        let beta = synthetic_graft("beta", 20);
+        let (two, _) =
+            inject(SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER, &[alpha.clone(), beta]).unwrap();
+        assert!(two.contains("beta  =/  b  (mole"));
+        let (one, report) = inject(&two, &[alpha]).unwrap();
+        assert_eq!(report.load_defaults.status, CodegenStatus::Replaced);
+        assert_eq!(report.load_defaults.fields, vec!["alpha"]);
+        let begin = one.find("graft-inject:load-defaults:begin").unwrap();
+        let end = one.find("graft-inject:load-defaults:end").unwrap();
+        let block = &one[begin..end];
+        assert!(
+            !block.contains("beta  =/  b  (mole"),
+            "removed graft's overlay line must be gone\nblock:\n{block}",
+        );
+    }
+
+    #[test]
+    fn load_defaults_empty_graft_set_emits_bunt() {
+        // A composition with no stateful grafts (e.g. forge-only)
+        // should still produce a valid `_state`-typed expression. The
+        // codegen emits a bare `^*(versioned-state)` so the load arm
+        // is the bunt of the kernel state shape.
+        let (out, report) = inject(SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER, &[]).unwrap();
+        assert_eq!(report.load_defaults.status, CodegenStatus::Inserted);
+        assert!(report.load_defaults.fields.is_empty());
+        assert!(out.contains("^*(versioned-state)"));
+        assert!(!out.contains("%_  defaults"));
+    }
+
+    #[test]
+    fn load_defaults_skips_graft_without_state_block() {
+        // A graft that doesn't declare a `[graft.blocks.state]` block
+        // (forge-graft pattern: stateless) doesn't contribute a state
+        // field to versioned-state, so it must NOT appear in the
+        // overlay either.
+        let with_state = synthetic_graft("alpha", 10);
+        let mut without_state = synthetic_graft("forge", 50);
+        without_state.blocks.state = None;
+        let (out, report) =
+            inject(SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER, &[with_state, without_state]).unwrap();
+        assert_eq!(report.load_defaults.fields, vec!["alpha"]);
+        assert!(out.contains("alpha  =/  a  (mole"));
+        assert!(
+            !out.contains("forge  =/  f  (mole"),
+            "stateless graft must not contribute a load-defaults overlay line\n{out}",
+        );
+    }
+
+    #[test]
+    fn load_defaults_orphan_end_banner_bails() {
+        // An orphan end banner (no matching begin) is structural
+        // corruption; the codegen must surface it via Result::Err
+        // rather than silently emit a duplicate banner pair.
+        let src = "\
+::  test
+::  nockup:load-defaults
+::  graft-inject:load-defaults:end
+old-state
+::  nockup:effect-union
+::
++$  cause
+  $%  [%cause ~]
+      ::  nockup:cause
+  ==
+--
+";
+        let g = synthetic_graft("alpha", 10);
+        let err = inject(src, &[g]).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("orphan") && msg.contains("load-defaults"),
+            "expected orphan-banner error, got: {msg}"
+        );
+    }
+}
