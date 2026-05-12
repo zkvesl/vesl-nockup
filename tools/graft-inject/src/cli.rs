@@ -29,7 +29,8 @@ use crate::inject::{
 use crate::lint::{print_weld_lint, run_lint};
 use crate::manifest::{Graft, atomic_write, discover_grafts};
 use crate::marker::Marker;
-use crate::{DEFAULT_LIB_DIR, warn_if_lib_dir_out_of_tree};
+use crate::DEFAULT_LIB_DIR;
+use crate::util::warn_if_lib_dir_out_of_tree;
 
 pub(crate) const ASCII_LOGO: &str = r#"
 ██╗   ██╗███████╗███████╗██╗
