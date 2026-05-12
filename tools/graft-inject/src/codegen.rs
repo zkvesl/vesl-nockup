@@ -12,9 +12,10 @@ use serde::Serialize;
 use std::fs;
 use std::path::Path;
 
+use crate::binding_stub;
+use crate::lint::{CauseUnionMember, extract_cause_union_members, extract_graft_cause_tags};
 use crate::manifest::{Graft, discover_grafts, sha256_hex};
 use crate::marker::{Marker, codegen_begin_banner, codegen_end_banner, find_marker, leading_whitespace};
-use crate::{CauseUnionMember, binding_stub, extract_cause_union_members, extract_graft_cause_tags};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
