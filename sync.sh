@@ -21,7 +21,7 @@ set -euo pipefail
 # synced vesl-core crate stack moves to a new nockchain rev — typically
 # whatever sibling ../nockchain/ HEAD was when the crates were last built.
 # Overridable via env: NOCK_PIN=<sha> ./sync.sh
-NOCK_PIN="${NOCK_PIN:-c51f8040457de1c7d799de6024c4b22275371cf4}"
+NOCK_PIN="${NOCK_PIN:-1a23ccdabf3f8909bf7c7966c48edc36cbf91a66}"
 
 here="$(cd "$(dirname "$0")" && pwd)"
 vesl="${1:-$HOME/projects/nockchain/vesl-core}"
