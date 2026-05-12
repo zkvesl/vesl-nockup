@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::gates::{apply_gate_selection, validate_gate_selection};
 use crate::marker::Marker;
-use crate::{apply_gate_selection, validate_gate_selection};
 
 /// Top-level wrapper for the `[graft]` table in a manifest file.
 #[derive(Debug, Clone, Deserialize)]
