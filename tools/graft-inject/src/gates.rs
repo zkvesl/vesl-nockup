@@ -155,19 +155,10 @@ pub(crate) fn apply_gate_selection(g: &mut Graft, path: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use crate::manifest::{ManifestFile, sha256_hex};
+    use crate::test_support::settle_graft_manifest_path;
     use anyhow::Result;
     use serde::Deserialize;
     use std::fs;
-    use std::path::PathBuf;
-
-    fn settle_graft_manifest_path() -> PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("hoon")
-            .join("lib")
-            .join("settle-graft.toml")
-    }
 
     /// Load settle-graft.toml and inject a `[graft.gates]` selection by
     /// re-parsing the TOML with an appended `[graft.gates]` table. Avoids

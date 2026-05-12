@@ -387,14 +387,7 @@ pub(crate) fn is_valid_graft_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn tempdir_for_test(label: &str) -> PathBuf {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("graft-inject-test-{label}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use crate::test_support::tempdir_for_test;
 
     #[test]
     fn loader_rejects_missing_graft_table() {

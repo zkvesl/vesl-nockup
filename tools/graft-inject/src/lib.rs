@@ -46,6 +46,9 @@ mod manifest;
 mod marker;
 mod util;
 
+#[cfg(test)]
+mod test_support;
+
 use crate::cli::{Cli, dispatch};
 use crate::util::warn_if_stale;
 
@@ -69,132 +72,12 @@ mod tests {
     use crate::codegen::{CodegenStatus, emit_kernel_cause_tags_rs};
     use crate::inject::{inject, migrate_legacy_effect};
     use crate::manifest::{
-        Block, Graft, GraftBlocks, GraftTypes, discover_grafts, load_manifest, sha256_hex,
+        Block, Graft, GraftBlocks, discover_grafts, load_manifest, sha256_hex,
     };
     use crate::marker::{Marker, leading_whitespace};
+    use crate::test_support::*;
     use std::fs;
     use std::path::{Path, PathBuf};
-
-    const BARE_SCAFFOLD: &str = "\
-::  test scaffold
-/+  lib
-::  nockup:imports
-/=  *  /common/wrapper
-::
-=>
-|%
-+$  versioned-state
-  $:  %v1
-      ::  nockup:state
-      ~
-  ==
-::
-+$  effect  *
-::
-+$  cause
-  $%  [%cause ~]
-      ::  nockup:cause
-  ==
---
-|%
-++  moat  (keep versioned-state)
-::
-++  inner
-  |_  state=versioned-state
-  ++  load
-    |=  old=versioned-state
-    old
-  ++  peek
-    |=  =path
-    ^-  (unit (unit *))
-    ?+  path
-      ::  nockup:peek
-      ~
-      [%count ~]  ``0
-    ==
-  ++  poke
-    |=  =ovum:moat
-    ^-  [(list effect) _state]
-    =/  act  ((soft cause) cause.input.ovum)
-    ?~  act  [~ state]
-    ::  nockup:poke-prelude
-    =/  out=[efx=(list effect) new=_state]
-      ?-  -.u.act
-          %cause  [~ state]
-        ::  nockup:poke
-      ==
-    ::  nockup:poke-postlude
-    out
-  --
---
-((moat |) inner)
-";
-
-    fn settle_only_grafts() -> Vec<Graft> {
-        let path = settle_graft_manifest_path();
-        let g = load_manifest(&path)
-            .expect("load settle-graft.toml")
-            .expect("settle-graft.toml has [graft] table");
-        vec![g]
-    }
-
-    /// Build a minimal in-memory Graft for synthetic multi-graft tests.
-    /// `name` doubles as the binding stub in the peek chain (no `-graft`
-    /// suffix), so assertions can match `<name>-res` directly.
-    fn synthetic_graft(name: &str, priority: i32) -> Graft {
-        Graft {
-            name: name.to_string(),
-            version: "0.1.0".to_string(),
-            priority,
-            after: vec![],
-            blocks: GraftBlocks {
-                imports: Some(Block {
-                    sentinel: format!("*{name}"),
-                    body: format!("/+  *{name}"),
-                }),
-                state: Some(Block {
-                    sentinel: format!("{name}={name}-state"),
-                    body: format!("{name}={name}-state"),
-                }),
-                cause: Some(Block {
-                    sentinel: format!("{name}-cause"),
-                    body: format!("{name}-cause"),
-                }),
-                poke_prelude: None,
-                poke: Some(Block {
-                    sentinel: format!("%{name}-do"),
-                    body: format!(
-                        "  %{name}-do\n=/  lc=cause  [%{name}-do ~]\n[~ state]"
-                    ),
-                }),
-                poke_postlude: None,
-                peek: Some(Block {
-                    sentinel: format!("{name}-peek"),
-                    body: format!("({name}-peek state path)"),
-                }),
-            },
-            gates: None,
-            types: None,
-            sha256: String::new(),
-        }
-    }
-
-    fn settle_graft_manifest_path() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("hoon")
-            .join("lib")
-            .join("settle-graft.toml")
-    }
-
-    fn tempdir_for_test(label: &str) -> PathBuf {
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("graft-inject-test-{label}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
 
     #[test]
     fn injects_all_markers() {
@@ -610,21 +493,6 @@ mod tests {
 
     // ---------- CLI tests ----------
 
-    fn cli_with(lib_dir: PathBuf) -> Cli {
-        Cli {
-            command: None,
-            path: None,
-            grafts: Vec::new(),
-            exclude: Vec::new(),
-            lib_dir,
-            list: false,
-            json: false,
-            dry_run: false,
-            apply: false,
-            no_migrate: false,
-        }
-    }
-
     /// `graft-inject inject hoon/app/app.hoon --grafts foo,bar --apply`
     /// should parse cleanly into Command::Inject with the listed args.
     #[test]
@@ -712,48 +580,6 @@ mod tests {
         assert!(s_pos < sn_pos);
         assert!(src.contains("macro_rules! assert_kernel_cause_tag"));
         assert!(src.contains("Source: hoon/app/app.hoon sha256:deadbeef"));
-    }
-
-    /// Build a temp lib dir with settle-graft.toml and an alpha synthetic
-    /// manifest so multi-manifest selection logic can be tested without
-    /// the real hoon/lib tree.
-    fn tempdir_with_two_manifests(label: &str) -> PathBuf {
-        let dir = tempdir_for_test(label);
-        let settle_src = fs::read_to_string(settle_graft_manifest_path()).unwrap();
-        fs::write(dir.join("settle-graft.toml"), settle_src).unwrap();
-        fs::write(
-            dir.join("alpha.toml"),
-            r#"[graft]
-name     = "alpha"
-version  = "0.1.0"
-priority = 50
-after    = []
-
-[graft.blocks.imports]
-sentinel = "*alpha"
-body     = "/+  *alpha"
-
-[graft.blocks.state]
-sentinel = "alpha=alpha-state"
-body     = "alpha=alpha-state"
-
-[graft.blocks.cause]
-sentinel = "alpha-cause"
-body     = "alpha-cause"
-
-[graft.blocks.poke]
-sentinel = "%alpha-do"
-body     = """
-  %alpha-do
-[~ state]"""
-
-[graft.blocks.peek]
-sentinel = "alpha-peek"
-body     = "(alpha-peek state path)"
-"#,
-        )
-        .unwrap();
-        dir
     }
 
     #[test]
@@ -878,72 +704,6 @@ body     = "(alpha-peek state path)"
     }
 
     // ---------- AUDIT 2026-04-19 H-11..H-14 regressions ----------
-
-    /// Write a synthetic manifest with the given `name` into `dir` at
-    /// `file_name`, so `discover_grafts` can exercise collision + name
-    /// validation paths without touching the real hoon/lib tree.
-    fn write_manifest(dir: &Path, file_name: &str, name: &str) {
-        fs::write(
-            dir.join(file_name),
-            format!(
-                r#"[graft]
-name     = "{name}"
-version  = "0.1.0"
-priority = 50
-after    = []
-
-[graft.blocks.imports]
-sentinel = "*{name}"
-body     = "/+  *{name}"
-
-[graft.blocks.poke]
-sentinel = "%{name}-do"
-body     = """
-  %{name}-do
-[~ state]"""
-"#,
-            ),
-        )
-        .unwrap();
-    }
-
-    /// Like `write_manifest` but adds a `[graft.types]` table with the
-    /// caller-supplied effect/cause names. Used by the cross-graft type
-    /// uniqueness tests.
-    fn write_manifest_with_types(
-        dir: &Path,
-        file_name: &str,
-        name: &str,
-        effect: &str,
-        cause: &str,
-    ) {
-        fs::write(
-            dir.join(file_name),
-            format!(
-                r#"[graft]
-name     = "{name}"
-version  = "0.1.0"
-priority = 50
-after    = []
-
-[graft.types]
-effect = "{effect}"
-cause  = "{cause}"
-
-[graft.blocks.imports]
-sentinel = "*{name}"
-body     = "/+  *{name}"
-
-[graft.blocks.poke]
-sentinel = "%{name}-do"
-body     = """
-  %{name}-do
-[~ state]"""
-"#,
-            ),
-        )
-        .unwrap();
-    }
 
     /// H-11: two manifests claiming the same `name` must hard-error at
     /// discovery time, naming both source paths. The pre-audit loader let
@@ -1344,48 +1104,6 @@ body     = """
 
     /// Synthetic graft with a `[graft.types]` declaration. Reuses
     /// `synthetic_graft` (which leaves `types: None`) and overrides.
-    fn synthetic_graft_with_effect(name: &str, priority: i32) -> Graft {
-        let mut g = synthetic_graft(name, priority);
-        g.types = Some(GraftTypes {
-            effect: Some(format!("{name}-effect")),
-            cause: Some(format!("{name}-cause")),
-        });
-        g
-    }
-
-    /// Bare scaffold + a `nockup:effect-union` marker. Used as the
-    /// codegen test fixture so the existing BARE_SCAFFOLD tests keep
-    /// running unmodified.
-    const SCAFFOLD_WITH_UNION_MARKER: &str = "\
-::  test scaffold with codegen marker
-::  nockup:effect-union
-::
-+$  cause
-  $%  [%cause ~]
-      ::  nockup:cause
-  ==
---
-";
-
-    /// Same as above plus a `nockup:domain-effect` marker and a
-    /// developer-declared `+$ domain-effect` block.
-    const SCAFFOLD_WITH_BOTH_MARKERS: &str = "\
-::  test scaffold with both codegen markers
-::
-::  nockup:domain-effect
-+$  domain-effect
-  $%  [%user-thing ~]
-  ==
-::
-::  nockup:effect-union
-::
-+$  cause
-  $%  [%cause ~]
-      ::  nockup:cause
-  ==
---
-";
-
     #[test]
     fn codegen_skipped_without_marker() {
         let g = synthetic_graft_with_effect("alpha", 10);
@@ -1576,31 +1294,6 @@ body     = """
     /// Scaffold + a domain `%set` arm that binds narrowly. Used to
     /// exercise the weld-friction lint on developer code outside any
     /// graft-inject banner region.
-    const SCAFFOLD_NARROW_BINDING: &str = "\
-::  test scaffold with narrow effect bindings
-::
-::  nockup:domain-effect
-+$  domain-effect
-  $%  [%set-done ~]
-  ==
-::
-::  nockup:effect-union
-+$  effect  *
-::
-+$  cause
-  $%  [%cause ~]
-      [%set name=@t value=@]
-      ::  nockup:cause
-  ==
-::
-=/  [efx-c=(list counter-effect) new-counter=counter-state]
-  (counter-poke counter.state [%counter-increment name.u.act])
-=/  [efx-k=(list kv-effect) new-kv=kv-state]
-  (kv-poke kv.state [%kv-set name.u.act value.u.act])
-(weld efx-c efx-k)
---
-";
-
     #[test]
     fn weld_lint_flags_narrow_bindings_in_domain_code() {
         let counter = synthetic_graft_with_effect("counter", 60);
@@ -1796,24 +1489,6 @@ body     = """
     // ---------------------------------------------------------------
     // RM4 §1 v0.2: load-defaults overlay codegen
     // ---------------------------------------------------------------
-
-    /// Bare scaffold + a `nockup:load-defaults` marker placed inside an
-    /// `++load` arm body. The placeholder `old-state` line directly
-    /// after the marker mirrors the production marker template; the
-    /// codegen replaces it with a `=/  defaults  ^*(versioned-state)` +
-    /// `%_  defaults  ...  ==` overlay block.
-    const SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER: &str = "\
-::  test scaffold with load-defaults marker
-::  nockup:load-defaults
-old-state
-::  nockup:effect-union
-::
-+$  cause
-  $%  [%cause ~]
-      ::  nockup:cause
-  ==
---
-";
 
     #[test]
     fn load_defaults_skipped_without_marker() {
