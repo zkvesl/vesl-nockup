@@ -841,7 +841,7 @@ A comment-only or whitespace edit in a transitively-parsed `.hoon` library (anyt
 
 ## Reference
 
-- Marker source-of-truth: `tools/graft-inject/src/main.rs`
+- Marker source-of-truth: `tools/graft-inject/src/marker.rs` (`Marker::ALL` + `label()`); the composer is split across `lib.rs` (entry), `manifest.rs`, `gates.rs`, `inject.rs`, `codegen.rs`, `lint.rs`, `cli.rs`, `util.rs`
 - Manifest schema: `docs/graft-manifest.md`
 - Hoon grafts + manifests: `hoon/lib/{settle,mint,guard,forge}-graft.{hoon,toml}`
 - Merkle primitives: `hoon/lib/vesl-merkle.hoon`

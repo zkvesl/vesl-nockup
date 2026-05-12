@@ -393,9 +393,9 @@ fn print_human_value(v: &Value, indent: usize) {
 
 /// Read `[project].kernel_name` from `<project>/nockapp.toml`. Returns
 /// `None` for any failure path (missing file, malformed toml, missing
-/// field) so callers can fall back to defaults silently. Mirrors the
-/// helper of the same name in `tools/graft-inject/src/main.rs` so the
-/// two surfaces resolve the same value.
+/// field) so callers can fall back to defaults silently. Mirrors
+/// `read_kernel_name_from_toml` in `tools/graft-inject/src/cli.rs` so
+/// the two surfaces resolve the same value.
 fn read_kernel_name(project_root: &Path) -> Option<String> {
     let raw = std::fs::read_to_string(project_root.join("nockapp.toml")).ok()?;
     let value: toml::Value = toml::from_str(&raw).ok()?;

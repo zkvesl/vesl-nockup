@@ -6,6 +6,30 @@
 //! markers, and writes the result back. Idempotent per graft per marker.
 //!
 //! See `--help` for full CLI surface.
+//!
+//! Module map (audit §3.2 split, 2026-05-12):
+//!
+//! - [`manifest`] — `Graft` / `Block` schema, `load_manifest`,
+//!   `discover_grafts`, name + type validators.
+//! - [`gates`] — `TIER_1A_GATES` allowlist, `[graft.gates]`
+//!   selection + chain logic.
+//! - [`marker`] — `Marker` enum (`Marker::ALL`, `label()`),
+//!   banner helpers, `find_marker`, `strip_banner_pair`.
+//! - [`inject`] — marker-driven composer (`inject`, banner
+//!   emission, drift / orphan detection, legacy-effect
+//!   migration). Owns `binding_stub`.
+//! - [`codegen`] — typed effect-union, load-defaults overlay,
+//!   `kernel-cause-tags` Rust emission.
+//! - [`lint`] — five advisory passes (weld-friction,
+//!   bare-tilde, collision-check, transitive-imports,
+//!   internal-dupes) + `run_lint` CLI driver.
+//! - [`cli`] — clap definitions (`Cli` / `Command`), subcommand
+//!   `dispatch`, `run_inject`, `run_rename_kernel`, report
+//!   printers, `--list --json` schema.
+//! - [`util`] — binary staleness check + `--lib-dir`
+//!   trust-posture warning.
+//!
+//! The only public item is [`run`].
 
 use clap::Parser;
 use std::process::ExitCode;
