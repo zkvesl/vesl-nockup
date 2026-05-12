@@ -14,14 +14,33 @@
 #
 # Run from the vesl-nockup repo root. Leaves changes staged for review;
 # does not commit.
+#
+# --verify: copy + rewrite into a temp dir and diff against the
+# committed bundle. Nonzero exit on drift. Used by CI to catch
+# hand-edits to bundled crates / templates and sync.sh logic changes
+# that weren't re-run.
 
 set -euo pipefail
 
-# Pin baked into shipped templates' nockchain git-deps. Bump when the
+# --- arg parsing ---
+SYNC_VERIFY=0
+if [[ "${1:-}" == "--verify" ]]; then
+    SYNC_VERIFY=1
+    shift
+fi
+
+# --- pins ---
+# nockchain rev baked into shipped templates' git-deps. Bump when the
 # synced vesl-core crate stack moves to a new nockchain rev — typically
 # whatever sibling ../nockchain/ HEAD was when the crates were last built.
 # Overridable via env: NOCK_PIN=<sha> ./sync.sh
 NOCK_PIN="${NOCK_PIN:-1a23ccdabf3f8909bf7c7966c48edc36cbf91a66}"
+
+# vesl-core rev that the bundled crate stack + templates were last
+# synced from. sync.sh aborts when the sibling vesl-core's HEAD does
+# not match this — bump the pin deliberately (edit this line) before
+# re-running. Overridable via env: VESL_CORE_PIN=<sha> ./sync.sh
+VESL_CORE_PIN="${VESL_CORE_PIN:-19d6ce10ad837665f56bd6dd1d76cd3e6b2a7d0e}"
 
 here="$(cd "$(dirname "$0")" && pwd)"
 vesl="${1:-$HOME/projects/nockchain/vesl-core}"
@@ -29,14 +48,37 @@ vesl_wallet_repo="${2:-$HOME/projects/nockchain/vesl-wallet}"
 
 if [[ ! -d "$vesl" ]]; then
     echo "vesl-core source not found at $vesl" >&2
-    echo "usage: sync.sh [path-to-vesl-core-repo] [path-to-vesl-wallet-repo]" >&2
+    echo "usage: sync.sh [--verify] [path-to-vesl-core-repo] [path-to-vesl-wallet-repo]" >&2
     exit 1
 fi
 
 if [[ ! -d "$vesl_wallet_repo" ]]; then
     echo "vesl-wallet source not found at $vesl_wallet_repo" >&2
-    echo "usage: sync.sh [path-to-vesl-core-repo] [path-to-vesl-wallet-repo]" >&2
+    echo "usage: sync.sh [--verify] [path-to-vesl-core-repo] [path-to-vesl-wallet-repo]" >&2
     exit 1
+fi
+
+# --- pin check ---
+# Block sync when the sibling vesl-core HEAD has drifted from the
+# committed VESL_CORE_PIN. The operator bumps the pin by editing the
+# default above; CI uses VESL_CORE_PIN=<sha> override.
+if command -v git >/dev/null 2>&1; then
+    vesl_head=$(git -C "$vesl" rev-parse HEAD 2>/dev/null || echo "")
+    if [[ -n "$vesl_head" && "$vesl_head" != "$VESL_CORE_PIN" ]]; then
+        echo "vesl-core pin mismatch:" >&2
+        echo "  expected (VESL_CORE_PIN in sync.sh):  $VESL_CORE_PIN" >&2
+        echo "  actual  ($vesl HEAD):                 $vesl_head" >&2
+        echo >&2
+        echo "To bump: edit VESL_CORE_PIN at the top of sync.sh to the new SHA," >&2
+        echo "then re-run. CI overrides with VESL_CORE_PIN=<sha> ./sync.sh --verify." >&2
+        exit 1
+    fi
+    # Soft-warn on dirty working tree — pin only guarantees committed
+    # state matches; uncommitted changes leak into the bundle.
+    if ! git -C "$vesl" diff --quiet 2>/dev/null || \
+       ! git -C "$vesl" diff --cached --quiet 2>/dev/null; then
+        echo "warning: $vesl has uncommitted changes; sync copies working tree, not HEAD" >&2
+    fi
 fi
 
 # AUDIT 2026-04-19 M-21: refuse to run when source and destination
@@ -66,7 +108,21 @@ fi
 # vesl checkout; operators should review incoming changes the way they
 # would any other supply-chain input before running sync.sh.
 
-echo "syncing from $vesl"
+# --- destination ---
+# In verify mode, redirect all writes to a fresh empty temp dir. After
+# sync, diff temp vs $here for the known sync-target subtrees only.
+# Don't seed the temp with $here — vesl-nockup carries multi-GB
+# target/ build artifacts and `cp -rL` would copy all of them.
+real_here="$here"
+if [[ $SYNC_VERIFY -eq 1 ]]; then
+    here=$(mktemp -d -t vesl-nockup-sync-verify.XXXXXX)
+    trap 'rm -rf "$here"' EXIT
+    # Pre-create dirs sync writes into without mkdir -p of its own.
+    mkdir -p "$here/hoon/lib" "$here/templates"
+    echo "verify mode: syncing to $here, will diff against $real_here"
+else
+    echo "syncing from $vesl"
+fi
 
 # --- Hoon files ---
 echo "  hoon libs"
@@ -200,9 +256,9 @@ done
 # recreate it from the (now-MOVED.md) canonical copy without drift.
 rm -rf "$here/templates/graft-intent"
 
-echo "  templates (graft-scaffold + domain templates + hash-gate demo)"
+echo "  templates (graft-scaffold + domain templates + hash-gate demo + vesl)"
 for t in graft-scaffold graft-hash-gate graft-intent graft-mint graft-settle \
-         data-registry settle-report counter; do
+         data-registry settle-report counter vesl; do
     if [[ -d "$vesl/templates/$t" ]]; then
         rm -rf "$here/templates/$t"
         cp -rL "$vesl/templates/$t" "$here/templates/$t"
@@ -220,8 +276,76 @@ for t in graft-scaffold graft-hash-gate graft-intent graft-mint graft-settle \
                 's|path = "\.\./\.\./\.\./nockchain/crates/[^"]*"|git = "https://github.com/nockchain/nockchain.git", rev = "'"$NOCK_PIN"'"|g' \
                 "$toml"
         fi
+        # vesl-nockup ships the codegen binary as `nockup-graft` (the
+        # sidecar that `nockup graft <subcmd>` dispatches to). vesl-core
+        # canonical names it `graft-inject`. Rewrite build.rs strings so
+        # shipped templates invoke the nockup-named binary at scaffold
+        # time. Editorial CLI mentions in .hoon comments are backported
+        # to vesl-core canonical instead (single source of truth there).
+        buildrs="$here/templates/$t/build.rs"
+        if [[ -f "$buildrs" ]]; then
+            sed -i 's/graft-inject/nockup-graft/g' "$buildrs"
+        fi
+        # Strip cargo build artifacts that local `cargo build` left in
+        # vesl-core/templates/<t>/. Shipped templates are source-only;
+        # target/ is multi-GB pollution and pollutes the verify diff.
+        rm -rf "$here/templates/$t/target"
     fi
 done
+
+# --- .sync-pins.toml ---
+# Records the pins this bundle was synced from. CI's sync-verify job
+# regenerates this and diffs; hand-bumping a pin here without re-running
+# sync.sh produces drift and fails CI.
+cat > "$here/.sync-pins.toml" <<EOF
+# Auto-generated by sync.sh. Bumping a pin here is meaningless without
+# re-running sync. See VESL_CORE_PIN / NOCK_PIN at the top of sync.sh.
+
+[vesl-core]
+repo = "https://github.com/zkvesl/vesl-core"
+pin  = "$VESL_CORE_PIN"
+
+[nockchain]
+repo = "https://github.com/nockchain/nockchain"
+pin  = "$NOCK_PIN"
+EOF
+
+# --- verify diff ---
+if [[ $SYNC_VERIFY -eq 1 ]]; then
+    # Preserve files that live under synced dirs but sync.sh deliberately
+    # doesn't touch (kept-canonical files). Without this they'd register
+    # as drift (missing in the empty temp). Currently just templates/app.hoon,
+    # the marker reference. Extend this list if other kept files emerge.
+    [[ -f "$real_here/templates/app.hoon" ]] && \
+        cp "$real_here/templates/app.hoon" "$here/templates/app.hoon"
+    echo
+    echo "verifying sync output against committed bundle"
+    # Restrict diff to paths sync.sh actually writes. A full $here vs
+    # $real_here diff would flag every untouched file in $real_here as
+    # "missing" because temp seeded with $real_here/. and sync only
+    # overwrites specific subtrees — anything else is identical.
+    drift=0
+    for path in hoon/lib hoon/common hoon/dat hoon/jams docs/graft-manifest.md \
+                crates templates .sync-pins.toml; do
+        # Exclude target/ — cargo build artifacts pollute both sides
+        # and aren't part of shipped templates. Exclude Cargo.lock for
+        # the same reason; per-template lockfiles drift with every
+        # transitive dep release and aren't what sync produces.
+        if ! diff -ruN --exclude=target --exclude=Cargo.lock \
+                "$real_here/$path" "$here/$path" > /tmp/sync-verify-diff.$$ 2>&1; then
+            echo "DRIFT: $path"
+            cat /tmp/sync-verify-diff.$$
+            drift=1
+        fi
+        rm -f /tmp/sync-verify-diff.$$
+    done
+    if [[ $drift -eq 0 ]]; then
+        echo "OK — sync output matches committed bundle"
+        exit 0
+    else
+        exit 1
+    fi
+fi
 
 echo
 echo "sync complete. review with:"
