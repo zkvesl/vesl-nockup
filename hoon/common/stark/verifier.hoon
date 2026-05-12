@@ -594,16 +594,12 @@
       ::
         =;  bool
           ?:  bool  bool
-          ~&  "decode multiset terminal comparison check failed"
-          ~&  ['decode-eq' bool]
-          bool
+          ~&("decode multiset terminal comparison check failed" bool)
         =((got-pelt mp %compute-decode-mset) (got-pelt mp %memory-decode-mset))
       ::
         =;  bool
           ?:  bool  bool
-          ~&  "Nock 0 multiset terminal comparison check failed"
-          ~&  ['op0-eq' bool]
-          bool
+          ~&("Nock 0 multiset terminal comparison check failed" bool)
         =((got-pelt mp %compute-op0-mset) (got-pelt mp %memory-op0-mset))
     ==
   ::

@@ -40,7 +40,7 @@ NOCK_PIN="${NOCK_PIN:-1a23ccdabf3f8909bf7c7966c48edc36cbf91a66}"
 # synced from. sync.sh aborts when the sibling vesl-core's HEAD does
 # not match this — bump the pin deliberately (edit this line) before
 # re-running. Overridable via env: VESL_CORE_PIN=<sha> ./sync.sh
-VESL_CORE_PIN="${VESL_CORE_PIN:-19d6ce10ad837665f56bd6dd1d76cd3e6b2a7d0e}"
+VESL_CORE_PIN="${VESL_CORE_PIN:-c4ca118b5e8478e1d3c3f121f0b876f0891aef31}"
 
 here="$(cd "$(dirname "$0")" && pwd)"
 vesl="${1:-$HOME/projects/nockchain/vesl-core}"
@@ -314,10 +314,20 @@ EOF
 if [[ $SYNC_VERIFY -eq 1 ]]; then
     # Preserve files that live under synced dirs but sync.sh deliberately
     # doesn't touch (kept-canonical files). Without this they'd register
-    # as drift (missing in the empty temp). Currently just templates/app.hoon,
-    # the marker reference. Extend this list if other kept files emerge.
+    # as drift (missing in the empty temp). Extend this list if other kept
+    # files emerge.
+    #
+    #   templates/app.hoon — the canonical scaffold marker reference.
+    #   hoon/lib/lib.hoon — placeholder `/+  lib` import target for the
+    #     BARE_SCAFFOLD test fixture; not a sync-derived graft.
+    #   templates/WALLET_CONFIG.md — vesl-nockup-local TOML-toggle doc
+    #     for the per-role wallet config pattern.
     [[ -f "$real_here/templates/app.hoon" ]] && \
         cp "$real_here/templates/app.hoon" "$here/templates/app.hoon"
+    [[ -f "$real_here/hoon/lib/lib.hoon" ]] && \
+        cp "$real_here/hoon/lib/lib.hoon" "$here/hoon/lib/lib.hoon"
+    [[ -f "$real_here/templates/WALLET_CONFIG.md" ]] && \
+        cp "$real_here/templates/WALLET_CONFIG.md" "$here/templates/WALLET_CONFIG.md"
     echo
     echo "verifying sync output against committed bundle"
     # Restrict diff to paths sync.sh actually writes. A full $here vs

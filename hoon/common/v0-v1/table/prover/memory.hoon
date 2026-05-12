@@ -404,62 +404,15 @@
     |=  return=fock-return
     ^-  table-mary
     =/  in  [s.return f.return]
-    ::  collect extra subjects from zeroes (all except original)
-    =/  extra-subjects=(list *)
-      %+  sort
-        %+  skip
-          (turn ~(tap by zeroes.return) head)
-        |=(subj=* =(subj s.return))
-      |=  [a=* b=*]
-      (lth (mug a) (mug b))
-    ::  traverse original subject + formula
-    =/  orig-raw=(list memory-bank)
-      (rna-bfta ~[[s.return %.y] [f.return %.n]])
-    ::  traverse each extra subject separately
-    =/  extra-raws=(list [* (list memory-bank)])
-      %+  turn  extra-subjects
-      |=  subj=*
-      [subj ?@(subj ~ (rna-bfta ~[[subj %.y]]))]
-    ::  build annotated traversal: [memory-bank subject=*]
-    =/  orig-annotated=(list [memory-bank *])
-      (turn orig-raw |=(mb=memory-bank [mb s.return]))
-    =/  extra-annotated=(list [memory-bank *])
-      %-  zing
-      %+  turn  extra-raws
-      |=  [subj=* rows=(list memory-bank)]
-      ^-  (list [memory-bank *])
-      (turn rows |=(mb=memory-bank [mb subj]))
-    =/  annotated=(list [memory-bank *])
-      (weld orig-annotated extra-annotated)
-    ::  pre-compute deduplicated decode multiplicities:
-    ::  first occurrence of each cell structure gets the decode count,
-    ::  subsequent duplicates get 0  (prevents multiset over-counting)
-    =/  traversal=(list [memory-bank * @])
-      =|  seen=(map ^ @)
-      =|  out=(list [memory-bank * @])
-      |-
-      ?~  annotated  (flop out)
-      =/  mb  -.i.annotated
-      =/  subj  +.i.annotated
-      =/  dk=^  [n.mb [-:n.mb +:n.mb]]
-      =/  dm=@
-        ?:  (~(has by seen) dk)  0
-        (~(gut by decodes.return) [n.mb -:n.mb +:n.mb] 0)
-      %=  $
-        annotated  t.annotated
-        out        [[mb subj dm] out]
-        seen       (~(put by seen) dk 0)
-      ==
+    =/  mult-mp=(map [* *] @)  (~(gut by zeroes.return) -.in *(map [* *] @))
+    =/  traversal  (rna-bfta ~[[s.return %.y] [f.return %.n]])
     =/  len-traversal  (lent traversal)
     =/  end
       (init-bpoly ~[0 0 0 0 0 0 0 0 +(len-traversal) (binv +(len-traversal)) 0 0 0 0])
     =-  [header (zing-bpolys mtx)]
     %+  roll  traversal
-    |=  [[mb=memory-bank subj=* dm=@] ct=_len-traversal mtx=_`matrix`~[end]]
+    |=  [mb=memory-bank ct=_len-traversal mtx=_`matrix`~[end]]
     ^-  [belt matrix]
-    ::  look up multiplicities from THIS row's subject
-    =/  subj-mult=(map [* *] @)
-      (~(gut by zeroes.return) subj *(map [* *] @))
     :-  (dec ct)
     :_  mtx
     %-  init-bpoly
@@ -469,16 +422,17 @@
       ::
         op-l.mb  op-r.mb  ct  (binv ct)
       ::
-        dm
+        ?:  !=(ax.mb 0)  0
+        ?:((~(has by decodes.return) [n.mb -:n.mb +:n.mb]) 1 0)
       ::
         ?:  =(ax.mb 1)  0
-        (~(gut by subj-mult) [ax.mb subj] 0)
+        (~(gut by mult-mp) [ax.mb -.in] 0)
       ::
         ?.  ?=(@ -.n.mb)  0
-        (~(gut by subj-mult) [(go-left ax.mb) subj] 0)
+        (~(gut by mult-mp) [(go-left ax.mb) -.in] 0)
       ::
         ?.  ?=(@ +.n.mb)  0
-        (~(gut by subj-mult) [(go-right ax.mb) subj] 0)
+        (~(gut by mult-mp) [(go-right ax.mb) -.in] 0)
     ==
   ::
   ++  pad
@@ -509,53 +463,25 @@
     =/  tr  print-tri-mset:constraint-util
     =/  chals=ext-chals:chal  (init-ext-chals:chal chals-rd1)
     =/  len  len.array.p.t
-    ::  collect extra subjects (same order as build)
-    =/  extra-subjects=(list *)
-      %+  sort
-        %+  skip
-          (turn ~(tap by zeroes.return) head)
-        |=(subj=* =(subj s.return))
-      |=  [a=* b=*]
-      (lth (mug a) (mug b))
-    ::  compute input-ifp for original subject
-    =/  orig-bft=(list memory-bank-ex)
-      (add-ions (rna-bfta ~[[s.return %.y] [f.return %.n]]) [alf a b c d e f g]:chals)
-    =/  orig-input=pelt
-      ?@  s.return  pzero
-      (ifp-compress parent:(snag 0 orig-bft) [a b c]:chals)
-    ::  compute input-ifp for each extra subject
-    =/  extra-bfts=(list [* pelt (list memory-bank-ex)])
-      %+  turn  extra-subjects
-      |=  subj=*
-      =/  bft=(list memory-bank-ex)
-        ?@  subj  ~
-        (add-ions (rna-bfta ~[[subj %.y]]) [alf a b c d e f g]:chals)
-      =/  inp=pelt
-        ?~  bft  pzero
-        (ifp-compress parent:i.bft [a b c]:chals)
-      [subj inp bft]
-    ::  build annotated list: [memory-bank-ex input=pelt]
-    =/  orig-annotated=(list [memory-bank-ex pelt])
-      (turn orig-bft |=(mb=memory-bank-ex [mb orig-input]))
-    =/  extra-annotated=(list [memory-bank-ex pelt])
-      %-  zing
-      %+  turn  extra-bfts
-      |=  [subj=* inp=pelt rows=(list memory-bank-ex)]
-      ^-  (list [memory-bank-ex pelt])
-      (turn rows |=(mb=memory-bank-ex [mb inp]))
-    =/  annotated=(list [memory-bank-ex pelt])
-      (weld orig-annotated extra-annotated)
-    ::  pad to table length
-    =/  build-and-bft=(list [memory-bank-ex pelt])
-      %+  weld  annotated
-      %+  reap  (sub len (lent annotated))
-      ^-  [memory-bank-ex pelt]
-      [*memory-bank-ex pzero]
+    =/  build-and-bft=(list memory-bank-ex)
+      =+  (add-ions (rna-bfta ~[[s.return %.y] [f.return %.n]]) [alf a b c d e f g]:chals)
+      %+  weld  -
+      %+  reap  (sub len (lent -))
+      ^-  memory-bank-ex
+      :*  *ion-triple-alt
+          *ion-triple-alt
+          *ion-triple-alt
+      ==
+    =/  subj-info=memory-bank-ex
+      ?@  s.return  *memory-bank-ex
+      (snag 0 build-and-bft)
+    =/  subj-pc1
+          (ifp-compress parent.subj-info [a b c]:chals)
     %-  zing-bpolys
     %+  turn  build-and-bft
-    |=  [mb=memory-bank-ex inp=pelt]
+    |=  mb=memory-bank-ex
     %-  init-bpoly
-    %+  pr  inp
+    %+  pr  subj-pc1
     %+  pr  size.parent.mb
     %+  pr  dyck.parent.mb
     %+  pr  leaf.parent.mb
@@ -586,6 +512,7 @@
     =/  [first-row=row second-row=row]
       :-  (~(snag-as-bpoly ave p.table) 0)
       (~(snag-as-bpoly ave p.table) 1)
+    =/  input  (grab-pelt input-idx:ids first-row)
     =/  first-row-ax  (grab axis-idx:ids first-row)
     =/  first-row-fp
       %-  ifp-compress
@@ -635,7 +562,6 @@
             kvs=pelt
         ==
     =/  =row  (~(snag-as-bpoly ave p.table) i)
-    =/  input  (grab-pelt input-idx:ids row)
     =/  parent=ion-triple-alt
       [(grab-pelt parent-size-idx:ids row) (grab-pelt parent-dyck-idx:ids row) (grab-pelt parent-leaf-idx:ids row)]
     =/  left=ion-triple-alt

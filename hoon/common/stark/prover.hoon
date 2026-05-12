@@ -180,7 +180,6 @@
       (zip-up tables table-exts)
       |=  [t=table-dat ext=table-mary]
       ^-  table-dat
-      ~&  ['weld' name.p.t ext-width.p.t ext-width.-.ext]
       :_  [q.t r.t]
       (weld-exts:tlib p.t ext)
     ::

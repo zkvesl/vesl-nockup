@@ -51,7 +51,7 @@ fn main() {
 
 fn emit_kernel_cause_tags(out_dir: &str, hoon_app_file: &str) {
     let cause_tags_out = format!("{}/kernel_cause_tags.rs", out_dir);
-    let result = Command::new("graft-inject")
+    let result = Command::new("nockup-graft")
         .args([
             "codegen",
             "kernel-cause-tags",
@@ -68,11 +68,11 @@ fn emit_kernel_cause_tags(out_dir: &str, hoon_app_file: &str) {
             );
         }
         Ok(r) => println!(
-            "cargo:warning=graft-inject codegen failed: {}",
+            "cargo:warning=nockup-graft codegen failed: {}",
             String::from_utf8_lossy(&r.stderr)
         ),
         Err(e) => println!(
-            "cargo:warning=Could not run graft-inject: {}. Skipping cause-tag codegen.",
+            "cargo:warning=Could not run nockup-graft: {}. Skipping cause-tag codegen.",
             e
         ),
     }

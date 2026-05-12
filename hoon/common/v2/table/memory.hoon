@@ -28,7 +28,6 @@
     ==
   ++  ext-column-names
     ^-  (list col-name)
-    %+  pelt-col  %input
     %+  pelt-col  %parent-size
     %+  pelt-col  %parent-dyck
     %+  pelt-col  %parent-leaf

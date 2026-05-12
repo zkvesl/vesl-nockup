@@ -284,7 +284,7 @@
         [c.a c.b c.c c.alf]
       ::=/  invalf  (mpinv-pelt alf)
       =/  one  (mp-c 1)
-      =/  input  (w %input)
+      =/  input  (r %input)
       =/  l-axis  (mpmul (mp-c 2) (v %axis))
       =/  r-axis  (mpadd (mpmul (mp-c 2) (v %axis)) (v %axis-flag))
       %-  ~(gas by *(map term mp-ultra))

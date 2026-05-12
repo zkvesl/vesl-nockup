@@ -10,9 +10,9 @@ name = "graft-intent"
 path = "src/main.rs"
 
 [dependencies]
-nockapp = { git = "https://github.com/nockchain/nockchain.git", rev = "c51f8040457de1c7d799de6024c4b22275371cf4" }
-nockvm = { git = "https://github.com/nockchain/nockchain.git", rev = "c51f8040457de1c7d799de6024c4b22275371cf4" }
-nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "c51f8040457de1c7d799de6024c4b22275371cf4" }
+nockapp = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66" }
+nockvm = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66" }
+nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66" }
 
 nock-noun-rs = { path = "../../crates/nock-noun-rs" }
 
