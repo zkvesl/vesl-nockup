@@ -1,0 +1,850 @@
+//! Clap-driven CLI surface: the `Cli` / `Command` parser, subcommand
+//! dispatch, and per-subcommand drivers (`run_inject`, `run_rename_kernel`,
+//! the lint / codegen pass-throughs).
+//!
+//! Audit §3.2 extraction. The shared `Cli` flag-set carries the
+//! legacy-bare-invocation path; the `Command::*` variants are the
+//! modern subcommand surface. `dispatch` reifies each subcommand into
+//! the legacy shape and feeds it to `run_inject`, keeping the inject
+//! pipeline a single code path.
+//!
+//! The `--list` JSON schema (`GraftSummary` / `GraftTypesSummary`) is
+//! stable per the manifest doc — additive bumps only.
+//!
+//! Reporting helpers (`emit_list`, `print_report`, `print_codegen_line`)
+//! live here because their output shape is tightly coupled to the CLI
+//! flags (`--json`, `--apply`, etc.) that drive them.
+
+use anyhow::{Context, Result, anyhow, bail};
+use clap::{Parser, Subcommand};
+use serde::Serialize;
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use crate::codegen::{CodegenReport, CodegenStatus, run_codegen_kernel_cause_tags};
+use crate::inject::{
+    InjectReport, MigrationReport, inject, migrate_legacy_effect, print_migration_line,
+};
+use crate::lint::{print_weld_lint, run_lint};
+use crate::manifest::{Graft, atomic_write, discover_grafts};
+use crate::marker::Marker;
+use crate::{DEFAULT_LIB_DIR, warn_if_lib_dir_out_of_tree};
+
+pub(crate) const ASCII_LOGO: &str = r#"
+██╗   ██╗███████╗███████╗██╗
+██║   ██║██╔════╝██╔════╝██║
+██║   ██║█████╗  ███████╗██║
+╚██╗ ██╔╝██╔══╝  ╚════██║██║
+ ╚████╔╝ ███████╗███████║███████╗
+  ╚═══╝  ╚══════╝╚══════╝╚══════╝
+"#;
+
+#[derive(Parser, Debug)]
+#[command(
+    name = "graft-inject",
+    version,
+    about = "Compose vesl-flavored grafts into a nockup app.hoon kernel",
+    long_about = "Compose vesl-flavored grafts into a nockup app.hoon kernel.\n\
+                  \n\
+                  Subcommands:\n  \
+                    inject     compose grafts into app.hoon (preview-by-default; --apply to write)\n  \
+                    list       list discovered grafts under --lib-dir\n  \
+                  \n\
+                  Without a subcommand, falls back to the legacy bare invocation\n\
+                  (`graft-inject <PATH> --grafts ...`). That form is deprecated; prefer\n\
+                  `graft-inject inject <PATH>` so the operation is explicit. Run\n\
+                  `graft-inject <subcommand> --help` for subcommand-specific options.",
+    after_help = ASCII_LOGO,
+)]
+pub(crate) struct Cli {
+    /// Top-level subcommand. When omitted, the legacy bare-invocation
+    /// flags (`<PATH>`, `--grafts`, `--apply`, `--list`, …) are honored
+    /// for back-compat — a one-line deprecation note prints to stderr.
+    #[command(subcommand)]
+    pub(crate) command: Option<Command>,
+
+    /// Target file (omit when using --list).
+    pub(crate) path: Option<PathBuf>,
+
+    /// Comma-separated graft names, in injection order. When omitted,
+    /// auto-discovers all *.toml manifests under --lib-dir.
+    #[arg(long, value_delimiter = ',')]
+    pub(crate) grafts: Vec<String>,
+
+    /// Comma-separated graft names to subtract from the discovered set.
+    /// Ignored when --grafts is given (use --grafts instead).
+    #[arg(long, value_delimiter = ',')]
+    pub(crate) exclude: Vec<String>,
+
+    /// Manifest discovery root.
+    #[arg(long, default_value = DEFAULT_LIB_DIR)]
+    pub(crate) lib_dir: PathBuf,
+
+    /// Print discovered grafts and exit. Pair with --json for machine-readable.
+    #[arg(long)]
+    pub(crate) list: bool,
+
+    /// JSON output mode (currently only meaningful with --list).
+    #[arg(long)]
+    pub(crate) json: bool,
+
+    /// Deprecated alias of the default preview-only behavior. Kept for
+    /// script compatibility through the AUDIT 2026-04-19 H-10 transition.
+    /// Prints a one-line deprecation note to stderr and otherwise does
+    /// nothing beyond the default.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+
+    /// Write the composed output to PATH. AUDIT 2026-04-19 H-10: the
+    /// default is preview-only — stdout gets the composed Hoon, stderr
+    /// gets the per-manifest sha256 summary, disk is untouched. This
+    /// flag is the explicit "yes, compose these manifests into kernel
+    /// source" acknowledgement.
+    #[arg(long)]
+    pub(crate) apply: bool,
+
+    /// Skip the auto-migration of legacy `+$  effect  *` to the
+    /// marker-shape (`nockup:domain-effect` + `nockup:effect-union` +
+    /// bare `+$ effect *`). Default behavior is to migrate
+    /// transparently; `--no-migrate` is the opt-out for paranoid review.
+    /// The codegen pass still skips kernels without the
+    /// `nockup:effect-union` marker.
+    #[arg(long = "no-migrate")]
+    pub(crate) no_migrate: bool,
+}
+
+/// Subcommands. Each variant carries its own argument set so
+/// `graft-inject <subcmd> --help` shows only the relevant flags. Bare
+/// `graft-inject <PATH> [flags]` keeps working through the
+/// `Cli::command == None` branch in `main`.
+#[derive(Subcommand, Debug, Clone)]
+pub(crate) enum Command {
+    /// Compose grafts into app.hoon (preview-by-default; --apply to write).
+    Inject {
+        /// Target Hoon source file.
+        path: PathBuf,
+
+        /// Comma-separated graft names, in injection order. When omitted,
+        /// auto-discovers all *.toml manifests under --lib-dir.
+        #[arg(long, value_delimiter = ',')]
+        grafts: Vec<String>,
+
+        /// Comma-separated graft names to subtract from the discovered set.
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
+
+        /// Manifest discovery root.
+        #[arg(long, default_value = DEFAULT_LIB_DIR)]
+        lib_dir: PathBuf,
+
+        /// Write the composed output to PATH (default is preview-only).
+        #[arg(long)]
+        apply: bool,
+
+        /// Skip the auto-migration of legacy `+$ effect *` to the marker
+        /// shape. Default migrates transparently.
+        #[arg(long = "no-migrate")]
+        no_migrate: bool,
+    },
+
+    /// List discovered grafts under --lib-dir.
+    List {
+        /// Manifest discovery root.
+        #[arg(long, default_value = DEFAULT_LIB_DIR)]
+        lib_dir: PathBuf,
+
+        /// Comma-separated graft names to subtract from the discovered set.
+        #[arg(long, value_delimiter = ',')]
+        exclude: Vec<String>,
+
+        /// JSON output mode (machine-readable).
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Run pre-apply structural validations on app.hoon. Exits 1 on
+    /// any HARD finding so CI can gate `--apply` on the lint passing.
+    Lint {
+        /// Target Hoon source file.
+        path: PathBuf,
+
+        /// Manifest discovery root for collision-check across grafts.
+        #[arg(long, default_value = DEFAULT_LIB_DIR)]
+        lib_dir: PathBuf,
+
+        /// JSON output mode (machine-readable).
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Emit Rust source from app.hoon — codegen target depends on the
+    /// sub-subcommand. Currently ships `kernel-cause-tags`; future
+    /// targets append here.
+    Codegen {
+        #[command(subcommand)]
+        target: CodegenTarget,
+    },
+
+    /// Rename the project kernel from `hoon/app/<from>.hoon` to
+    /// `hoon/app/<new-name>.hoon`. Updates `[project].kernel_name` in
+    /// `nockapp.toml` and rewrites bash code blocks in `./README.md`
+    /// if present. Preview-by-default; `--apply` writes.
+    RenameKernel {
+        /// New kernel base name (without `.hoon` suffix). Validated
+        /// against `^[a-z][a-z0-9-]*$` (Hoon module name shape).
+        new_name: String,
+
+        /// Existing kernel base name to rename FROM. Defaults to the
+        /// `[project].kernel_name` value in `./nockapp.toml` if set,
+        /// else `"app"` — so re-renames don't require typing the
+        /// previous name.
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Write the planned operations to disk. Default is
+        /// preview-only (matches the `inject` subcommand convention).
+        #[arg(long)]
+        apply: bool,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub(crate) enum CodegenTarget {
+    /// Emit `pub const KERNEL_CAUSE_TAGS: &[&str]` from app.hoon's
+    /// composed cause $%. Pairs with the `assert_kernel_cause_tag!`
+    /// macro the same file emits, so driver-side
+    /// `b"<tag>"` literals are checked at compile time against the
+    /// kernel's accepted tags. Closes RM1 HARD-BUG-3 (kernel rename
+    /// invisible to driver) and HARD-FRICTION-4 (driver tag with no
+    /// kernel arm).
+    KernelCauseTags {
+        /// Target Hoon source file (app.hoon with the grafts already
+        /// composed, or the canonical scaffold for codegen-only flows).
+        path: PathBuf,
+
+        /// Manifest discovery root. Cause tags are collected from
+        /// every graft's `[graft.blocks.poke]` body in addition to
+        /// the domain `nockup:cause` region.
+        #[arg(long, default_value = DEFAULT_LIB_DIR)]
+        lib_dir: PathBuf,
+
+        /// Output Rust file path. Without `--out` the emitted source
+        /// goes to stdout — useful for `cargo run -- codegen ... |
+        /// rustfmt`.
+        #[arg(long)]
+        out: Option<PathBuf>,
+
+        /// JSON output mode — emit a `{"kernel_cause_tags": [...]}`
+        /// document to stdout instead of Rust source. Useful for
+        /// non-Rust consumers and CI smoke checks.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// Schema item for `--list --json`. Stable across the v3 plan's lifespan;
+/// version bumps append fields, never reshape existing ones. Documented
+/// in vesl/docs/graft-manifest.md (`--list --json schema`).
+#[derive(Debug, Serialize)]
+pub(crate) struct GraftSummary<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) version: &'a str,
+    pub(crate) priority: i32,
+    pub(crate) blocks: Vec<&'static str>,
+    pub(crate) applicable: usize,
+    pub(crate) deferred: bool,
+    /// Hex sha256 of the manifest's raw TOML bytes. AUDIT 2026-04-19
+    /// H-10: lets supply-chain reviewers pin expected digests without
+    /// re-reading the file.
+    pub(crate) sha256: &'a str,
+    /// Per-graft `[graft.types]` table contents, surfaced for tooling
+    /// that wants to know which grafts contribute to the typed effect
+    /// union. `null` when the manifest omits the table.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) types: Option<GraftTypesSummary<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct GraftTypesSummary<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) effect: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cause: Option<&'a str>,
+}
+
+impl<'a> GraftSummary<'a> {
+    pub(crate) fn from_graft(g: &'a Graft) -> Self {
+        let blocks: Vec<&'static str> = Marker::ALL
+            .iter()
+            .filter(|m| g.block(**m).is_some())
+            .map(|m| m.label())
+            .collect();
+        let applicable = blocks.len();
+        let types = g.types.as_ref().map(|t| GraftTypesSummary {
+            effect: t.effect.as_deref(),
+            cause: t.cause.as_deref(),
+        });
+        Self {
+            name: &g.name,
+            version: &g.version,
+            priority: g.priority,
+            blocks,
+            applicable,
+            deferred: false,
+            sha256: &g.sha256,
+            types,
+        }
+    }
+}
+
+/// Subcommand dispatch. Either runs an explicit subcommand (modern
+/// surface) or falls through to the legacy bare-invocation flow
+/// (`graft-inject <PATH> --apply --grafts ...`) — emitting a
+/// deprecation note when the legacy path is taken so scripts know to
+/// migrate.
+///
+/// Each subcommand variant is reified into the legacy `Cli` shape and
+/// handed to `run()`. The shared dispatch keeps subcommand-specific
+/// flags isolated in `Command::*` while reusing the inject pipeline
+/// and the `select_grafts` / `emit_list` plumbing unchanged.
+pub(crate) fn dispatch(cli: Cli) -> Result<()> {
+    match cli.command {
+        Some(Command::Inject {
+            path,
+            grafts,
+            exclude,
+            lib_dir,
+            apply,
+            no_migrate,
+        }) => run_inject(Cli {
+            command: None,
+            path: Some(path),
+            grafts,
+            exclude,
+            lib_dir,
+            list: false,
+            json: false,
+            dry_run: false,
+            apply,
+            no_migrate,
+        }),
+        Some(Command::List {
+            lib_dir,
+            exclude,
+            json,
+        }) => run_inject(Cli {
+            command: None,
+            path: None,
+            grafts: Vec::new(),
+            exclude,
+            lib_dir,
+            list: true,
+            json,
+            dry_run: false,
+            apply: false,
+            no_migrate: false,
+        }),
+        Some(Command::Lint {
+            path,
+            lib_dir,
+            json,
+        }) => run_lint(&path, &lib_dir, json),
+        Some(Command::Codegen { target }) => match target {
+            CodegenTarget::KernelCauseTags {
+                path,
+                lib_dir,
+                out,
+                json,
+            } => run_codegen_kernel_cause_tags(&path, &lib_dir, out.as_deref(), json),
+        },
+        Some(Command::RenameKernel {
+            new_name,
+            from,
+            apply,
+        }) => run_rename_kernel(&new_name, from.as_deref(), apply),
+        None => {
+            // Legacy bare-invocation back-compat. The user typed
+            // `graft-inject <PATH> ...` or `graft-inject --list ...`
+            // without naming a subcommand; emit a deprecation hint
+            // unless this is a help-style invocation with nothing to do.
+            if cli.list {
+                eprintln!(
+                    "graft-inject: --list is deprecated; use \
+                     `graft-inject list` instead."
+                );
+            } else if cli.path.is_some() {
+                eprintln!(
+                    "graft-inject: bare-invocation is deprecated; use \
+                     `graft-inject inject <PATH>` instead."
+                );
+            }
+            run_inject(cli)
+        }
+    }
+}
+
+/// Validate a kernel base name against the Hoon module name shape:
+/// lowercase letter start, then lowercase letters, digits, or hyphens.
+/// Hand-rolled regex `^[a-z][a-z0-9-]*$` to avoid pulling in the
+/// `regex` crate for one check.
+fn validate_kernel_name(s: &str) -> Result<()> {
+    let mut chars = s.chars();
+    let first = chars
+        .next()
+        .ok_or_else(|| anyhow!("kernel name must not be empty"))?;
+    if !first.is_ascii_lowercase() {
+        bail!("kernel name `{s}` must start with a lowercase letter (a-z)");
+    }
+    for c in chars {
+        if !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+            bail!(
+                "kernel name `{s}` may only contain lowercase letters, digits, \
+                 and hyphens"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Locate the project root by walking up from `start` until a directory
+/// containing `nockapp.toml` is found. Mirrors `has_nockapp_toml_ancestor`
+/// but returns the path so callers can read/write files relative to it.
+fn find_project_root(start: &Path) -> Option<PathBuf> {
+    let mut cur = Some(start);
+    while let Some(dir) = cur {
+        if dir.join("nockapp.toml").is_file() {
+            return Some(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+/// Read `[project].kernel_name` from a project's `nockapp.toml`. Returns
+/// `None` for any failure path (missing file, malformed toml, missing
+/// field) so callers can fall back to defaults silently.
+fn read_kernel_name_from_toml(toml_path: &Path) -> Option<String> {
+    let raw = fs::read_to_string(toml_path).ok()?;
+    let value: toml::Value = toml::from_str(&raw).ok()?;
+    value
+        .get("project")?
+        .get("kernel_name")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Rewrite `[project].kernel_name = "<new>"` in `nockapp.toml`,
+/// preserving comments and key ordering via `toml_edit`. Creates the
+/// `[project]` table if missing.
+fn rewrite_nockapp_toml(path: &Path, new_name: &str) -> Result<()> {
+    use toml_edit::{value, DocumentMut, Item, Table};
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("read {}", path.display()))?;
+    let mut doc: DocumentMut = raw
+        .parse()
+        .with_context(|| format!("parse {}", path.display()))?;
+    if !doc.contains_key("project") {
+        doc["project"] = Item::Table(Table::new());
+    }
+    doc["project"]["kernel_name"] = value(new_name);
+    fs::write(path, doc.to_string())
+        .with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
+/// Substitute `hoon/app/<from>.hoon` → `hoon/app/<new>.hoon` inside
+/// fenced ```bash code blocks in a README. Returns the substitution
+/// count. No-op (returns Ok(0)) when the file is absent.
+fn rewrite_readme_codeblocks(path: &Path, from: &str, new: &str) -> Result<usize> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("read {}", path.display()))?;
+    let needle = format!("hoon/app/{from}.hoon");
+    let replacement = format!("hoon/app/{new}.hoon");
+    let mut out = String::with_capacity(raw.len());
+    let mut in_bash = false;
+    let mut count = 0usize;
+    for line in raw.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if !in_bash && trimmed.starts_with("```bash") {
+            in_bash = true;
+            out.push_str(line);
+        } else if in_bash && trimmed.starts_with("```") {
+            in_bash = false;
+            out.push_str(line);
+        } else if in_bash {
+            let occurrences = line.matches(&needle).count();
+            if occurrences > 0 {
+                count += occurrences;
+                out.push_str(&line.replace(&needle, &replacement));
+            } else {
+                out.push_str(line);
+            }
+        } else {
+            out.push_str(line);
+        }
+    }
+    fs::write(path, out)
+        .with_context(|| format!("write {}", path.display()))?;
+    Ok(count)
+}
+
+/// `nockup graft rename-kernel <new>` entry point. Renames the project
+/// kernel file, updates `[project].kernel_name` in `nockapp.toml`, and
+/// rewrites bash code blocks in `./README.md` if present.
+///
+/// `from` is the previous kernel base name. When `None`, defaults to
+/// the value of `[project].kernel_name` in `nockapp.toml` if set, else
+/// `"app"`. Preview-by-default — only `apply == true` writes to disk.
+fn run_rename_kernel(new: &str, from: Option<&str>, apply: bool) -> Result<()> {
+    validate_kernel_name(new)?;
+
+    let cwd = std::env::current_dir().context("get current directory")?;
+    let project_root = find_project_root(&cwd).ok_or_else(|| {
+        anyhow!(
+            "no nockapp.toml found in `{}` or its ancestors; run \
+             `nockup graft rename-kernel` from inside a vesl project",
+            cwd.display()
+        )
+    })?;
+
+    let toml_path = project_root.join("nockapp.toml");
+
+    let from_owned = from.map(str::to_string).unwrap_or_else(|| {
+        read_kernel_name_from_toml(&toml_path).unwrap_or_else(|| "app".to_string())
+    });
+
+    let app_dir = project_root.join("hoon/app");
+    let old_path = app_dir.join(format!("{from_owned}.hoon"));
+    let new_path = app_dir.join(format!("{new}.hoon"));
+
+    if !old_path.exists() {
+        bail!(
+            "source kernel `{}` not found (use --from to override)",
+            old_path.display()
+        );
+    }
+    if new_path.exists() {
+        bail!(
+            "target `{}` already exists; refusing to clobber",
+            new_path.display()
+        );
+    }
+
+    let readme_path = project_root.join("README.md");
+
+    eprintln!("nockup graft rename-kernel: planned operations");
+    eprintln!("  rename {} → {}", old_path.display(), new_path.display());
+    eprintln!(
+        "  set    [project].kernel_name = \"{new}\" in {}",
+        toml_path.display()
+    );
+    if readme_path.exists() {
+        eprintln!(
+            "  edit   {} (substitute hoon/app/{from_owned}.hoon → hoon/app/{new}.hoon in bash blocks)",
+            readme_path.display()
+        );
+    } else {
+        eprintln!("  edit   README.md skipped (file absent)");
+    }
+
+    if !apply {
+        eprintln!("  (preview only — pass --apply to write)");
+        return Ok(());
+    }
+
+    fs::rename(&old_path, &new_path).with_context(|| {
+        format!("rename {} → {}", old_path.display(), new_path.display())
+    })?;
+    rewrite_nockapp_toml(&toml_path, new)?;
+    let readme_edits = rewrite_readme_codeblocks(&readme_path, &from_owned, new)?;
+    eprintln!(
+        "nockup graft rename-kernel: applied (README substitutions: {readme_edits})"
+    );
+    Ok(())
+}
+
+pub(crate) fn run_inject(cli: Cli) -> Result<()> {
+    let grafts = select_grafts(&cli)?;
+
+    if cli.list {
+        emit_list(&grafts, cli.json);
+        return Ok(());
+    }
+
+    let path = cli.path.as_ref().ok_or_else(|| {
+        anyhow!("missing target path (or use --list to enumerate discovered grafts)")
+    })?;
+    // AUDIT 2026-04-19 L-19: require the target to be a Hoon source
+    // file. A mistyped argument (e.g. `graft-inject README.md`) would
+    // otherwise inject Hoon into whatever happened to contain a marker
+    // pattern — useful only for shooting feet.
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("hoon") => {}
+        Some(other) => bail!(
+            "target {} has extension `.{}`; refusing to inject Hoon into a non-.hoon file",
+            path.display(),
+            other,
+        ),
+        None => bail!(
+            "target {} has no file extension; refusing to inject Hoon into a non-.hoon file",
+            path.display(),
+        ),
+    }
+    let raw_source = fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+
+    // Optional auto-migration of legacy `+$ effect *` to the marker
+    // shape. Runs before the inject pass so the codegen can take over
+    // the rewritten line in the same `--apply` invocation.
+    let (source, migration) = if cli.no_migrate {
+        (raw_source, MigrationReport::skipped())
+    } else {
+        migrate_legacy_effect(&raw_source)
+    };
+    print_migration_line(&migration);
+
+    let (output, report) = inject(&source, &grafts)
+        .with_context(|| format!("injecting into {}", path.display()))?;
+
+    if cli.dry_run {
+        eprintln!(
+            "graft-inject: --dry-run is deprecated; preview is the default. \
+             Pass --apply to write."
+        );
+    }
+
+    // AUDIT 2026-04-19 H-10: preview by default, `--apply` to write. The
+    // preview prints composed Hoon to stdout and a sha256 summary to
+    // stderr so reviewers can see both the exact output and which
+    // manifests produced it before any bytes hit disk.
+    if cli.apply {
+        if output != source {
+            atomic_write(path, &output)
+                .with_context(|| format!("writing {}", path.display()))?;
+        }
+    } else {
+        print!("{output}");
+    }
+
+    print_report(path, &report, &grafts, cli.apply);
+    if report.markers_in_source.is_empty() {
+        bail!(
+            "no nockup markers found in {}; nothing to wire",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Resolve the effective graft set per CLI flags. `--grafts` is explicit
+/// (must name discovered grafts; unknown names hard-error). Otherwise
+/// discover all manifests under `--lib-dir` and subtract `--exclude`.
+pub(crate) fn select_grafts(cli: &Cli) -> Result<Vec<Graft>> {
+    if !cli.lib_dir.is_dir() {
+        bail!(
+            "lib-dir {} does not exist or is not a directory",
+            cli.lib_dir.display()
+        );
+    }
+    warn_if_lib_dir_out_of_tree(&cli.lib_dir);
+    let mut discovered = discover_grafts(&cli.lib_dir)
+        .with_context(|| format!("discovering grafts under {}", cli.lib_dir.display()))?;
+    if discovered.is_empty() {
+        bail!(
+            "no grafts discovered under {}; expected at least one *.toml with a [graft] table",
+            cli.lib_dir.display()
+        );
+    }
+
+    if !cli.grafts.is_empty() {
+        let known: HashSet<&str> = discovered.iter().map(|g| g.name.as_str()).collect();
+        let mut selected: Vec<Graft> = Vec::new();
+        for name in &cli.grafts {
+            if !known.contains(name.as_str()) {
+                bail!(
+                    "unknown graft `{name}` (discovered: {})",
+                    discovered
+                        .iter()
+                        .map(|g| g.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+            // Keep CLI ordering for the explicit form.
+            let g = discovered
+                .iter()
+                .find(|g| g.name == *name)
+                .expect("checked above")
+                .clone();
+            selected.push(g);
+        }
+        return Ok(selected);
+    }
+
+    if !cli.exclude.is_empty() {
+        let exclude: HashSet<&str> = cli.exclude.iter().map(String::as_str).collect();
+        discovered.retain(|g| !exclude.contains(g.name.as_str()));
+        if discovered.is_empty() {
+            eprintln!("graft-inject: warning — all discovered grafts were excluded");
+        }
+    }
+    Ok(discovered)
+}
+
+pub(crate) fn emit_list(grafts: &[Graft], json: bool) {
+    if json {
+        let summaries: Vec<GraftSummary> = grafts.iter().map(GraftSummary::from_graft).collect();
+        let s = serde_json::to_string_pretty(&summaries)
+            .expect("GraftSummary always serializes");
+        println!("{s}");
+        return;
+    }
+    if grafts.is_empty() {
+        println!("(no grafts discovered)");
+        return;
+    }
+    for g in grafts {
+        let summary = GraftSummary::from_graft(g);
+        println!(
+            "  {:<16} {:<8} priority={:<3} ({})",
+            summary.name,
+            summary.version,
+            summary.priority,
+            summary.blocks.join(", ")
+        );
+    }
+}
+
+/// Print the per-graft injection report to stderr. stderr (not stdout)
+/// so preview users can pipe the rendered file out cleanly. Includes the
+/// per-manifest sha256 so supply-chain reviewers can confirm what's
+/// about to be composed (AUDIT 2026-04-19 H-10).
+fn print_report(path: &Path, report: &InjectReport, grafts: &[Graft], applied: bool) {
+    eprintln!("graft-inject: {}", path.display());
+    let sha_by_name: HashMap<&str, &str> = grafts
+        .iter()
+        .map(|g| (g.name.as_str(), g.sha256.as_str()))
+        .collect();
+    let mut had_output = false;
+    for g in &report.grafts {
+        if g.applicable.is_empty() {
+            continue;
+        }
+        had_output = true;
+        let injected_labels: Vec<&str> =
+            g.injected.iter().map(|m| m.label()).collect();
+        let skipped_labels: Vec<&str> =
+            g.skipped.iter().map(|m| m.label()).collect();
+        let sha = sha_by_name
+            .get(g.name.as_str())
+            .copied()
+            .unwrap_or("(sha unavailable)");
+        // First 12 hex chars are enough to eyeball; full digest goes in
+        // --list --json for machine-readable audits.
+        let short = &sha[..sha.len().min(12)];
+        let mut summary = format!(
+            "  {:<16} sha256:{short} injected {}/{}",
+            g.name,
+            g.injected.len(),
+            g.applicable.len()
+        );
+        if !injected_labels.is_empty() {
+            summary.push_str(&format!(" ({})", injected_labels.join(", ")));
+        }
+        if !skipped_labels.is_empty() {
+            summary.push_str(&format!("; skipped {}", skipped_labels.join(", ")));
+        }
+        if !g.pruned.is_empty() {
+            // RH1 step 1: a graft can both be in the active set AND have
+            // had stale orphan markers (from a partial prior run). Surface
+            // both states on the same line.
+            let pruned_labels: Vec<&str> = g.pruned.iter().map(|m| m.label()).collect();
+            summary.push_str(&format!("; pruned {}", pruned_labels.join(", ")));
+        }
+        eprintln!("{summary}");
+    }
+    // RH1 step 1: orphan grafts (banner pairs present in source but graft
+    // dropped from --grafts) carry no manifest, so they live on a separate
+    // carrier. Surface them so the user sees the drop confirmed.
+    for g in &report.pruned_grafts {
+        had_output = true;
+        let pruned_labels: Vec<&str> = g.pruned.iter().map(|m| m.label()).collect();
+        eprintln!(
+            "  {:<16} no-manifest    pruned {}/{} ({}) (orphan blocks from previous injection)",
+            g.name,
+            g.pruned.len(),
+            g.applicable.len(),
+            pruned_labels.join(", ")
+        );
+    }
+    if !had_output {
+        eprintln!("  (no grafts contributed)");
+    }
+    let present_labels: Vec<&str> = report
+        .markers_in_source
+        .iter()
+        .map(|m| m.label())
+        .collect();
+    let missing_labels: Vec<&str> = report
+        .markers_missing
+        .iter()
+        .map(|m| m.label())
+        .collect();
+    // Use `applicable` (not `injected`) so the count is stable across `--apply` reruns.
+    let populated_labels: Vec<&str> = report
+        .markers_in_source
+        .iter()
+        .filter(|m| report.grafts.iter().any(|g| g.applicable.contains(m)))
+        .map(|m| m.label())
+        .collect();
+    eprintln!(
+        "  markers in source: {} ({})",
+        present_labels.len(),
+        present_labels.join(", ")
+    );
+    eprintln!(
+        "  markers populated: {} ({})",
+        populated_labels.len(),
+        populated_labels.join(", ")
+    );
+    if !missing_labels.is_empty() {
+        eprintln!(
+            "  warning — markers not found: {}",
+            missing_labels.join(", ")
+        );
+    }
+    print_codegen_line(&report.codegen);
+    print_weld_lint(&report.weld_lint);
+    if !applied {
+        eprintln!("  (preview only — pass --apply to write {})", path.display());
+    }
+}
+
+/// One-line stderr surface for the typed effect-union codegen pass.
+/// Skipped: silent on success-path silence (every kernel without the
+/// marker would otherwise spam this line). Inserted/Replaced/Unchanged:
+/// announce variant count + names so reviewers can confirm the union
+/// matches the active graft set without re-reading the kernel.
+fn print_codegen_line(report: &CodegenReport) {
+    let label = match report.status {
+        CodegenStatus::Skipped => {
+            eprintln!(
+                "  effect-union codegen: skipped (no nockup:effect-union marker; cast/weld friction remains)"
+            );
+            return;
+        }
+        CodegenStatus::Inserted => "inserted",
+        CodegenStatus::Replaced => "replaced",
+        CodegenStatus::Unchanged => "unchanged",
+    };
+    eprintln!(
+        "  effect-union codegen: {label} ({} variant{}: {})",
+        report.variants.len(),
+        if report.variants.len() == 1 { "" } else { "s" },
+        report.variants.join(", "),
+    );
+}
