@@ -14,8 +14,37 @@ on:
 
 env:
   NOCK_PIN: c51f8040457de1c7d799de6024c4b22275371cf4
+  VESL_CORE_PIN: 19d6ce10ad837665f56bd6dd1d76cd3e6b2a7d0e
 
 jobs:
+  sync-verify:
+    # Detects drift between the bundled crates/templates and what
+    # sync.sh would produce given VESL_CORE_PIN. Catches hand-edits
+    # to bundled files and sync.sh logic changes that weren't re-run.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout vesl-nockup
+        uses: actions/checkout@v4
+        with:
+          path: vesl-nockup
+
+      - name: Checkout vesl-core (sibling, at pinned rev)
+        uses: actions/checkout@v4
+        with:
+          repository: zkvesl/vesl-core
+          ref: ${{ env.VESL_CORE_PIN }}
+          path: vesl-core
+
+      - name: Checkout vesl-wallet (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: zkvesl/vesl-wallet
+          path: vesl-wallet
+
+      - name: Run sync.sh --verify
+        working-directory: vesl-nockup
+        run: ./sync.sh --verify "$GITHUB_WORKSPACE/vesl-core" "$GITHUB_WORKSPACE/vesl-wallet"
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -95,9 +124,18 @@ jobs:
           # Templates post-sync carry git-deps for nockchain and local path-deps
           # for vesl-core crates bundled under vesl-nockup/crates. `cargo check`
           # per template confirms they wire up without needing a full build.
+          # Skip dirs whose Cargo.toml contains Jinja placeholders ({{...}}) —
+          # those get substituted by `nockup project init` at scaffold time and
+          # don't parse in their raw form.
           set -e
           for dir in templates/*/; do
             if [ -f "$dir/Cargo.toml" ]; then
+              if grep -q '{{' "$dir/Cargo.toml"; then
+                echo "::group::$dir (skipped — Jinja placeholders)"
+                echo "  nockup-substituted at scaffold time; skipping cargo check"
+                echo "::endgroup::"
+                continue
+              fi
               echo "::group::$dir"
               (cd "$dir" && cargo check)
               echo "::endgroup::"
