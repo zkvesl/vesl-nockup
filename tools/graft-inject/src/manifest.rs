@@ -387,7 +387,7 @@ pub(crate) fn is_valid_graft_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::tempdir_for_test;
+    use crate::test_support::*;
 
     #[test]
     fn loader_rejects_missing_graft_table() {
@@ -396,6 +396,40 @@ mod tests {
         fs::write(&path, "[other]\nkey = \"value\"\n").unwrap();
         let result = load_manifest(&path).expect("toml itself parses");
         assert!(result.is_none(), "manifest without [graft] must return None");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---------- AUDIT 2026-04-19 H-11..H-14 regressions ----------
+
+    /// H-11: two manifests claiming the same `name` must hard-error at
+    /// discovery time, naming both source paths. The pre-audit loader let
+    /// both through and panicked downstream with `expect("seeded above")`.
+    #[test]
+    fn duplicate_name_bails() {
+        let dir = tempdir_for_test("duplicate_name");
+        write_manifest(&dir, "a.toml", "shared");
+        write_manifest(&dir, "b.toml", "shared");
+        let err = discover_grafts(&dir).expect_err("duplicate name must bail");
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate graft name `shared`"), "got: {msg}");
+        assert!(msg.contains("a.toml"), "missing path a in: {msg}");
+        assert!(msg.contains("b.toml"), "missing path b in: {msg}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// H-11 defense-in-depth: names interpolate into banner comments and
+    /// internal paths, so a hostile manifest that sneaks a `.`/`/` into
+    /// the name field would break idempotence and risk path traversal on
+    /// consumers that key on the name. Reject at discovery.
+    #[test]
+    fn invalid_name_bails() {
+        let dir = tempdir_for_test("invalid_name");
+        write_manifest(&dir, "evil.toml", "../evil");
+        let err = discover_grafts(&dir).expect_err("bad name must bail");
+        assert!(
+            err.to_string().contains("invalid graft name"),
+            "got: {err}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }
