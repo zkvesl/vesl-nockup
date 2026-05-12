@@ -8,37 +8,15 @@ description = "{{description}}"
 name = "{{project_name}}"
 path = "src/main.rs"
 
-# Path-deps to local sibling checkouts of nockchain and vesl-core. Adjust
-# the `../../...` prefix if your layout differs from
-#   <root>/nockchain/
-#   <root>/vesl-core/
-#   <root>/<project_name>/
 [dependencies]
-nockapp       = { path = "../../nockchain/crates/nockapp", default-features = false }
-nockvm        = { path = "../../nockchain/crates/nockvm/rust/nockvm" }
-nockvm_macros = { path = "../../nockchain/crates/nockvm/rust/nockvm_macros" }
+nockapp       = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66", default-features = false }
+nockvm        = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66" }
+nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66" }
 
-vesl-core    = { path = "../../vesl-core/crates/vesl-core" }
-nock-noun-rs = { path = "../../vesl-core/crates/nock-noun-rs" }
+vesl-core    = { path = "../../crates/vesl-core" }
+nock-noun-rs = { path = "../../crates/nock-noun-rs" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
-# nockchain's transitive git deps must resolve to the same source tree
-# as the path-deps above. Without this block, vesl-core's transitive
-# dependency on nockchain crates pulls a separate copy and the type
-# system rejects the boundary.
-[patch."https://github.com/nockchain/nockchain.git"]
-nockapp         = { path = "../../nockchain/crates/nockapp" }
-nockvm          = { path = "../../nockchain/crates/nockvm/rust/nockvm" }
-nockvm_macros   = { path = "../../nockchain/crates/nockvm/rust/nockvm_macros" }
-nockchain-math  = { path = "../../nockchain/crates/nockchain-math" }
-nockchain-types = { path = "../../nockchain/crates/nockchain-types" }
-noun-serde      = { path = "../../nockchain/crates/noun-serde" }
-ibig            = { path = "../../nockchain/crates/nockvm/rust/ibig" }
-
-# vesl-core's transitive vesl-signing dep declares ibig = "0.3" from
-# crates.io; vesl-core's signing module uses the nockchain-vendored
-# ibig at the path above. Same upstream code, but Cargo treats the two
-# as distinct crates without this unification.
-[patch.crates-io]
-ibig = { path = "../../nockchain/crates/nockvm/rust/ibig" }
+[dev-dependencies]
+vesl-test = { git = "https://github.com/zkvesl/vesl-nockup" }

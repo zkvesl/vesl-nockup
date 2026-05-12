@@ -25,6 +25,10 @@ Expected stdout end:
 - `hoon/app/app.hoon` — markered kernel template; `nockup graft inject` composes graft bodies into the `::  nockup:*` anchors.
 - `hoon/lib/lib.hoon` — stub `/+ lib` import for your domain library.
 
+## Testing
+
+`vesl-test` ships in `[dev-dependencies]`. Add a `#[tokio::test]` against `vesl_test::GraftTestHarness` to exercise the register / settle / replay lifecycle, or call `vesl-test inspect peek out.jam --path-tag <tag>` for one-shot kernel peeks. See the zkvesl-docs Testing page for the canonical lifecycle test.
+
 ## Where to go next
 
 - `vesl-nockup/README.md` — the canonical 6-step tour, including the Customizing section (multi-leaf gates, signed gates, STARK gates) and the state-graft catalog.
