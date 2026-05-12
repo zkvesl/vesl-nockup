@@ -14,7 +14,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::cli::Cli;
 use crate::manifest::{Block, Graft, GraftBlocks, GraftTypes, load_manifest};
 
 // ---------------------------------------------------------------------
@@ -235,23 +234,8 @@ pub(crate) fn synthetic_graft_with_effect(name: &str, priority: i32) -> Graft {
 }
 
 // ---------------------------------------------------------------------
-// CLI + manifest fixture builders.
+// Manifest fixture builders.
 // ---------------------------------------------------------------------
-
-pub(crate) fn cli_with(lib_dir: PathBuf) -> Cli {
-    Cli {
-        command: None,
-        path: None,
-        grafts: Vec::new(),
-        exclude: Vec::new(),
-        lib_dir,
-        list: false,
-        json: false,
-        dry_run: false,
-        apply: false,
-        no_migrate: false,
-    }
-}
 
 /// Build a temp lib dir with settle-graft.toml and an alpha synthetic
 /// manifest so multi-manifest selection logic can be tested without

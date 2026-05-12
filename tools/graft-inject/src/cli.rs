@@ -63,39 +63,39 @@ pub(crate) struct Cli {
     /// flags (`<PATH>`, `--grafts`, `--apply`, `--list`, …) are honored
     /// for back-compat — a one-line deprecation note prints to stderr.
     #[command(subcommand)]
-    pub(crate) command: Option<Command>,
+    command: Option<Command>,
 
     /// Target file (omit when using --list).
-    pub(crate) path: Option<PathBuf>,
+    path: Option<PathBuf>,
 
     /// Comma-separated graft names, in injection order. When omitted,
     /// auto-discovers all *.toml manifests under --lib-dir.
     #[arg(long, value_delimiter = ',')]
-    pub(crate) grafts: Vec<String>,
+    grafts: Vec<String>,
 
     /// Comma-separated graft names to subtract from the discovered set.
     /// Ignored when --grafts is given (use --grafts instead).
     #[arg(long, value_delimiter = ',')]
-    pub(crate) exclude: Vec<String>,
+    exclude: Vec<String>,
 
     /// Manifest discovery root.
     #[arg(long, default_value = DEFAULT_LIB_DIR)]
-    pub(crate) lib_dir: PathBuf,
+    lib_dir: PathBuf,
 
     /// Print discovered grafts and exit. Pair with --json for machine-readable.
     #[arg(long)]
-    pub(crate) list: bool,
+    list: bool,
 
     /// JSON output mode (currently only meaningful with --list).
     #[arg(long)]
-    pub(crate) json: bool,
+    json: bool,
 
     /// Deprecated alias of the default preview-only behavior. Kept for
     /// script compatibility through the AUDIT 2026-04-19 H-10 transition.
     /// Prints a one-line deprecation note to stderr and otherwise does
     /// nothing beyond the default.
     #[arg(long)]
-    pub(crate) dry_run: bool,
+    dry_run: bool,
 
     /// Write the composed output to PATH. AUDIT 2026-04-19 H-10: the
     /// default is preview-only — stdout gets the composed Hoon, stderr
@@ -103,7 +103,7 @@ pub(crate) struct Cli {
     /// flag is the explicit "yes, compose these manifests into kernel
     /// source" acknowledgement.
     #[arg(long)]
-    pub(crate) apply: bool,
+    apply: bool,
 
     /// Skip the auto-migration of legacy `+$  effect  *` to the
     /// marker-shape (`nockup:domain-effect` + `nockup:effect-union` +
@@ -112,7 +112,7 @@ pub(crate) struct Cli {
     /// The codegen pass still skips kernels without the
     /// `nockup:effect-union` marker.
     #[arg(long = "no-migrate")]
-    pub(crate) no_migrate: bool,
+    no_migrate: bool,
 }
 
 /// Subcommands. Each variant carries its own argument set so
@@ -857,6 +857,21 @@ mod tests {
     use clap::Parser;
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    fn cli_with(lib_dir: PathBuf) -> Cli {
+        Cli {
+            command: None,
+            path: None,
+            grafts: Vec::new(),
+            exclude: Vec::new(),
+            lib_dir,
+            list: false,
+            json: false,
+            dry_run: false,
+            apply: false,
+            no_migrate: false,
+        }
+    }
 
     // ---------- CLI parse ----------
 
