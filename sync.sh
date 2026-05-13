@@ -215,6 +215,16 @@ echo "  docs (manifest schema)"
 mkdir -p "$here/docs"
 cp "$vesl/docs/graft-manifest.md" "$here/docs/"
 
+# templates/README.md walks consumers through the template catalog;
+# templates/GRAFTING.md explains how to graft a tentacle onto an existing
+# nockapp (covers both `nockup graft inject` and Docker integrators).
+# Keep the canonical copies in vesl-core; mirror so end users pulling a
+# template via nockup still see the orientation docs alongside it.
+echo "  docs (template README + GRAFTING walkthrough)"
+mkdir -p "$here/templates"
+cp "$vesl/templates/README.md"    "$here/templates/README.md"
+cp "$vesl/templates/GRAFTING.md"  "$here/templates/GRAFTING.md"
+
 # --- Intentionally NOT synced: vesl-core/scripts/ ---
 # vesl-core ships dev-only scripts (fakenet-harness.sh, check-jam.sh, etc.)
 # that drive a chain or compile kernels. vesl-nockup is a distribution
