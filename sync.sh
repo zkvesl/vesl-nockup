@@ -40,7 +40,7 @@ NOCK_PIN="${NOCK_PIN:-1a23ccdabf3f8909bf7c7966c48edc36cbf91a66}"
 # synced from. sync.sh aborts when the sibling vesl-core's HEAD does
 # not match this — bump the pin deliberately (edit this line) before
 # re-running. Overridable via env: VESL_CORE_PIN=<sha> ./sync.sh
-VESL_CORE_PIN="${VESL_CORE_PIN:-a2c8d420022799f6ad455b52f4aa2cdb5f514018}"
+VESL_CORE_PIN="${VESL_CORE_PIN:-9e527a947860d66782fb7b3ede3b42ee085559f0}"
 
 here="$(cd "$(dirname "$0")" && pwd)"
 vesl="${1:-$HOME/projects/nockchain/vesl-core}"
@@ -81,11 +81,9 @@ if command -v git >/dev/null 2>&1; then
     fi
 fi
 
-# AUDIT 2026-04-19 M-21: refuse to run when source and destination
-# resolve to the same real path. `rm -rf $here/hoon/common` followed
-# by `cp -rL` would otherwise self-nuke the repo. Cheap check; the
-# resolved paths are stable across the script's lifetime. Apply the
-# same check to the vesl-wallet-repo arg.
+# Refuse same-path runs — later `rm -rf $here/...` + `cp -rL` would
+# otherwise self-nuke the repo. Cheap check; resolved paths are
+# stable across the script's lifetime.
 if [[ "$(realpath "$here" 2>/dev/null)" == "$(realpath "$vesl" 2>/dev/null)" ]]; then
     echo "sync.sh refuses to run: source and destination resolve to the same path" >&2
     echo "  here: $here" >&2
@@ -99,14 +97,12 @@ if [[ "$(realpath "$here" 2>/dev/null)" == "$(realpath "$vesl_wallet_repo" 2>/de
     exit 1
 fi
 
-# AUDIT 2026-04-19 M-21: `cp -rL` dereferences symlinks by design —
-# vesl/hoon/common is a symlink into nockchain/hoon/common, and that
-# tree has nested symlinks into the hoonc crate source. Flattening is
-# the whole point of this script. It also means a compromised upstream
-# vesl checkout could plant a symlink to secrets (e.g. ~/.ssh/id_rsa)
-# and have them committed into vesl-nockup. The trust boundary is the
-# vesl checkout; operators should review incoming changes the way they
-# would any other supply-chain input before running sync.sh.
+# Trust boundary: `cp -rL` dereferences symlinks (vesl/hoon/common is
+# itself a symlink into nockchain/hoon/common with nested symlinks into
+# hoonc crate source — flattening is intentional so consumers get real
+# file content). A compromised upstream vesl checkout could plant a
+# symlink to secrets (e.g. ~/.ssh/id_rsa) that ends up committed here.
+# Review incoming vesl changes like any supply-chain input.
 
 # --- destination ---
 # In verify mode, redirect all writes to a fresh empty temp dir. After
@@ -125,6 +121,25 @@ else
 fi
 
 # --- Hoon files ---
+#
+# Intentionally NOT synced — kernel-private internals:
+#   forge-kernel.hoon, guard-kernel.hoon, mint-kernel.hoon,
+#   settle-kernel.hoon, vesl-kernel.hoon       (the kernels)
+#   kernel-arms.hoon                            (shared dispatch arms)
+#   vesl-stark.hoon, vesl-stark-verifier.hoon   (STARK glue)
+#   vesl-verifier.hoon, vesl-mint.hoon          (kernel-private math)
+#   vesl-entrypoint.hoon                        (STAGED ABI placeholder)
+#   rag-logic.hoon                              (lives per-template)
+#   vesl-test.hoon                              (compile-time test arms)
+#
+# These are consumed only by the kernel libraries, which vesl-nockup
+# users never recompile from source. Kernels ship as committed JAM
+# artifacts in vesl-core/assets/ and are loaded via include_bytes! from
+# the kernels/{guard,mint,settle} Rust crates that vesl-nockup doesn't
+# mirror; vesl-nockup composes domain apps via graft-inject instead.
+# If you spot a missing file in this list and reach for "obviously add
+# it" — that's why it's missing.
+#
 echo "  hoon libs"
 cp "$vesl/protocol/lib/settle-graft.hoon" "$here/hoon/lib/"
 cp "$vesl/protocol/lib/settle-graft.toml" "$here/hoon/lib/"
@@ -165,18 +180,12 @@ cp "$vesl/protocol/lib/validate-graft.toml" "$here/hoon/lib/"
 cp "$vesl/protocol/lib/batch-graft.hoon"    "$here/hoon/lib/"
 cp "$vesl/protocol/lib/batch-graft.toml"    "$here/hoon/lib/"
 
-# Phase 9b: forge-graft pulls in the STARK prover, which depends on
+# forge-graft pulls in the STARK prover, which depends on the full
 # /common/v2/table/prover/{compute,memory}, /common/stark/prover,
-# /common/nock-common, zose/zoon, and friends. The graft-scaffold
-# template's hoon/common/ subset (wrapper + zeke + ztd only) is too
-# thin to compile a forge-composed kernel.
-#
-# vesl/hoon/common is itself a symlink into nockchain/hoon/common,
-# and that tree carries nested symlinks (e.g. common/hoon.hoon →
-# ../../crates/hoonc/hoon/hoon-138.hoon). `cp -L` dereferences them
-# so vesl-nockup ends up with real file content — required for any
-# consumer that doesn't have the nockchain repo next to them, which
-# is the whole point of vesl-nockup as a distribution.
+# /common/nock-common, zose/zoon tree. The graft-scaffold template's
+# hoon/common/ subset (wrapper + zeke + ztd only) is too thin to
+# compile a forge-composed kernel. cp -rL flattens nested symlinks
+# (see trust-boundary note above).
 echo "  hoon common (full tree, incl. STARK deps for forge-graft)"
 rm -rf "$here/hoon/common"
 cp -rL "$vesl/hoon/common" "$here/hoon/common"
