@@ -19,9 +19,9 @@ use anyhow::Result;
 use nockapp::NockApp;
 use nockapp::kernel::boot;
 use serde_json::Value;
-use vesl_core::Mint;
+use vesl_core::{Mint, build_settle_register_poke};
 use vesl_test::watch::{self, WatchOpts};
-use vesl_test::{TEST_PAYLOAD, build_register_poke, init_capture_tracing};
+use vesl_test::{TEST_PAYLOAD, init_capture_tracing};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn watch_smoke_captures_three_events() -> Result<()> {
@@ -54,7 +54,7 @@ async fn watch_smoke_captures_three_events() -> Result<()> {
     let root = mint.commit(&[TEST_PAYLOAD]);
     let mut stdin_input = String::new();
     for hull in [1u64, 2, 3] {
-        let slab = build_register_poke(hull, &root);
+        let slab = build_settle_register_poke(hull, &root);
         let bytes = watch::jam_slab(&slab);
         let hex = watch::hex_encode(&bytes);
         stdin_input.push_str(&format!("poke-jam {hex} tag=settle-register\n"));
@@ -138,7 +138,7 @@ async fn watch_smoke_filter_drops_non_matching_events() -> Result<()> {
     // settle-register row should appear.
     let mut mint = Mint::new();
     let root = mint.commit(&[TEST_PAYLOAD]);
-    let slab = build_register_poke(7, &root);
+    let slab = build_settle_register_poke(7, &root);
     let bytes = watch::jam_slab(&slab);
     let hex = watch::hex_encode(&bytes);
     let stdin_input = format!(

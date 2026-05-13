@@ -17,13 +17,14 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context, Result};
-use nock_noun_rs::{jam_to_bytes, make_atom_in, make_tag_in, new_stack};
 use nockapp::NockApp;
 use nockapp::kernel::boot;
 use nockapp::noun::slab::NounSlab;
 use nockapp::wire::{SystemWire, Wire};
-use nockvm::noun::{D, T};
-use vesl_core::{Tip5Hash, effect_head_tags, tip5_to_atom_le_bytes};
+use vesl_core::{
+    Tip5Hash, build_graft_single_leaf_payload_jammed, build_settle_poke_jammed,
+    build_settle_register_poke, effect_head_tags,
+};
 
 // -- public test vectors ----------------------------------------------------
 
@@ -61,19 +62,19 @@ impl GraftTestHarness {
 
     /// Send `[%settle-register hull root]`. Returns the effect tag list.
     pub async fn register(&mut self, hull: u64, root: &Tip5Hash) -> Result<Vec<String>> {
-        let slab = build_register_poke(hull, root);
+        let slab = build_settle_register_poke(hull, root);
         self.poke_slab(slab).await
     }
 
     /// Send `[%settle-verify payload]` where payload is pre-jammed graft bytes.
     pub async fn verify(&mut self, payload: &[u8]) -> Result<Vec<String>> {
-        let slab = build_payload_poke("settle-verify", payload);
+        let slab = build_settle_poke_jammed("settle-verify", payload);
         self.poke_slab(slab).await
     }
 
     /// Send `[%settle-note payload]` where payload is pre-jammed graft bytes.
     pub async fn note(&mut self, payload: &[u8]) -> Result<Vec<String>> {
-        let slab = build_payload_poke("settle-note", payload);
+        let slab = build_settle_poke_jammed("settle-note", payload);
         self.poke_slab(slab).await
     }
 
@@ -167,7 +168,7 @@ impl GraftTestHarness {
         );
 
         // 3. verify (valid payload)
-        let payload = jam_graft_payload(1, TEST_HULL_A, &root, TEST_PAYLOAD);
+        let payload = build_graft_single_leaf_payload_jammed(1, TEST_HULL_A, &root, TEST_PAYLOAD);
         report.record(
             "verify",
             self.verify(&payload).await,
@@ -180,7 +181,7 @@ impl GraftTestHarness {
             self.register(TEST_HULL_B, &root).await,
             &["settle-registered"],
         );
-        let settle_payload = jam_graft_payload(42, TEST_HULL_B, &root, TEST_PAYLOAD);
+        let settle_payload = build_graft_single_leaf_payload_jammed(42, TEST_HULL_B, &root, TEST_PAYLOAD);
         report.record(
             "note",
             self.note(&settle_payload).await,
@@ -195,7 +196,7 @@ impl GraftTestHarness {
         );
 
         // 6. unregistered hull
-        let bogus = jam_graft_payload(99, 99_999, &root, TEST_PAYLOAD);
+        let bogus = build_graft_single_leaf_payload_jammed(99, 99_999, &root, TEST_PAYLOAD);
         report.record(
             "unregistered-hull",
             self.note(&bogus).await,
@@ -205,7 +206,7 @@ impl GraftTestHarness {
         // 7. root mismatch
         let mut other_mint = vesl_core::Mint::new();
         let other_root = other_mint.commit(&[b"different-payload".as_ref()]);
-        let mismatched = jam_graft_payload(100, TEST_HULL_A, &other_root, TEST_PAYLOAD);
+        let mismatched = build_graft_single_leaf_payload_jammed(100, TEST_HULL_A, &other_root, TEST_PAYLOAD);
         report.record(
             "root-mismatch",
             self.note(&mismatched).await,
@@ -214,49 +215,6 @@ impl GraftTestHarness {
 
         report
     }
-}
-
-// -- poke builders ----------------------------------------------------------
-
-/// Build a `[%settle-register hull root]` poke.
-pub fn build_register_poke(hull: u64, root: &Tip5Hash) -> NounSlab {
-    let mut slab = NounSlab::new();
-    let tag = make_tag_in(&mut slab, "settle-register");
-    let root_bytes = tip5_to_atom_le_bytes(root);
-    let root_atom = make_atom_in(&mut slab, &root_bytes);
-    let poke = T(&mut slab, &[tag, D(hull), root_atom]);
-    slab.set_root(poke);
-    slab
-}
-
-/// Build a `[%settle-<verb> payload]` poke where payload is a pre-jammed atom.
-pub fn build_payload_poke(verb: &str, payload: &[u8]) -> NounSlab {
-    let mut slab = NounSlab::new();
-    let tag = make_tag_in(&mut slab, verb);
-    let jammed = make_atom_in(&mut slab, payload);
-    let poke = T(&mut slab, &[tag, jammed]);
-    slab.set_root(poke);
-    slab
-}
-
-/// Build a graft-payload noun and jam it.
-///
-/// Shape: `[note=[id hull root [%pending ~]] data expected-root]`
-pub fn jam_graft_payload(note_id: u64, hull: u64, root: &Tip5Hash, data: &[u8]) -> Vec<u8> {
-    let mut slab: NounSlab = NounSlab::new();
-    let rb = tip5_to_atom_le_bytes(root);
-
-    let note_root = make_atom_in(&mut slab, &rb);
-    let pending_tag = make_tag_in(&mut slab, "pending");
-    let state = T(&mut slab, &[pending_tag, D(0)]);
-    let note = T(&mut slab, &[D(note_id), D(hull), note_root, state]);
-
-    let data_atom = make_atom_in(&mut slab, data);
-    let exp_root = make_atom_in(&mut slab, &rb);
-    let payload_noun = T(&mut slab, &[note, data_atom, exp_root]);
-
-    let mut stack = new_stack();
-    jam_to_bytes(&mut stack, payload_noun)
 }
 
 // -- suite report ----------------------------------------------------------

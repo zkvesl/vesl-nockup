@@ -14,7 +14,7 @@ on:
 
 env:
   NOCK_PIN: 1a23ccdabf3f8909bf7c7966c48edc36cbf91a66
-  VESL_CORE_PIN: 2838d627b41ee9a600a9a050df80ba4954b81ff7
+  VESL_CORE_PIN: a63bfc826aa01fd602049e05996c34859c7f5fe7
 
 jobs:
   sync-verify:

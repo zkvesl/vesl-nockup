@@ -40,7 +40,7 @@ NOCK_PIN="${NOCK_PIN:-1a23ccdabf3f8909bf7c7966c48edc36cbf91a66}"
 # synced from. sync.sh aborts when the sibling vesl-core's HEAD does
 # not match this — bump the pin deliberately (edit this line) before
 # re-running. Overridable via env: VESL_CORE_PIN=<sha> ./sync.sh
-VESL_CORE_PIN="${VESL_CORE_PIN:-2838d627b41ee9a600a9a050df80ba4954b81ff7}"
+VESL_CORE_PIN="${VESL_CORE_PIN:-a63bfc826aa01fd602049e05996c34859c7f5fe7}"
 
 here="$(cd "$(dirname "$0")" && pwd)"
 vesl="${1:-$HOME/projects/nockchain/vesl-core}"

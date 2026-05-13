@@ -3,7 +3,7 @@
 
 [vesl-core]
 repo = "https://github.com/zkvesl/vesl-core"
-pin  = "2838d627b41ee9a600a9a050df80ba4954b81ff7"
+pin  = "a63bfc826aa01fd602049e05996c34859c7f5fe7"
 
 [nockchain]
 repo = "https://github.com/nockchain/nockchain"
