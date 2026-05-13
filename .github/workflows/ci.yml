@@ -14,7 +14,7 @@ on:
 
 env:
   NOCK_PIN: 1a23ccdabf3f8909bf7c7966c48edc36cbf91a66
-  VESL_CORE_PIN: c4ca118b5e8478e1d3c3f121f0b876f0891aef31
+  VESL_CORE_PIN: 2838d627b41ee9a600a9a050df80ba4954b81ff7
 
 jobs:
   sync-verify:
@@ -124,15 +124,16 @@ jobs:
           # Templates post-sync carry git-deps for nockchain and local path-deps
           # for vesl-core crates bundled under vesl-nockup/crates. `cargo check`
           # per template confirms they wire up without needing a full build.
-          # Skip dirs whose Cargo.toml contains Jinja placeholders ({{...}}) —
-          # those get substituted by `nockup project init` at scaffold time and
-          # don't parse in their raw form.
+          # Skip dirs whose Cargo.toml begins with `# ci: skip-template-check`
+          # — Jinja-substituted templates and user-fixup scaffolds opt out
+          # declaratively via that marker.
           set -e
           for dir in templates/*/; do
             if [ -f "$dir/Cargo.toml" ]; then
-              if grep -q '{{' "$dir/Cargo.toml"; then
-                echo "::group::$dir (skipped — Jinja placeholders)"
-                echo "  nockup-substituted at scaffold time; skipping cargo check"
+              if grep -q '^# ci: skip-template-check' "$dir/Cargo.toml"; then
+                reason=$(grep '^# ci: skip-template-check' "$dir/Cargo.toml" | head -1)
+                echo "::group::$dir (skipped — $reason)"
+                echo "  template opt-out marker present; skipping cargo check"
                 echo "::endgroup::"
                 continue
               fi
