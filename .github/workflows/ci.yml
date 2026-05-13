@@ -13,8 +13,8 @@ on:
     branches: [main]
 
 env:
-  NOCK_PIN: c51f8040457de1c7d799de6024c4b22275371cf4
-  VESL_CORE_PIN: 19d6ce10ad837665f56bd6dd1d76cd3e6b2a7d0e
+  NOCK_PIN: 1a23ccdabf3f8909bf7c7966c48edc36cbf91a66
+  VESL_CORE_PIN: c4ca118b5e8478e1d3c3f121f0b876f0891aef31
 
 jobs:
   sync-verify:
