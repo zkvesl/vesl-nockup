@@ -10,3 +10,4 @@ out.jam
 .dev/
 CLAUDE.md
 *.nock
+.data.*/
