@@ -74,10 +74,12 @@ if command -v git >/dev/null 2>&1; then
         exit 1
     fi
     # Soft-warn on dirty working tree — pin only guarantees committed
-    # state matches; uncommitted changes leak into the bundle.
+    # state matches; uncommitted changes leak into the bundle. Includes
+    # untracked files since `cp -rL` copies them too.
     if ! git -C "$vesl" diff --quiet 2>/dev/null || \
-       ! git -C "$vesl" diff --cached --quiet 2>/dev/null; then
-        echo "warning: $vesl has uncommitted changes; sync copies working tree, not HEAD" >&2
+       ! git -C "$vesl" diff --cached --quiet 2>/dev/null || \
+       [[ -n "$(git -C "$vesl" ls-files --others --exclude-standard 2>/dev/null)" ]]; then
+        echo "warning: $vesl has uncommitted or untracked changes; sync copies working tree, not HEAD" >&2
     fi
 fi
 
