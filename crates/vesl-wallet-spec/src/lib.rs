@@ -21,7 +21,7 @@
 //! - [`ROLE_RECEIVING`] (`1`) — receiving / payout address
 //! - [`ROLE_ENCRYPTION`](`2`) — encryption / delivery decryption (placeholder)
 //! - [`ROLE_SESSION`]   (`3`) — short-lived delegation / session keys
-//! - [`ROLE_X402`]      (`4`) — x402 spending keys (closes OD#1)
+//! - [`ROLE_X402`]      (`4`) — x402 spending keys
 //!
 //! Roles `5+` are reserved for future assignments — see `SPEC.md §5`.
 
@@ -56,7 +56,7 @@ pub const ROLE_SESSION: u32 = 3;
 /// Role 4 — x402 spending keys.
 ///
 /// Signs under the `vesl_signing::domain::domain_separators::X402`
-/// (`"x402-nockchain-v2"`) Tip5 domain separator. Closes OD#1.
+/// (`"x402-nockchain-v2"`) Tip5 domain separator.
 pub const ROLE_X402: u32 = 4;
 
 /// Typed BIP44 5-level derivation path.
