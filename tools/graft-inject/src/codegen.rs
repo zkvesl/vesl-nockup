@@ -51,6 +51,54 @@ pub(crate) struct LoadDefaultsReport {
     pub(crate) fields: Vec<String>,
 }
 
+/// Locate the (begin, end) line indices of a codegen banner pair within
+/// `lines`, starting the search at `search_start`. Bails on duplicate
+/// begin banners, orphan ends, and orphan begins (begin without matching
+/// end). `marker_label` is interpolated into the orphan-begin diagnostic.
+fn find_banner_pair_indices(
+    lines: &[String],
+    begin_str: &str,
+    end_str: &str,
+    search_start: usize,
+    marker_label: &str,
+) -> Result<(Option<usize>, Option<usize>)> {
+    let mut begin_idx: Option<usize> = None;
+    let mut end_idx: Option<usize> = None;
+    for (i, line) in lines.iter().enumerate().skip(search_start) {
+        let trimmed = line.trim();
+        if trimmed == begin_str {
+            if begin_idx.is_some() {
+                bail!(
+                    "duplicate `{}` at line {}; codegen owns one banner pair per kernel",
+                    begin_str,
+                    i + 1
+                );
+            }
+            begin_idx = Some(i);
+        } else if trimmed == end_str {
+            if begin_idx.is_none() {
+                bail!(
+                    "orphan `{}` at line {} (no matching begin banner)",
+                    end_str,
+                    i + 1
+                );
+            }
+            end_idx = Some(i);
+            break;
+        }
+    }
+
+    if begin_idx.is_some() && end_idx.is_none() {
+        bail!(
+            "orphan `{}` (begin without end) under {}",
+            begin_str,
+            marker_label
+        );
+    }
+
+    Ok((begin_idx, end_idx))
+}
+
 /// Synthesize the typed effect union beneath the `nockup:effect-union`
 /// marker. REPLACE-IF-PRESENT semantics — the
 /// emitted block lives between graft-inject's own banner pair, and the
@@ -113,38 +161,13 @@ pub(crate) fn emit_effect_union(
     let begin_str = codegen_begin_banner(Marker::EffectUnion);
     let end_str = codegen_end_banner(Marker::EffectUnion);
 
-    let mut begin_idx: Option<usize> = None;
-    let mut end_idx: Option<usize> = None;
-    for (i, line) in lines.iter().enumerate().skip(union_idx + 1) {
-        let trimmed = line.trim();
-        if trimmed == begin_str {
-            if begin_idx.is_some() {
-                bail!(
-                    "duplicate `{}` at line {}; codegen owns one banner pair per kernel",
-                    begin_str,
-                    i + 1
-                );
-            }
-            begin_idx = Some(i);
-        } else if trimmed == end_str {
-            if begin_idx.is_none() {
-                bail!(
-                    "orphan `{}` at line {} (no matching begin banner)",
-                    end_str,
-                    i + 1
-                );
-            }
-            end_idx = Some(i);
-            break;
-        }
-    }
-
-    if begin_idx.is_some() && end_idx.is_none() {
-        bail!(
-            "orphan `{}` (begin without end) under nockup:effect-union",
-            begin_str
-        );
-    }
+    let (begin_idx, end_idx) = find_banner_pair_indices(
+        lines,
+        &begin_str,
+        &end_str,
+        union_idx + 1,
+        "nockup:effect-union",
+    )?;
 
     match (begin_idx, end_idx) {
         (Some(b), Some(e)) => {
@@ -262,38 +285,13 @@ pub(crate) fn emit_load_defaults(
     let begin_str = codegen_begin_banner(Marker::LoadDefaults);
     let end_str = codegen_end_banner(Marker::LoadDefaults);
 
-    let mut begin_idx: Option<usize> = None;
-    let mut end_idx: Option<usize> = None;
-    for (i, line) in lines.iter().enumerate().skip(marker_idx + 1) {
-        let trimmed = line.trim();
-        if trimmed == begin_str {
-            if begin_idx.is_some() {
-                bail!(
-                    "duplicate `{}` at line {}; codegen owns one banner pair per kernel",
-                    begin_str,
-                    i + 1
-                );
-            }
-            begin_idx = Some(i);
-        } else if trimmed == end_str {
-            if begin_idx.is_none() {
-                bail!(
-                    "orphan `{}` at line {} (no matching begin banner)",
-                    end_str,
-                    i + 1
-                );
-            }
-            end_idx = Some(i);
-            break;
-        }
-    }
-
-    if begin_idx.is_some() && end_idx.is_none() {
-        bail!(
-            "orphan `{}` (begin without end) under nockup:load-defaults",
-            begin_str
-        );
-    }
+    let (begin_idx, end_idx) = find_banner_pair_indices(
+        lines,
+        &begin_str,
+        &end_str,
+        marker_idx + 1,
+        "nockup:load-defaults",
+    )?;
 
     match (begin_idx, end_idx) {
         (Some(b), Some(e)) => {
