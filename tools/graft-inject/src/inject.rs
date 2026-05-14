@@ -876,11 +876,9 @@ mod tests {
                 .block(marker)
                 .expect("settle claims this marker")
                 .trimmed_body();
-            // Body lines land one row after the `begin_banner` emitted by
-            // AUDIT 2026-04-19 H-11..H-14's idempotence refactor. R5/A2
-            // (2026-05-04) appended a ` sha256:<short>` suffix; assert
-            // on the prefix shape so the test isn't coupled to the live
-            // sha256 of every fixture manifest.
+            // Body lands one row after the begin banner, which carries a
+            // ` sha256:<short>` suffix — assert on the prefix, not the live
+            // sha256. Design: R5/A2 §2.1 (extends AUDIT 2026-04-19 H-11..H-14).
             let expected_prefix =
                 format!("{marker_indent}::  graft-inject:settle-graft:{}:begin", marker.label());
             assert!(
@@ -1076,16 +1074,15 @@ mod tests {
 
     #[test]
     fn peek_chain_n1_matches_legacy_replacement() {
-        // For N=1 the chain (post-AUDIT 2026-04-19 banner refactor) is:
+        // For N=1 the chain is:
         //   ::  graft-inject:settle-graft:peek:begin
         //   =/  settle-res  (settle-peek settle.state path)
         //   ?.  =(~ settle-res)  settle-res
         //   ::  graft-inject:settle-graft:peek:end
         //   ~                                   <- terminal fallback
         //
-        // The legacy `(settle-peek settle.state path)` expression lives inside
-        // the chain's `=/` binding — same runtime semantics as the
-        // pre-Phase-4 flat replacement.
+        // The `=/` binding wraps the legacy flat replacement — same runtime
+        // semantics. Design: AUDIT 2026-04-19 banner refactor.
         let grafts = settle_only_grafts();
         let (out, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
         let peek_lines: Vec<&str> = out
