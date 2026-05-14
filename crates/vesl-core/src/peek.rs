@@ -3,8 +3,8 @@
 //! Every commitment graft (mint/guard/settle) and state graft
 //! (kv/counter/queue/registry/log/etc.) ships a `++peek` arm whose
 //! result is wrapped as `[~ [~ (unit @)]]` — three layers of unit
-//! around an atom. Drivers calling `app.peek(slab)` need the same
-//! ~50 lines of slab construction + tail-walking to read out a value.
+//! around an atom. Without these helpers, every driver re-implements
+//! the same slab construction + tail-walking to read out a value.
 //!
 //! Path-builders here cover the three shapes that v0.1 grafts use:
 //!
@@ -25,9 +25,9 @@
 //! they walk an `&[NounSlab]` effect list rather than a single peek
 //! slab, but the noun-walking idioms are the same.
 //!
-//! [`effect_head_tag`] / [`effect_head_tags`] are the generic
-//! head-atom rendering helpers — drivers that only need the cause-tag
-//! of an effect should call these instead of re-implementing the
+//! [`effect_head_tag`] / [`effect_head_tags`] render an effect's
+//! head-atom tag — drivers that only need the cause-tag should call
+//! these instead of re-implementing the
 //! `slab.root() → as_cell → head().as_atom → from_utf8` dance.
 //!
 //! See zkvesl-docs `reference/sdk.md` "Peek calls from Rust" for
@@ -102,12 +102,12 @@ pub fn unwrap_triple_unit_atom(result: &NounSlab) -> Option<Vec<u8>> {
         if bytes.iter().all(|&b| b == 0) {
             return None;
         }
-        return Some(trim_trailing_zeros(bytes));
+        return Some(trim_trailing_zeros(bytes).to_vec());
     }
 
     let value_cell = maybe_value.as_cell().ok()?;
     let root_atom = value_cell.tail().as_atom().ok()?;
-    Some(trim_trailing_zeros(root_atom.as_ne_bytes()))
+    Some(trim_trailing_zeros(root_atom.as_ne_bytes()).to_vec())
 }
 
 /// Decode a triple-unit peek result as a Hoon loobean.
@@ -131,8 +131,7 @@ pub fn peek_loobean(result: &NounSlab) -> Option<bool> {
     // Inner ~ → no loobean produced for this key.
     let value_cell = maybe_value.as_cell().ok()?;
     let atom = value_cell.tail().as_atom().ok()?;
-    let trimmed = trim_trailing_zeros(atom.as_ne_bytes());
-    match trimmed.as_slice() {
+    match trim_trailing_zeros(atom.as_ne_bytes()) {
         [] => Some(true),    // atom 0 = %.y
         [1] => Some(false),  // atom 1 = %.n
         _ => None,
@@ -251,7 +250,7 @@ pub fn effect_head_tag(effect: &NounSlab) -> Option<String> {
     let cell = root.as_cell().ok()?;
     let tag_atom = cell.head().as_atom().ok()?;
     let trimmed = trim_trailing_zeros(tag_atom.as_ne_bytes());
-    Some(String::from_utf8_lossy(&trimmed).into_owned())
+    Some(String::from_utf8_lossy(trimmed).into_owned())
 }
 
 /// Slice form of [`effect_head_tag`]. Filters out effects that don't
@@ -313,9 +312,9 @@ pub fn decode_queue_popped(effects: &[NounSlab]) -> Option<(u64, Vec<u8>)> {
 
 /// Atoms are word-aligned little-endian; trim trailing zero padding so
 /// the returned bytes match the cord/atom the caller fed in.
-fn trim_trailing_zeros(bytes: &[u8]) -> Vec<u8> {
+fn trim_trailing_zeros(bytes: &[u8]) -> &[u8] {
     let len = bytes.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
-    bytes[..len].to_vec()
+    &bytes[..len]
 }
 
 #[cfg(test)]
