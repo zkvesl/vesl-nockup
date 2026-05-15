@@ -414,13 +414,15 @@ where
     write_event(
         opts,
         writer,
-        event_num,
-        cause_tag,
-        Some(&ack),
-        poke_err.as_deref(),
-        &effect_tags,
-        &slogs,
-        None,
+        &EventRow {
+            event_num,
+            cause_tag,
+            ack: Some(&ack),
+            err: poke_err.as_deref(),
+            effect_tags: &effect_tags,
+            slogs: &slogs,
+            peek_repr: None,
+        },
     )
     .await
 }
@@ -448,13 +450,15 @@ where
     write_event(
         opts,
         writer,
-        event_num,
-        cause_tag,
-        Some(&ack),
-        peek_err.as_deref(),
-        &[],
-        &slogs,
-        repr.as_deref(),
+        &EventRow {
+            event_num,
+            cause_tag,
+            ack: Some(&ack),
+            err: peek_err.as_deref(),
+            effect_tags: &[],
+            slogs: &slogs,
+            peek_repr: repr.as_deref(),
+        },
     )
     .await
 }
@@ -581,52 +585,60 @@ where
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// One event row — the 7 data fields a watch loop emits per poke
+/// or peek. Held as a struct so callers field-key the values; the
+/// previous 9-positional `write_event` signature was a transposition
+/// hazard (a misplaced `None` between `ack` and `err` would silently
+/// swap which slot got the value).
+struct EventRow<'a> {
+    event_num: u64,
+    cause_tag: &'a str,
+    ack: Option<&'a str>,
+    err: Option<&'a str>,
+    effect_tags: &'a [String],
+    slogs: &'a [SlogWarning],
+    peek_repr: Option<&'a str>,
+}
+
 async fn write_event<W>(
     opts: &WatchOpts,
     writer: &mut W,
-    event_num: u64,
-    cause_tag: &str,
-    ack: Option<&str>,
-    err: Option<&str>,
-    effect_tags: &[String],
-    slogs: &[SlogWarning],
-    peek_repr: Option<&str>,
+    row: &EventRow<'_>,
 ) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
     let line = if opts.json {
-        let slogs_json: Vec<Value> = slogs.iter().map(slog_to_json).collect();
+        let slogs_json: Vec<Value> = row.slogs.iter().map(slog_to_json).collect();
         let v = json!({
-            "event_num": event_num,
+            "event_num": row.event_num,
             "wall_clock": now_secs(),
-            "cause_tag": cause_tag,
-            "ack": ack,
-            "err": err,
-            "effect_tags": effect_tags,
+            "cause_tag": row.cause_tag,
+            "ack": row.ack,
+            "err": row.err,
+            "effect_tags": row.effect_tags,
             "slogs": slogs_json,
-            "peek": peek_repr,
+            "peek": row.peek_repr,
         });
         format!("{v}\n")
     } else {
-        let mut s = format!("[#{event_num}] cause={cause_tag}");
-        if let Some(a) = ack {
+        let mut s = format!("[#{}] cause={}", row.event_num, row.cause_tag);
+        if let Some(a) = row.ack {
             s.push_str(&format!(" ack={a}"));
         }
-        if let Some(e) = err {
+        if let Some(e) = row.err {
             s.push_str(&format!(" err={e}"));
         }
-        if !effect_tags.is_empty() {
-            s.push_str(&format!(" effects=[{}]", effect_tags.join(", ")));
+        if !row.effect_tags.is_empty() {
+            s.push_str(&format!(" effects=[{}]", row.effect_tags.join(", ")));
         } else {
             s.push_str(" effects=[]");
         }
-        if !slogs.is_empty() {
-            let printed: Vec<String> = slogs.iter().map(slog_to_human).collect();
+        if !row.slogs.is_empty() {
+            let printed: Vec<String> = row.slogs.iter().map(slog_to_human).collect();
             s.push_str(&format!(" slogs=[{}]", printed.join("; ")));
         }
-        if let Some(p) = peek_repr {
+        if let Some(p) = row.peek_repr {
             s.push_str(&format!(" peek={p}"));
         }
         s.push('\n');
