@@ -66,7 +66,7 @@ pub const ROLE_X402: u32 = 4;
 /// for HD key derivation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DerivationPath {
-    /// SLIP-44 coin_type (TBD upstream — see `SPEC.md §4` and OD#11).
+    /// SLIP-44 coin_type (TBD upstream — see `SPEC.md §4`).
     pub coin_type: u32,
     /// Per-agent account index.
     pub account: u32,

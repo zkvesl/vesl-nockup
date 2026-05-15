@@ -200,7 +200,7 @@ fn ubig_to_be_32(n: &UBig) -> [u8; 32] {
 /// little-endian Belts for `x`, then 6 × 8-byte for `y`, then a 1-byte
 /// `inf` flag. 97 bytes total. Used only as PRF input — never on the
 /// wire — so the serialization just needs to be a bijection.
-fn serialize_point(p: &CheetahPoint) -> [u8; 97] {
+pub(crate) fn serialize_point(p: &CheetahPoint) -> [u8; 97] {
     let mut out = [0u8; 97];
     for (i, b) in p.x.0.iter().enumerate() {
         out[i * 8..(i + 1) * 8].copy_from_slice(&b.0.to_le_bytes());

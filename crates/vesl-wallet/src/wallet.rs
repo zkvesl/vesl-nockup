@@ -10,7 +10,7 @@ use vesl_wallet_spec::{
 };
 
 use crate::error::WalletError;
-use crate::hd::{ckd_hardened, ckd_non_hardened, master_from_seed, ExtKey};
+use crate::hd::{ckd_hardened, ckd_non_hardened, master_from_seed, serialize_point, ExtKey};
 
 /// A derived key + the path it was derived at.
 ///
@@ -129,7 +129,7 @@ impl VeslWallet {
         let pk = self.receiving_pubkey(account)?;
         let mut input = Vec::with_capacity(ADDRESS_SUBDOMAIN.len() + 97);
         input.extend_from_slice(ADDRESS_SUBDOMAIN);
-        input.extend_from_slice(&serialize_point_for_address(&pk));
+        input.extend_from_slice(&serialize_point(&pk));
         Ok(tip5_with_domain(domain_separators::VESL_HD, &input))
     }
 
@@ -169,17 +169,3 @@ impl VeslWallet {
 }
 
 const ADDRESS_SUBDOMAIN: &[u8] = b"vesl-hd:address\x00";
-
-/// Same byte layout as the HD module's `serialize_point` (kept private
-/// there). Re-implemented here to avoid widening the HD module's API.
-fn serialize_point_for_address(p: &CheetahPoint) -> [u8; 97] {
-    let mut out = [0u8; 97];
-    for (i, b) in p.x.0.iter().enumerate() {
-        out[i * 8..(i + 1) * 8].copy_from_slice(&b.0.to_le_bytes());
-    }
-    for (i, b) in p.y.0.iter().enumerate() {
-        out[48 + i * 8..48 + (i + 1) * 8].copy_from_slice(&b.0.to_le_bytes());
-    }
-    out[96] = u8::from(p.inf);
-    out
-}
