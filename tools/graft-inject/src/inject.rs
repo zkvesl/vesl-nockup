@@ -1123,14 +1123,12 @@ mod tests {
             after: vec![],
             blocks: GraftBlocks {
                 imports: Some(Block {
-                    sentinel: "*poison".to_string(),
                     body: "/+  *poison".to_string(),
                 }),
                 state: None,
                 cause: None,
                 poke_prelude: None,
                 poke: Some(Block {
-                    sentinel: "%poison-do".to_string(),
                     body: "  %poison-do\n::  references %contaminant-do elsewhere\n[~ state]".to_string(),
                 }),
                 poke_postlude: None,
@@ -1231,7 +1229,6 @@ mod tests {
                 cause: None,
                 poke_prelude: None,
                 poke: Some(Block {
-                    sentinel: "%nested-do".to_string(),
                     body: "  %nested-do\n?-  +.state\n  [%foo ~]  [~ state]\n  [%bar ~]  [~ state]\n==\n[~ state]".to_string(),
                 }),
                 poke_postlude: None,

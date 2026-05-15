@@ -102,12 +102,6 @@ pub(crate) struct GraftBlocks {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct Block {
-    // Retained in the schema for manifest authors to document intent;
-    // idempotence switched from sentinel-substring matching to
-    // `::  graft-inject:<name>:begin` banner comments in AUDIT
-    // 2026-04-19 (H-11..H-14).
-    #[allow(dead_code)]
-    pub(crate) sentinel: String,
     pub(crate) body: String,
 }
 

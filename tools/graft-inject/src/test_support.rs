@@ -194,27 +194,22 @@ pub(crate) fn synthetic_graft(name: &str, priority: i32) -> Graft {
         after: vec![],
         blocks: GraftBlocks {
             imports: Some(Block {
-                sentinel: format!("*{name}"),
                 body: format!("/+  *{name}"),
             }),
             state: Some(Block {
-                sentinel: format!("{name}={name}-state"),
                 body: format!("{name}={name}-state"),
             }),
             cause: Some(Block {
-                sentinel: format!("{name}-cause"),
                 body: format!("{name}-cause"),
             }),
             poke_prelude: None,
             poke: Some(Block {
-                sentinel: format!("%{name}-do"),
                 body: format!(
                     "  %{name}-do\n=/  lc=cause  [%{name}-do ~]\n[~ state]"
                 ),
             }),
             poke_postlude: None,
             peek: Some(Block {
-                sentinel: format!("{name}-peek"),
                 body: format!("({name}-peek state path)"),
             }),
         },

@@ -1297,17 +1297,11 @@ mod tests {
                 state: if state_fields.is_empty() {
                     None
                 } else {
-                    Some(Block {
-                        sentinel: state_fields[0].to_string(),
-                        body: state_body,
-                    })
+                    Some(Block { body: state_body })
                 },
                 cause: None,
                 poke_prelude: None,
-                poke: Some(Block {
-                    sentinel: format!("%{}", cause_tags.first().unwrap_or(&"")),
-                    body: poke_body,
-                }),
+                poke: Some(Block { body: poke_body }),
                 poke_postlude: None,
                 peek: None,
             },
