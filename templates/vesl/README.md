@@ -7,7 +7,7 @@ A grafted NockApp scaffolded from the `vesl` template.
 ```bash
 nockup graft inject --apply hoon/app/app.hoon   # composes graft bodies into the kernel
 hoonc hoon/app/app.hoon hoon/                   # produces out.jam
-cargo +nightly run                              # boots the kernel and exercises the lifecycle
+cargo +nightly run                              # boots the kernel and runs the Demo arm
 ```
 
 Expected stdout end:
@@ -16,6 +16,37 @@ Expected stdout end:
   effect: %settle-registered
   effect: %settle-noted
 ```
+
+## CLI
+
+The scaffolded binary is a clap dispatch over two subcommands. Both
+boot the kernel from `out.jam` and pass the booted `NockApp` to the
+selected arm.
+
+```bash
+cargo +nightly run                  # Demo arm (default): register a root, settle a note
+cargo +nightly run -- serve         # Serve arm: HTTP API on http://127.0.0.1:3000
+```
+
+### `serve` flags
+
+- `--port <PORT>`  — listen port (default 3000)
+- `--bind-addr <ADDR>` — bind address (default `127.0.0.1`; `--no-auth` is refused on non-loopback binds)
+- `--no-auth` — disable API-key auth (loopback only; otherwise `HULL_API_KEY` env var is required)
+
+### Endpoint catalog
+
+The Serve arm wires `vesl_hull::serve(...)` which mounts:
+
+- `POST /commit` — commit key-value fields to a Merkle tree + register the root
+- `POST /settle` — settle a note against the current root
+- `POST /verify` — verify a field's Merkle proof
+- `GET  /tx/:tx_id` — fetch a chain-attested receipt (requires fakenet/dumbnet settlement mode)
+- `GET  /status`   — current state snapshot
+- `GET  /health`   — liveness probe (always unauthenticated)
+
+Source: `vesl-nockup/crates/vesl-hull/src/api.rs`. Add your own
+endpoints by composing a custom router via `Router::merge(vesl_hull::router(state), my_routes)`.
 
 ## Layout
 

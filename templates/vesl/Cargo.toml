@@ -14,11 +14,18 @@ nockapp       = { git = "https://github.com/nockchain/nockchain.git", rev = "1a2
 nockvm        = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66" }
 nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66" }
 
-vesl-core    = { path = "../../crates/vesl-core" }
+vesl-core    = { path = "../../crates/vesl-core", features = ["clap"] }
 nock-noun-rs = { path = "../../crates/nock-noun-rs" }
+vesl-hull    = { path = "../../crates/vesl-hull" }
 
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+clap   = { version = "4", features = ["derive"] }
+tokio  = { version = "1", features = ["full"] }
+anyhow = "1.0"
 
 [dev-dependencies]
-vesl-test = { git = "https://github.com/zkvesl/vesl-nockup" }
-anyhow    = "1.0"
+vesl-test      = { git = "https://github.com/zkvesl/vesl-nockup" }
+anyhow         = "1.0"
+axum           = "0.8"
+http-body-util = "0.1"
+tower          = "0.5"
+serde_json     = "1"

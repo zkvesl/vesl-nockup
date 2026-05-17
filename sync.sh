@@ -270,6 +270,14 @@ done
 # template flow can reach them without access to the vesl repo.
 # app.hoon stays vesl-nockup canonical (marker reference, not synced).
 #
+# templates/vesl/ is ALSO vesl-nockup canonical and is intentionally
+# omitted from the loop. It depends on vesl-hull (lives only in
+# vesl-nockup/crates/vesl-hull) and ships a Demo+Serve clap CLI that
+# has no analogue in vesl-core. Mirroring vesl-core's older copy would
+# wipe the hull-backed Serve subcommand. The verify-mode restore block
+# below copies real_here/templates/vesl over the empty temp so the
+# diff stays clean.
+#
 # 2026-04-23: graft-intent → graft-hash-gate rename. The old
 # graft-intent name is now reserved for the family-5 intent placeholder;
 # the pre-rename hash-gate demo moved to graft-hash-gate. Clean the stale
@@ -277,9 +285,9 @@ done
 # recreate it from the (now-MOVED.md) canonical copy without drift.
 rm -rf "$here/templates/graft-intent"
 
-echo "  templates (graft-scaffold + domain templates + hash-gate demo + vesl)"
+echo "  templates (graft-scaffold + domain templates + hash-gate demo)"
 for t in graft-scaffold graft-hash-gate graft-intent graft-mint graft-settle \
-         data-registry settle-report counter vesl; do
+         data-registry settle-report counter; do
     if [[ -d "$vesl/templates/$t" ]]; then
         rm -rf "$here/templates/$t"
         cp -rL "$vesl/templates/$t" "$here/templates/$t"
@@ -343,12 +351,20 @@ if [[ $SYNC_VERIFY -eq 1 ]]; then
     #     BARE_SCAFFOLD test fixture; not a sync-derived graft.
     #   templates/WALLET_CONFIG.md — vesl-nockup-local TOML-toggle doc
     #     for the per-role wallet config pattern.
+    #   templates/vesl/ — vesl-nockup canonical (depends on
+    #     vesl-hull lib which lives only here).
+    #   crates/vesl-hull/ — vesl-nockup canonical (factored from
+    #     vesl-core/hull as a native lib; never synced from upstream).
     [[ -f "$real_here/templates/app.hoon" ]] && \
         cp "$real_here/templates/app.hoon" "$here/templates/app.hoon"
     [[ -f "$real_here/hoon/lib/lib.hoon" ]] && \
         cp "$real_here/hoon/lib/lib.hoon" "$here/hoon/lib/lib.hoon"
     [[ -f "$real_here/templates/WALLET_CONFIG.md" ]] && \
         cp "$real_here/templates/WALLET_CONFIG.md" "$here/templates/WALLET_CONFIG.md"
+    [[ -d "$real_here/templates/vesl" ]] && \
+        cp -rL "$real_here/templates/vesl" "$here/templates/vesl"
+    [[ -d "$real_here/crates/vesl-hull" ]] && \
+        cp -rL "$real_here/crates/vesl-hull" "$here/crates/vesl-hull"
     echo
     echo "verifying sync output against committed bundle"
     # Restrict diff to paths sync.sh actually writes. A full $here vs
