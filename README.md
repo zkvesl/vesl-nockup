@@ -862,6 +862,10 @@ A comment-only or whitespace edit in a transitively-parsed `.hoon` library (anyt
 - Integration tests: `tools/graft-inject/tests/{mint_lifecycle,guard_lifecycle,forge_compile,integration}.rs`
 - Test scaffolding: `tools/graft-inject/tests/fixtures/mod.rs`
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the canonical-path table (which files live here vs. in vesl-core / vesl-wallet) and the PR-landing flow. Editing a synced path will fail CI's `sync-verify`; check the table before opening a PR.
+
 ## License
 
 Dual-licensed under either of:
