@@ -103,11 +103,21 @@ You now have a grafted NockApp with on-kernel Merkle verification and replay-pro
 
 `vesl-core` exports `build_settle_verify_poke(note_id, hull, root, data)` for pure verification (no state transition), and `build_mint_commit_poke` / `build_guard_register_poke` / `build_guard_check_poke` / `build_forge_prove_poke` for the other three commitment primitives. See *Customizing* below for multi-leaf gates, signed gates, and STARK gates.
 
+## Serving over HTTP
+
+The same scaffold ships an HTTP server backed by the `vesl-hull` crate. Run the binary with the `serve` subcommand to boot the kernel and mount `/commit`, `/settle`, `/verify`, `/tx/:tx_id`, `/status`, and `/health` on `http://127.0.0.1:3000`:
+
+```bash
+cargo +nightly run -- serve --no-auth   # loopback, demo signing key
+```
+
+`--no-auth` is only honored on loopback binds; the kernel-side endpoints stay behind `HULL_API_KEY` on any non-loopback `--bind-addr`. The server-side router is `vesl_hull::router(state)`; merge it with your own routes via `Router::merge(...)` to add domain handlers. See [`templates/vesl/README.md`](./templates/vesl/README.md#cli) for the full flag table and endpoint catalog.
+
 ## What the template ships
 
 - `Cargo.toml` — vesl-graft's `[[patches]]` rewrites it to git-deps + both `[patch]` blocks at install time (path-deps remain in the pre-patch template as a fallback for ejected / sibling-clone workflows)
 - `build.rs` — no-op (just declares the `out.jam` rerun-if-changed)
-- `src/main.rs` — 30-line hull registering a Merkle root and settling a note
+- `src/main.rs` — clap CLI with `Demo` and `Serve` arms (Demo runs the register/settle smoke test; Serve mounts the `vesl-hull` HTTP API)
 - `hoon/app/app.hoon` — markered kernel template
 - `hoon/lib/lib.hoon` — domain-library stub
 
@@ -319,7 +329,7 @@ If `nockup graft inject` reports `warning — markers not found: ...`, you misse
 
 ## State checkpoints
 
-Operators upgrading a kernel without losing state — adding a graft, fixing a transition bug, retuning a verification gate — need a way to capture the current kernel state, recompile, and rehydrate. `vesl-checkpoint` (synced from vesl-core into `crates/vesl-checkpoint/`) wraps the underlying `nockapp` export/import path with a typed snapshot bundle.
+Operators upgrading a kernel without losing state — adding a graft, fixing a transition bug, retuning a verification gate — need a way to capture the current kernel state, recompile, and rehydrate. `vesl-checkpoint` (synced from vesl-core into `crates/vesl-checkpoint/`) wraps the underlying `nockapp` export/import path with a typed snapshot bundle. The `vesl` template wires it into `[dev-dependencies]` alongside `vesl-test`, so scaffolded projects get `snapshot` / `resume` without adding a dependency.
 
 ```rust
 use vesl_checkpoint::{snapshot, resume};
