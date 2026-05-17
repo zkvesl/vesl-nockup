@@ -337,12 +337,13 @@ async fn status(State(state): State<SharedState>) -> Json<StatusResponse> {
 
 /// POST /commit — accept fields, build Merkle tree, register root.
 ///
-/// Returns 409 Conflict if the settle kernel has already registered a
-/// root for this hull_id — the `%register` cause is single-shot per
-/// process, so subsequent commits would silently desync local state
-/// from kernel state (audit §2.C-01). Returns 502 Bad Gateway if the
-/// kernel emits an unexpected first-effect tag. See
-/// `docs/AUDIT_C01_FOLLOWUP.md` for the deferred rotate-root work.
+/// Sends a `%settle-register` poke (post-Phase-12A settle-graft cause).
+/// Returns 409 Conflict if the kernel has already registered a root for
+/// this hull_id — settle-graft is single-shot per (hull, root), so
+/// subsequent commits would silently desync local state from kernel
+/// state (audit §2.C-01). Returns 502 Bad Gateway if the kernel emits
+/// an unexpected first-effect tag. See `docs/AUDIT_C01_FOLLOWUP.md` for
+/// the deferred rotate-root work.
 async fn commit_handler(
     State(state): State<SharedState>,
     Json(req): Json<CommitRequest>,
@@ -394,10 +395,10 @@ async fn commit_handler(
 
     // Register root with kernel
     let mut st = state.lock().await;
-    let register_poke = vesl_core::noun_builder::build_register_poke(st.hull_id, &root);
-    let effects = poke_kernel_with_timeout(&mut st.app, register_poke, "register").await?;
+    let register_poke = vesl_core::build_settle_register_poke(st.hull_id, &root);
+    let effects = poke_kernel_with_timeout(&mut st.app, register_poke, "settle-register").await?;
 
-    // Audit §2.C-01: empty effects = kernel rejected the %register
+    // Audit §2.C-01: empty effects = kernel rejected the %settle-register
     // (handle-register returns ~ on duplicate hull). Refuse silently
     // overwriting local state with a root the kernel has not attested.
     if effects.is_empty() {
@@ -410,13 +411,27 @@ async fn commit_handler(
             }),
         ));
     }
-    if effect_head_tag(&effects[0]).as_deref() != Some("registered") {
-        return Err((
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorBody {
-                error: "unexpected kernel effect tag from %register poke".into(),
-            }),
-        ));
+    match effect_head_tag(&effects[0]).as_deref() {
+        Some("settle-registered") => {}
+        Some("settle-error") => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(ErrorBody {
+                    error: "kernel rejected %settle-register (see kernel slog for the \
+                            specific reason; common causes: hull already registered, \
+                            registered-map at capacity)"
+                        .into(),
+                }),
+            ));
+        }
+        _ => {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody {
+                    error: "unexpected kernel effect tag from %settle-register poke".into(),
+                }),
+            ));
+        }
     }
 
     st.fields = req.fields;
@@ -431,13 +446,21 @@ async fn commit_handler(
 
 /// POST /settle — settle a note against the current Merkle root.
 ///
-/// Today this endpoint re-pokes the kernel's `%register` cause (the
-/// generic hull does not yet construct a full settlement-payload);
-/// see `docs/AUDIT_C01_FOLLOWUP.md` for the real-%settle plumbing
-/// work. Same 409 / 502 contract as `/commit`: returns 409 Conflict
-/// when the kernel rejected the duplicate registration, 502 Bad
-/// Gateway on unexpected effect tag (audit §2.C-01). The note
-/// counter is only advanced after the kernel accepts.
+/// Sends a `%settle-note` poke carrying the first committed field's
+/// leaf bytes (single-leaf hash-gate default). The kernel checks that
+/// `hash-leaf(data)` matches the registered root and that this
+/// `note_id` is not already settled, then emits `%settle-noted`.
+///
+/// Multi-field commits require a non-default hash gate (multi-leaf,
+/// signed, STARK); the single-leaf default gate-denies any `data`
+/// whose hash doesn't equal the registered root and the kernel
+/// returns empty effects (this handler maps that to 409). See the
+/// template README's "Customizing" section for non-default gates.
+///
+/// `note_id` is taken from the request or auto-incremented from the
+/// hull's note counter. Returns 409 Conflict when the kernel rejects
+/// (note replay, unregistered hull, gate deny, or root mismatch);
+/// 502 Bad Gateway on unexpected effect tag.
 async fn settle_handler(
     State(state): State<SharedState>,
     Json(req): Json<SettleRequest>,
@@ -456,41 +479,64 @@ async fn settle_handler(
     let root = tree.root();
     let root_hex = format_tip5(&root);
 
-    // Register is the settlement primitive for the generic hull
-    let settle_poke = vesl_core::noun_builder::build_register_poke(st.hull_id, &root);
-    let effects = poke_kernel_with_timeout(&mut st.app, settle_poke, "settle").await?;
+    let leaf_bytes = st.fields.first().map(field_to_leaf_bytes).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "no committed fields; POST /commit first".into(),
+            }),
+        )
+    })?;
 
-    // Audit §2.C-01: gate counter advancement and HTTP success on
-    // the kernel actually accepting the poke. Pre-fix the counter
-    // advanced even when handle-register returned ~ on duplicate.
+    let note_id = req.note_id.unwrap_or(st.note_counter + 1);
+
+    let settle_poke =
+        vesl_core::build_settle_note_poke(note_id, st.hull_id, &root, &leaf_bytes);
+    let effects = poke_kernel_with_timeout(&mut st.app, settle_poke, "settle-note").await?;
+
+    // Audit §2.C-01: gate counter advancement and HTTP success on the
+    // kernel actually accepting the poke. Empty effects covers every
+    // settle-graft rejection path (replay on note_id, unregistered
+    // hull, gate deny, root mismatch); the kernel's slog distinguishes
+    // them at priority 1.
     if effects.is_empty() {
         return Err((
             StatusCode::CONFLICT,
             Json(ErrorBody {
-                error: "hull root already registered; /settle currently re-uses the \
-                        %register cause and is single-shot per process \
-                        (see docs/AUDIT_C01_FOLLOWUP.md)"
-                    .into(),
+                error: "kernel returned no effects for %settle-note (see kernel slog)".into(),
             }),
         ));
     }
-    if effect_head_tag(&effects[0]).as_deref() != Some("registered") {
-        return Err((
-            StatusCode::BAD_GATEWAY,
-            Json(ErrorBody {
-                error: "unexpected kernel effect tag from %register poke".into(),
-            }),
-        ));
+    match effect_head_tag(&effects[0]).as_deref() {
+        Some("settle-noted") => {}
+        Some("settle-error") => {
+            return Err((
+                StatusCode::CONFLICT,
+                Json(ErrorBody {
+                    error: "kernel rejected %settle-note (see kernel slog for the specific \
+                            reason; common causes: note already settled, root not registered, \
+                            root mismatch, gate deny)"
+                        .into(),
+                }),
+            ));
+        }
+        _ => {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody {
+                    error: "unexpected kernel effect tag from %settle-note poke".into(),
+                }),
+            ));
+        }
     }
 
     st.note_counter += 1;
-    let note_id = req.note_id.unwrap_or(st.note_counter);
     save_note_counter(&st.output_dir, st.note_counter);
 
     Ok(Json(SettleResponse {
         note_id,
         merkle_root: root_hex,
-        settled: !effects.is_empty(),
+        settled: true,
         effects_count: effects.len(),
     }))
 }
