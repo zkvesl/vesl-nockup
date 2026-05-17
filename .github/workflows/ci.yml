@@ -15,6 +15,7 @@ on:
 env:
   NOCK_PIN: 1a23ccdabf3f8909bf7c7966c48edc36cbf91a66
   VESL_CORE_PIN: 9e527a947860d66782fb7b3ede3b42ee085559f0
+  VESL_WALLET_PIN: 12c2e447e95a96bd99c39ed81b8bf6a8b07cb0d8
 
 jobs:
   sync-verify:
@@ -35,10 +36,11 @@ jobs:
           ref: ${{ env.VESL_CORE_PIN }}
           path: vesl-core
 
-      - name: Checkout vesl-wallet (sibling)
+      - name: Checkout vesl-wallet (sibling, at pinned rev)
         uses: actions/checkout@v4
         with:
           repository: zkvesl/vesl-wallet
+          ref: ${{ env.VESL_WALLET_PIN }}
           path: vesl-wallet
 
       - name: Run sync.sh --verify
