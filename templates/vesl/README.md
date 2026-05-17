@@ -52,7 +52,7 @@ endpoints by composing a custom router via `Router::merge(vesl_hull::router(stat
 
 - `Cargo.toml` — vesl-graft's `[[patches]]` rewrites the deps to git-deps pinned at the synced rev and adds both `[patch]` blocks during `nockup package install`. The pre-patch template ships path-deps as a fallback for sibling-clone workflows or eject mode (`nockup patches eject zkvesl/vesl-graft`).
 - `build.rs` — no-op; `out.jam` is built explicitly via `hoonc`.
-- `src/main.rs` — 30-line hull that registers a Merkle root and settles a note against it.
+- `src/main.rs` — clap CLI: `Demo` arm (register a Merkle root + settle a note) and `Serve` arm (HTTP API via `vesl_hull::serve`).
 - `hoon/app/app.hoon` — markered kernel template; `nockup graft inject` composes graft bodies into the `::  nockup:*` anchors.
 - `hoon/lib/lib.hoon` — stub `/+ lib` import for your domain library.
 
