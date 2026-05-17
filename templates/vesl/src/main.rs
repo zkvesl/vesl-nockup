@@ -15,7 +15,7 @@ use vesl_core::{
 
 #[derive(Parser)]
 #[command(name = "{{project_name}}", about = "{{description}}")]
-struct Cli {
+struct Args {
     #[command(subcommand)]
     cmd: Option<Cmd>,
 
@@ -40,12 +40,12 @@ enum Cmd {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let cli = Cli::parse();
-    boot::init_default_tracing(&cli.boot);
+    let args = Args::parse();
+    boot::init_default_tracing(&args.boot);
     let kernel = fs::read("out.jam")?;
-    let app: NockApp = boot::setup(&kernel, cli.boot, &[], "{{project_name}}", None).await?;
+    let app: NockApp = boot::setup(&kernel, args.boot, &[], "{{project_name}}", None).await?;
 
-    match cli.cmd.unwrap_or(Cmd::Demo) {
+    match args.cmd.unwrap_or(Cmd::Demo) {
         Cmd::Demo => run_demo(app).await,
         Cmd::Serve { port, bind_addr, no_auth } => {
             vesl_hull::check_auth_config_with_bind(no_auth, &bind_addr)
