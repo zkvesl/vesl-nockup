@@ -1,0 +1,29 @@
+//! vesl-hull — HTTP API over a Nock kernel.
+//!
+//! Factored from vesl-core/hull as a vesl-nockup-native lib. The
+//! template at `templates/vesl/` boots a kernel from `out.jam` and
+//! hands the [`NockApp`](nockapp::NockApp) to [`serve`] (or composes a
+//! custom router via [`router`]).
+//!
+//! Public surface is intentionally narrow at the crate root. Less-common
+//! items (request/response types, wallet config sub-structs, signing
+//! re-exports) live in their parent modules — reach them via
+//! `vesl_hull::api::*`, `vesl_hull::config::*`, `vesl_hull::signing::*`.
+//! Widening to the crate root only happens when a concrete user need
+//! appears.
+
+pub mod api;
+pub mod config;
+pub mod signing;
+pub mod verify;
+
+pub use api::{
+    serve, router, AppState, SharedState, Field,
+    check_auth_config_with_bind, load_note_counter,
+};
+pub use config::{
+    HullConfig, SettlementCliOverrides, SettlementConfig, SettlementMode, SettlementToml,
+    load_config, resolve_with_demo_key_checked,
+};
+pub use signing::{demo_signing_key, is_demo_key, DEMO_KEY_PKH_BASE58};
+pub use verify::{FieldVerifier, FieldWithProof, field_to_leaf_bytes};

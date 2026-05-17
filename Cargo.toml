@@ -8,6 +8,7 @@ resolver = "2"
 # nockchain is the only legitimate external sibling. Templates are
 # independent projects under templates/, not workspace members.
 members = [
+    "crates/vesl-hull",
     "tools/graft-inject",
     "test/vesl-test",
 ]
