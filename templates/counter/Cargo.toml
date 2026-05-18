@@ -16,3 +16,6 @@ nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "1a2
 
 tokio = { version = "1.32", features = ["rt-multi-thread", "macros"] }
 anyhow = "1.0"
+
+[patch.crates-io]
+ibig = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66" }

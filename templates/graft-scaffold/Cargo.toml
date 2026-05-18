@@ -10,10 +10,10 @@ path = "src/main.rs"
 
 [dependencies]
 # NockVM — adjust paths to your nockchain clone
-nockapp = { path = "../../nockchain/crates/nockapp", default-features = false }
-nockvm = { path = "../../nockchain/crates/nockvm/rust/nockvm" }
-nockvm_macros = { path = "../../nockchain/crates/nockvm/rust/nockvm_macros" }
-zkvm-jetpack = { path = "../../nockchain/crates/zkvm-jetpack" }
+nockapp = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66", default-features = false }
+nockvm = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66" }
+nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66" }
+zkvm-jetpack = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66" }
 
 # Vesl SDK — adjust paths to your vesl clone
 vesl-core = { path = "../../crates/vesl-core" }
@@ -32,6 +32,6 @@ tokio = { version = "1.32", features = ["rt-multi-thread", "macros"] }
 #
 # Adjust the path if your scaffold is nested deeper than two levels
 # above your `nockchain/` clone (matches the existing
-# `nockapp = { path = "../../nockchain/..." }` convention).
+# `nockapp = { path = "../../../nockchain/..." }` convention).
 [patch.crates-io]
-ibig = { path = "../../nockchain/crates/nockvm/rust/ibig" }
+ibig = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66" }
