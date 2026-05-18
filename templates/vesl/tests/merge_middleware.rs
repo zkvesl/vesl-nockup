@@ -26,7 +26,7 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 use vesl_hull::{
     resolve_with_demo_key_checked, router_with_extra, AppState, HullConfig,
-    SettlementCliOverrides, SharedState,
+    ManifestSummary, SettlementCliOverrides, SharedState,
 };
 
 static INIT_ENV: Once = Once::new();
@@ -64,6 +64,7 @@ async fn boot_state() -> SharedState {
         note_counter: 0,
         settlement,
         output_dir: PathBuf::from("."),
+        manifest: ManifestSummary::empty(),
     }))
 }
 

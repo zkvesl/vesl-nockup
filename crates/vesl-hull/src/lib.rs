@@ -14,6 +14,7 @@
 
 pub mod api;
 pub mod config;
+pub mod manifest_summary;
 pub mod signing;
 pub mod verify;
 
@@ -22,6 +23,7 @@ pub use api::{
     AppState, SharedState, Field,
     check_auth_config_with_bind, load_note_counter,
 };
+pub use manifest_summary::{ManifestSummary, ManifestSummaryError};
 pub use config::{
     HullConfig, SettlementCliOverrides, SettlementConfig, SettlementMode, SettlementToml,
     load_config, resolve_with_demo_key_checked,

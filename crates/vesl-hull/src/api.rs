@@ -6,6 +6,7 @@
 //! Community developers: modify /commit to accept your domain data,
 //! adjust the Merkle leaf encoding, and add domain-specific endpoints.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -26,6 +27,7 @@ use vesl_core::{
 };
 
 use crate::config::SettlementConfig;
+use crate::manifest_summary::ManifestSummary;
 use crate::verify::field_to_leaf_bytes;
 
 // ---------------------------------------------------------------------------
@@ -56,6 +58,10 @@ pub struct AppState {
     pub note_counter: u64,
     pub settlement: SettlementConfig,
     pub output_dir: PathBuf,
+    /// Snapshot of the graft manifests that composed the kernel (R6 §2).
+    /// Surfaced verbatim via `/status` so operators can confirm a gate
+    /// swap or graft compose actually landed.
+    pub manifest: ManifestSummary,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;
@@ -149,6 +155,15 @@ pub struct StatusResponse {
     pub notes_settled: u64,
     pub hull_id: u64,
     pub settlement_mode: String,
+    /// Active verify-gate name (R6 §2). `"default-hash"` when no graft
+    /// declares `[graft.gates]`. Mirrors `ManifestSummary::gate`.
+    pub gate: String,
+    /// Graft names that composed the kernel, alphabetically sorted (R6 §2).
+    pub grafts: Vec<String>,
+    /// Per-graft sha256 of the raw manifest TOML — same digest
+    /// `nockup graft inject` banners on each block (R6 §2 / R6 positive
+    /// finding #17).
+    pub manifest_shas: BTreeMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -388,6 +403,9 @@ async fn status(State(state): State<SharedState>) -> Json<StatusResponse> {
         notes_settled: st.note_counter,
         hull_id: st.hull_id,
         settlement_mode: st.settlement.mode.to_string(),
+        gate: st.manifest.gate.clone(),
+        grafts: st.manifest.grafts.clone(),
+        manifest_shas: st.manifest.manifest_shas.clone(),
     })
 }
 

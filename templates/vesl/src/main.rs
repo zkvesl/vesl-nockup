@@ -82,6 +82,15 @@ fn build_app_state(app: NockApp) -> Result<vesl_hull::SharedState, Box<dyn Error
     .map_err(|e| -> Box<dyn Error> { e.into() })?;
     let output_dir = PathBuf::from(".");
     let note_counter = vesl_hull::load_note_counter(Path::new(&output_dir));
+    // Snapshot the manifest dir once at boot so /status can surface the
+    // active gate, the composed grafts, and per-graft sha256s (R6 §2).
+    // Missing dir is non-fatal: the hull falls back to a default-hash
+    // empty summary if run outside a graft project scaffold.
+    let manifest = vesl_hull::ManifestSummary::from_manifest_dir(Path::new("hoon/lib"))
+        .unwrap_or_else(|e| {
+            eprintln!("WARNING: failed to scan hoon/lib for graft manifests: {e}");
+            vesl_hull::ManifestSummary::empty()
+        });
     Ok(Arc::new(Mutex::new(vesl_hull::AppState {
         app,
         fields: Vec::new(),
@@ -90,6 +99,7 @@ fn build_app_state(app: NockApp) -> Result<vesl_hull::SharedState, Box<dyn Error
         note_counter,
         settlement,
         output_dir,
+        manifest,
     })))
 }
 

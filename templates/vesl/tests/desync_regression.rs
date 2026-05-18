@@ -33,7 +33,7 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 use vesl_hull::{
     check_auth_config_with_bind, resolve_with_demo_key_checked, router, AppState,
-    HullConfig, SettlementCliOverrides,
+    HullConfig, ManifestSummary, SettlementCliOverrides,
 };
 
 async fn boot_state() -> Arc<Mutex<AppState>> {
@@ -63,6 +63,7 @@ async fn boot_state() -> Arc<Mutex<AppState>> {
         note_counter: 0,
         settlement,
         output_dir: PathBuf::from("."),
+        manifest: ManifestSummary::empty(),
     }))
 }
 
@@ -166,6 +167,15 @@ async fn commit_success_path_still_updates_state() {
     assert_eq!(body["has_tree"], serde_json::Value::Bool(true));
     assert_eq!(body["field_count"], serde_json::Value::from(1u64));
     assert!(body["merkle_root"].as_str().is_some());
+    // R6 §2: /status surfaces active gate + composed grafts + per-graft
+    // sha256s. ManifestSummary::empty() backs this test, so the operator
+    // sees default-hash + empty arrays — the shape is what matters here.
+    assert_eq!(
+        body["gate"], serde_json::Value::String("default-hash".into()),
+        "default ManifestSummary -> gate=default-hash"
+    );
+    assert!(body["grafts"].is_array(), "grafts must be a JSON array");
+    assert!(body["manifest_shas"].is_object(), "manifest_shas must be a JSON object");
 }
 
 // Audit C-01 follow-up §4 regressions for the §3.2 + §3.3 work

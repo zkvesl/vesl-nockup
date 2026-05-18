@@ -19,6 +19,7 @@ axum = "0.8"
 tower-http = { version = "0.6", features = ["limit"] }
 tower = { version = "0.5", features = ["limit", "buffer"] }
 toml = "0.8"
+sha2 = "0.10"
 zeroize = "1"
 bytes = "1"
 
