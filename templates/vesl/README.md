@@ -45,8 +45,22 @@ The Serve arm wires `vesl_hull::serve(...)` which mounts:
 - `GET  /status`   — current state snapshot
 - `GET  /health`   — liveness probe (always unauthenticated)
 
-Source: `vesl-nockup/crates/vesl-hull/src/api.rs`. Add your own
-endpoints by composing a custom router via `Router::merge(vesl_hull::router(state), my_routes)`.
+Source: `vesl-nockup/crates/vesl-hull/src/api.rs`. Mount your own
+endpoints by passing them to `vesl_hull::serve_with_extra_routes` (or
+`vesl_hull::router_with_extra` if you need the assembled `axum::Router`):
+
+```rust
+let my_routes = axum::Router::new()
+    .route("/echo", axum::routing::post(my_echo_handler));
+vesl_hull::serve_with_extra_routes(state, port, &bind_addr, my_routes).await?;
+```
+
+Layers (API-key auth, 4 MiB body limit, 200 req / 60 s rate limit + 256
+buffer) wrap the merged Router, so they apply uniformly to your custom
+routes. Do **not** use `Router::merge(vesl_hull::router(state), ...)`
+directly — axum's flat merge attaches your routes outside the
+already-applied layer stack, leaving them unauthenticated and
+unrate-limited.
 
 ## Layout
 

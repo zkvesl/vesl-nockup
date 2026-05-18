@@ -261,14 +261,26 @@ fn is_loopback_bind(bind_addr: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Build the axum router with all hull endpoints.
+///
+/// Equivalent to `router_with_extra(state, Router::new())`. Callers that
+/// want to mount their own routes alongside the hull's stock ones must
+/// use [`router_with_extra`] or [`serve_with_extra_routes`] — a bare
+/// `Router::merge(router(state), my_routes)` will NOT apply the auth,
+/// body-limit, or rate-limit layers to the merged-in routes (R6 §1).
 pub fn router(state: SharedState) -> Router {
-    Router::new()
-        .route("/health", get(health))
-        .route("/status", get(status))
-        .route("/commit", post(commit_handler))
-        .route("/settle", post(settle_handler))
-        .route("/verify", post(verify_handler))
-        .route("/tx/{tx_id}", get(verify_tx_handler))
+    router_with_extra(state, Router::new())
+}
+
+/// Build the router with extra custom routes mounted alongside the hull's
+/// stock endpoints, layered uniformly under the same middleware stack
+/// (auth, 4 MiB body limit, 200/60s rate limit + 256-deep buffer).
+///
+/// Layers wrap the **merged** Router, so they apply to every route
+/// regardless of which half it came from. This is the canonical
+/// composition entry point post-R6 §1.
+pub fn router_with_extra(state: SharedState, extra: Router<SharedState>) -> Router {
+    stock_routes()
+        .merge(extra)
         .layer(
             tower::ServiceBuilder::new()
                 .layer(axum::error_handling::HandleErrorLayer::new(|_: tower::BoxError| async {
@@ -280,6 +292,20 @@ pub fn router(state: SharedState) -> Router {
         .layer(RequestBodyLimitLayer::new(4 * 1024 * 1024)) // H-001
         .layer(middleware::from_fn(check_api_key))
         .with_state(state)
+}
+
+/// The hull's stock routes, with no layers and no state applied. Private
+/// so callers cannot accidentally re-introduce the pre-fix
+/// `Router::merge(router(state), my_routes)` pattern that bypassed
+/// middleware (R6 §1).
+fn stock_routes() -> Router<SharedState> {
+    Router::new()
+        .route("/health", get(health))
+        .route("/status", get(status))
+        .route("/commit", post(commit_handler))
+        .route("/settle", post(settle_handler))
+        .route("/verify", post(verify_handler))
+        .route("/tx/{tx_id}", get(verify_tx_handler))
 }
 
 // ---------------------------------------------------------------------------
@@ -724,9 +750,24 @@ async fn verify_tx_handler(
 // Server entry point
 // ---------------------------------------------------------------------------
 
-/// Start the HTTP server.
+/// Start the HTTP server with stock routes only.
 pub async fn serve(state: SharedState, port: u16, bind_addr: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let app = router(state);
+    serve_with_extra_routes(state, port, bind_addr, Router::new()).await
+}
+
+/// Start the HTTP server with extra custom routes merged into the hull's
+/// stock router. Layers (auth, body limit, rate limit) apply to every
+/// route uniformly — see [`router_with_extra`] for the merge ordering.
+///
+/// Recommended over `Router::merge(router(state), my_routes)`, which
+/// silently drops the middleware stack on the merged-in routes (R6 §1).
+pub async fn serve_with_extra_routes(
+    state: SharedState,
+    port: u16,
+    bind_addr: &str,
+    extra: Router<SharedState>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let app = router_with_extra(state, extra);
     let listener = tokio::net::TcpListener::bind(format!("{bind_addr}:{port}")).await?;
     if std::env::var("HULL_API_KEY").map_or(true, |k| k.is_empty()) {
         eprintln!("WARNING: HULL_API_KEY not set -- API endpoints are unauthenticated");
