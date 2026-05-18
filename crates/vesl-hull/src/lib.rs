@@ -15,6 +15,7 @@
 pub mod api;
 pub mod config;
 pub mod manifest_summary;
+pub mod settle_builder;
 pub mod signing;
 pub mod verify;
 
@@ -24,6 +25,10 @@ pub use api::{
     check_auth_config_with_bind, load_note_counter,
 };
 pub use manifest_summary::{ManifestSummary, ManifestSummaryError};
+pub use settle_builder::{
+    payload_builder_for_gate, DefaultHashPayloadBuilder, ManifestVerifyPayloadBuilder,
+    SettleBuilderError, SettleContext, SettlePayloadBuilder,
+};
 pub use config::{
     HullConfig, SettlementCliOverrides, SettlementConfig, SettlementMode, SettlementToml,
     load_config, resolve_with_demo_key_checked,

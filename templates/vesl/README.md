@@ -47,6 +47,15 @@ The Serve arm wires `vesl_hull::serve(...)` which mounts:
 
 `/status` reads `hoon/lib/` once at boot to surface `gate` / `grafts` / `manifest_shas`. After swapping a gate (`[graft.gates]` in a graft TOML) + re-running `nockup graft inject --apply` + restart, `curl .../status | jq .gate` confirms the new selection.
 
+`/settle` adapts to the active gate. Stock `vesl_hull::settle_handler` dispatches through `vesl_hull::SettlePayloadBuilder`; the binary picks the impl from `manifest.gate` at boot. Two impls ship:
+
+| Gate | Body shape | Notes |
+|---|---|---|
+| `default-hash` | `{}` (re-mints from `field[0]`) or `{"data": "<hex>"}` | Pre-R6 default. |
+| `manifest-verify` | `{"fields": [{"name": "...", "value": "..."}, ...]}` | Hull re-derives proofs from the committed tree. |
+
+Adding a new catalog-gate impl (schnorr, ed25519, membership, bounded) is a `SettlePayloadBuilder` impl in `crates/vesl-hull/src/settle_builder.rs` plus a `payload_builder_for_gate` match arm. Unknown gates warn and fall back to default-hash.
+
 Source: `vesl-nockup/crates/vesl-hull/src/api.rs`. Mount your own
 endpoints by passing them to `vesl_hull::serve_with_extra_routes` (or
 `vesl_hull::router_with_extra` if you need the assembled `axum::Router`):

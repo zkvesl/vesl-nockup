@@ -28,6 +28,7 @@ use vesl_core::{
 
 use crate::config::SettlementConfig;
 use crate::manifest_summary::ManifestSummary;
+use crate::settle_builder::{SettleBuilderError, SettleContext, SettlePayloadBuilder};
 use crate::verify::field_to_leaf_bytes;
 
 // ---------------------------------------------------------------------------
@@ -62,6 +63,11 @@ pub struct AppState {
     /// Surfaced verbatim via `/status` so operators can confirm a gate
     /// swap or graft compose actually landed.
     pub manifest: ManifestSummary,
+    /// Gate-aware `%settle-note` payload assembly (R6 §3). Binary picks
+    /// the impl from `manifest.gate` at boot; the stock `/settle`
+    /// handler dispatches through it so a manifest-verify (or other
+    /// catalog-gate) kernel succeeds without a custom route.
+    pub settle_builder: Arc<dyn SettlePayloadBuilder>,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;
@@ -107,22 +113,6 @@ pub struct CommitResponse {
     pub field_count: usize,
     pub merkle_root: String,
     pub status: String,
-}
-
-#[derive(Deserialize)]
-pub struct SettleRequest {
-    /// Optional note ID. Auto-increments if omitted.
-    pub note_id: Option<u64>,
-    /// Optional target hull. Defaults to the process's `hull_id` (1).
-    /// Settling against an unregistered hull surfaces the kernel's
-    /// `settle-graft: root not registered` cord as a 409.
-    pub hull: Option<u64>,
-    /// Hex-encoded `data` for the verify gate. Defaults to the leaf
-    /// bytes of `field[0]` (the pre-§3.2 behavior). For the default
-    /// single-leaf hash-gate, these bytes are hashed and compared to
-    /// the registered root. Pass-through for catalog gates: callers
-    /// supply gate-correct bytes; the hull stays domain-blind.
-    pub data: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -538,62 +528,91 @@ async fn commit_handler(
 
 /// POST /settle — settle a note against the current Merkle root.
 ///
-/// Sends a `%settle-note` poke carrying the first committed field's
-/// leaf bytes (single-leaf hash-gate default). The kernel checks that
-/// `hash-leaf(data)` matches the registered root and that this
-/// `note_id` is not already settled, then emits `%settle-noted`.
+/// Sends a `%settle-note` poke whose payload shape is set by the active
+/// verify gate. The hull dispatches through
+/// [`SettlePayloadBuilder`](crate::SettlePayloadBuilder) so each gate
+/// gets its expected payload (R6 §3):
 ///
-/// Multi-field commits require a non-default hash gate (multi-leaf,
-/// signed, STARK); the single-leaf default gate-denies any `data`
-/// whose hash doesn't equal the registered root and the kernel
-/// returns empty effects (this handler maps that to 409). See the
-/// template README's "Customizing" section for non-default gates.
+/// - `default-hash` — body `{}` re-mints from `field[0]`; `{"data": "<hex>"}`
+///   passes the leaf through.
+/// - `manifest-verify` — body `{"fields": [{"name": ..., "value": ...}, ...]}`;
+///   the hull re-derives proofs from the committed tree.
+/// - Other catalog gates — add an impl in `settle_builder.rs` and a
+///   match arm in [`payload_builder_for_gate`](crate::payload_builder_for_gate).
 ///
-/// `note_id` is taken from the request or auto-incremented from the
-/// hull's note counter. Returns 409 Conflict when the kernel rejects
-/// (note replay, unregistered hull, gate deny, or root mismatch);
-/// 502 Bad Gateway on unexpected effect tag.
+/// `note_id` and `hull` come from the request envelope (`{"note_id":
+/// ..., "hull": ..., ...gate-specific...}`); both are optional and
+/// default to the hull's counter + configured `hull_id`.
+///
+/// Returns 409 Conflict when the kernel rejects (note replay,
+/// unregistered hull, gate deny, root mismatch); 400 Bad Request when
+/// the body shape doesn't match the active gate; 502 Bad Gateway on
+/// unexpected effect tag.
 async fn settle_handler(
     State(state): State<SharedState>,
-    Json(req): Json<SettleRequest>,
+    Json(body): Json<serde_json::Value>,
 ) -> Result<Json<SettleResponse>, (StatusCode, Json<ErrorBody>)> {
     let mut st = state.lock().await;
 
-    let tree = st.tree.as_ref().ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorBody {
-                error: "no tree committed yet -- POST /commit first".into(),
-            }),
-        )
-    })?;
-
-    let root = tree.root();
-    let root_hex = format_tip5(&root);
-
-    let leaf_bytes = match req.data.as_deref() {
-        Some(hex_str) => hex::decode(hex_str).map_err(|e| {
+    let hull_id = match body.get("hull") {
+        Some(serde_json::Value::Null) | None => st.hull_id,
+        Some(v) => v.as_u64().ok_or_else(|| {
             (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorBody {
-                    error: format!("invalid hex in `data`: {e}"),
+                    error: "`hull` must be a non-negative integer".into(),
                 }),
             )
         })?,
-        None => st.fields.first().map(field_to_leaf_bytes).ok_or_else(|| {
+    };
+    let note_id = match body.get("note_id") {
+        Some(serde_json::Value::Null) | None => st.note_counter + 1,
+        Some(v) => v.as_u64().ok_or_else(|| {
             (
                 StatusCode::BAD_REQUEST,
                 Json(ErrorBody {
-                    error: "no committed fields; POST /commit first".into(),
+                    error: "`note_id` must be a non-negative integer".into(),
                 }),
             )
         })?,
     };
 
-    let hull_id = req.hull.unwrap_or(st.hull_id);
-    let note_id = req.note_id.unwrap_or(st.note_counter + 1);
+    // Build the poke inside a borrow scope so st.tree / st.fields can
+    // be released before we take &mut st.app for the kernel poke.
+    let (settle_poke, root_hex) = {
+        let tree = st.tree.as_ref().ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody {
+                    error: "no tree committed yet -- POST /commit first".into(),
+                }),
+            )
+        })?;
+        let root = tree.root();
+        let root_hex = format_tip5(&root);
+        let ctx = SettleContext {
+            note_id,
+            hull_id,
+            root: &root,
+            tree: Some(tree),
+            fields: &st.fields,
+        };
+        let poke = st
+            .settle_builder
+            .build_settle_poke(&ctx, &body)
+            .map_err(|e| match e {
+                SettleBuilderError::BadRequest(msg) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorBody { error: msg }),
+                ),
+                SettleBuilderError::InternalError(msg) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorBody { error: msg }),
+                ),
+            })?;
+        (poke, root_hex)
+    };
 
-    let settle_poke = vesl_core::build_settle_note_poke(note_id, hull_id, &root, &leaf_bytes);
     let effects = poke_kernel_with_timeout(&mut st.app, settle_poke, "settle-note").await?;
 
     // Audit §2.C-01: gate counter advancement and HTTP success on the

@@ -91,6 +91,12 @@ fn build_app_state(app: NockApp) -> Result<vesl_hull::SharedState, Box<dyn Error
             eprintln!("WARNING: failed to scan hoon/lib for graft manifests: {e}");
             vesl_hull::ManifestSummary::empty()
         });
+    // Pick the SettlePayloadBuilder impl from the active gate (R6 §3).
+    // Stock /settle dispatches through this so manifest-verify (or any
+    // future catalog gate with a SettlePayloadBuilder impl) succeeds
+    // without a custom route. Unknown gates warn and fall back to
+    // default-hash.
+    let settle_builder = vesl_hull::payload_builder_for_gate(&manifest.gate);
     Ok(Arc::new(Mutex::new(vesl_hull::AppState {
         app,
         fields: Vec::new(),
@@ -100,6 +106,7 @@ fn build_app_state(app: NockApp) -> Result<vesl_hull::SharedState, Box<dyn Error
         settlement,
         output_dir,
         manifest,
+        settle_builder,
     })))
 }
 

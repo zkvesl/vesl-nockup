@@ -33,7 +33,7 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 use vesl_hull::{
     check_auth_config_with_bind, resolve_with_demo_key_checked, router, AppState,
-    HullConfig, ManifestSummary, SettlementCliOverrides,
+    DefaultHashPayloadBuilder, HullConfig, ManifestSummary, SettlementCliOverrides,
 };
 
 async fn boot_state() -> Arc<Mutex<AppState>> {
@@ -64,6 +64,7 @@ async fn boot_state() -> Arc<Mutex<AppState>> {
         settlement,
         output_dir: PathBuf::from("."),
         manifest: ManifestSummary::empty(),
+        settle_builder: Arc::new(DefaultHashPayloadBuilder),
     }))
 }
 
@@ -224,10 +225,10 @@ async fn settle_replay_id_returns_409_with_cord() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn settle_unregistered_hull_returns_409_with_cord() {
-    // Exercises the new `hull` field on SettleRequest AND the new
-    // cord routing: hull=99 was never registered, so settle-graft
-    // emits [%settle-error 'settle-graft: root not registered']
-    // and the hull surfaces the cord verbatim in the 409 body.
+    // Exercises the `hull` envelope field AND the cord routing:
+    // hull=99 was never registered, so settle-graft emits
+    // [%settle-error 'settle-graft: root not registered'] and the
+    // hull surfaces the cord verbatim in the 409 body.
     let state = boot_state().await;
 
     let body = r#"{"fields":[{"key":"a","value":"1"}]}"#;
