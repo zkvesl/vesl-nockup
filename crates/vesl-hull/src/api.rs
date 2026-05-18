@@ -107,6 +107,16 @@ pub struct CommitResponse {
 pub struct SettleRequest {
     /// Optional note ID. Auto-increments if omitted.
     pub note_id: Option<u64>,
+    /// Optional target hull. Defaults to the process's `hull_id` (1).
+    /// Settling against an unregistered hull surfaces the kernel's
+    /// `settle-graft: root not registered` cord as a 409.
+    pub hull: Option<u64>,
+    /// Hex-encoded `data` for the verify gate. Defaults to the leaf
+    /// bytes of `field[0]` (the pre-§3.2 behavior). For the default
+    /// single-leaf hash-gate, these bytes are hashed and compared to
+    /// the registered root. Pass-through for catalog gates: callers
+    /// supply gate-correct bytes; the hull stays domain-blind.
+    pub data: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -479,19 +489,29 @@ async fn settle_handler(
     let root = tree.root();
     let root_hex = format_tip5(&root);
 
-    let leaf_bytes = st.fields.first().map(field_to_leaf_bytes).ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorBody {
-                error: "no committed fields; POST /commit first".into(),
-            }),
-        )
-    })?;
+    let leaf_bytes = match req.data.as_deref() {
+        Some(hex_str) => hex::decode(hex_str).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody {
+                    error: format!("invalid hex in `data`: {e}"),
+                }),
+            )
+        })?,
+        None => st.fields.first().map(field_to_leaf_bytes).ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorBody {
+                    error: "no committed fields; POST /commit first".into(),
+                }),
+            )
+        })?,
+    };
 
+    let hull_id = req.hull.unwrap_or(st.hull_id);
     let note_id = req.note_id.unwrap_or(st.note_counter + 1);
 
-    let settle_poke =
-        vesl_core::build_settle_note_poke(note_id, st.hull_id, &root, &leaf_bytes);
+    let settle_poke = vesl_core::build_settle_note_poke(note_id, hull_id, &root, &leaf_bytes);
     let effects = poke_kernel_with_timeout(&mut st.app, settle_poke, "settle-note").await?;
 
     // Audit §2.C-01: gate counter advancement and HTTP success on the
