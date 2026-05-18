@@ -21,7 +21,7 @@ use nockapp::driver::{NockAppHandle, PokeResult};
 use nockapp::kernel::boot;
 use nockapp::noun::slab::NounSlab;
 use nockapp::wire::{SystemWire, Wire};
-use nock_noun_rs::{cue_from_bytes, jam_to_bytes, make_tag_in, new_stack};
+use nock_noun_rs::{cue_from_bytes, make_tag_in, new_stack};
 use nockvm::noun::{D, T};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
@@ -504,8 +504,9 @@ fn cue_jammed(bytes: &[u8]) -> Result<NounSlab> {
     let mut stack = new_stack();
     let noun = cue_from_bytes(&mut stack, bytes)
         .ok_or_else(|| anyhow!("cue failed: not a valid jammed noun"))?;
+    let stack_space = stack.noun_space();
     let mut slab = NounSlab::new();
-    let copied = slab.copy_into(noun);
+    let copied = slab.copy_into(noun, &stack_space);
     slab.set_root(copied);
     Ok(slab)
 }
@@ -528,9 +529,9 @@ fn decode_hex(s: &str) -> Result<Vec<u8>> {
 /// decoder so tests can assemble pokes with the lib's existing helpers
 /// and feed them into watch via stdin).
 pub fn jam_slab(slab: &NounSlab) -> Vec<u8> {
-    let mut stack = new_stack();
-    let root = unsafe { *slab.root() };
-    jam_to_bytes(&mut stack, root)
+    // Post-PMA: jam through the slab's own NounSpace; a foreign stack
+    // panics on the arena-pointer check.
+    nock_noun_rs::slab_jam_to_bytes(slab)
 }
 
 /// Hex-encode bytes for the `poke-jam` stdin command. Pairs with

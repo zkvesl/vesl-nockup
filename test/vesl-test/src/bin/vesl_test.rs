@@ -31,7 +31,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use nock_noun_rs::NounSlab;
-use nockvm::noun::Noun;
+use nockvm::noun::{NounAllocator, NounHandle};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use vesl_core::{build_hull_peek_path, build_keyed_peek_path, build_keyless_peek_path};
@@ -222,8 +222,9 @@ enum Outcome {
 fn classify(result: &NounSlab) -> Outcome {
     // SAFETY: copy the Noun out immediately; the slab outlives this scope.
     let outer = unsafe { *result.root() };
+    let space = result.noun_space();
 
-    let outer_cell = match outer.as_cell() {
+    let outer_cell = match outer.in_space(&space).as_cell() {
         Ok(c) => c,
         Err(_) => return Outcome::Unrecognized,
     };
@@ -245,7 +246,7 @@ fn classify(result: &NounSlab) -> Outcome {
 /// the LE-byte sequence (after trimming trailing zeros) decodes to
 /// printable UTF-8 — matching the convention `effect_tags` uses for
 /// effect-head tags. Cells render as `{cell: [head, tail]}`.
-fn noun_to_json(n: Noun) -> Value {
+fn noun_to_json(n: NounHandle<'_>) -> Value {
     if let Ok(atom) = n.as_atom() {
         let bytes = atom.as_ne_bytes();
         let trimmed: Vec<u8> = trim_trailing_zeros(bytes);
