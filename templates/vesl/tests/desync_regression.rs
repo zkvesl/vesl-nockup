@@ -5,10 +5,13 @@
 //!
 //! The settle kernel's `%register` cause is single-shot per
 //! `hull_id`. After the first /commit, a second /commit poke
-//! produces an empty effect list (handle-register returns ~) and
-//! pre-fix the hull returned HTTP 200 with the new (unattested)
-//! root anyway. These tests fail against pre-fix code; they exist
-//! to keep the fix from regressing.
+//! triggers the duplicate-register guard. Post-L-09 the kernel
+//! emits `[%settle-register-rejected hull existing-root]` and the
+//! hull surfaces the existing root in the 409 body; pre-L-09 it
+//! emitted a free-form `%settle-error` cord; pre-fix the hull
+//! returned HTTP 200 with the new (unattested) root anyway. These
+//! tests fail against pre-fix code; they exist to keep the fix
+//! from regressing.
 //!
 //! Prereq: compose settle-graft and compile the kernel before
 //! running:
@@ -98,12 +101,23 @@ async fn double_commit_returns_409() {
     let (status, _) = json_post(router(state.clone()), "/commit", body_a).await;
     assert_eq!(status, StatusCode::OK, "first /commit must succeed");
 
+    // Audit L-09: post-typed-rejection, the kernel emits
+    // [%settle-register-rejected hull existing-root] on duplicate, and the
+    // hull surfaces the existing root in the 409 body so callers can verify
+    // what's actually registered without re-reading the slog.
     let body_b = r#"{"fields":[{"key":"k","value":"v2"}]}"#;
-    let (status, _) = json_post(router(state.clone()), "/commit", body_b).await;
+    let (status, bytes) = json_post(router(state.clone()), "/commit", body_b).await;
     assert_eq!(
         status,
         StatusCode::CONFLICT,
-        "second /commit must be rejected by the kernel — empty effect list"
+        "second /commit must be rejected — %settle-register-rejected"
+    );
+    let body: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("error body is JSON");
+    let err = body["error"].as_str().expect("error field is a string");
+    assert!(
+        err.contains("hull already registered with root 0x"),
+        "409 body must surface the existing root from the typed effect; got: {err}"
     );
 
     let st = state.lock().await;
