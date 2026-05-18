@@ -10,9 +10,9 @@ name = "graft-hash-gate"
 path = "src/main.rs"
 
 [dependencies]
-nockapp = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66" }
-nockvm = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66" }
-nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66" }
+nockapp = { git = "https://github.com/nockchain/nockchain.git", rev = "fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f" }
+nockvm = { git = "https://github.com/nockchain/nockchain.git", rev = "fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f" }
+nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f" }
 
 # Vesl — Mint for commitment, no RAG dependencies needed
 vesl-core = { path = "../../crates/vesl-core" }
@@ -22,4 +22,4 @@ tokio = { version = "1.32", features = ["rt-multi-thread", "macros"] }
 anyhow = "1.0"
 
 [patch.crates-io]
-ibig = { git = "https://github.com/nockchain/nockchain.git", rev = "1a23ccdabf3f8909bf7c7966c48edc36cbf91a66" }
+ibig = { git = "https://github.com/nockchain/nockchain.git", rev = "fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f" }

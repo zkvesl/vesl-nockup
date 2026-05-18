@@ -34,7 +34,7 @@ fi
 # synced vesl-core crate stack moves to a new nockchain rev — typically
 # whatever sibling ../nockchain/ HEAD was when the crates were last built.
 # Overridable via env: NOCK_PIN=<sha> ./sync.sh
-NOCK_PIN="${NOCK_PIN:-1a23ccdabf3f8909bf7c7966c48edc36cbf91a66}"
+NOCK_PIN="${NOCK_PIN:-fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f}"
 
 # vesl-core rev that the bundled crate stack + templates were last
 # synced from. sync.sh aborts when the sibling vesl-core's HEAD does
