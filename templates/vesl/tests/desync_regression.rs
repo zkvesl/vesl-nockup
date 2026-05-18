@@ -112,29 +112,29 @@ async fn double_commit_returns_409() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn settle_after_commit_returns_409() {
+async fn settle_after_single_field_commit_succeeds() {
     let state = boot_state().await;
 
     let body = r#"{"fields":[{"key":"a","value":"1"}]}"#;
     let (status, _) = json_post(router(state.clone()), "/commit", body).await;
     assert_eq!(status, StatusCode::OK, "/commit must succeed first");
 
-    // Post-877988f: /settle pokes %settle-note (not %settle-register).
-    // For a 1-field commit, the default single-leaf hash gate's
-    // hash(field_to_leaf_bytes) does not match MerkleTree::root() (the
-    // tree pads/depth-tags), so the gate cleanly returns %.n and the
-    // kernel's ?> panics outside the mule wrap — settle-graft emits no
-    // typed cord. The hull surfaces the empty-effect list as 409. The
-    // counter must NOT advance on this rejection path.
+    // Post-877988f: /settle pokes %settle-note. For a 1-field commit,
+    // hash-leaf-digest(field_to_leaf_bytes(field[0])) equals
+    // MerkleTree::root() (single-leaf root = leaf hash), so the default
+    // hash-gate accepts and the kernel emits %settle-noted. The counter
+    // advances. Pre-877988f this test asserted 409 because /settle
+    // re-poked %register; the assertion has been flipped to track the
+    // successful-settle path.
     let (status, _) = json_post(router(state.clone()), "/settle", "{}").await;
     assert_eq!(
         status,
-        StatusCode::CONFLICT,
-        "/settle's %settle-note is gate-denied for 1-field commits, surfaces as 409"
+        StatusCode::OK,
+        "/settle's %settle-note is gate-accepted for 1-field commits"
     );
 
     let st = state.lock().await;
-    assert_eq!(st.note_counter, 0, "counter must not advance on rejected settle");
+    assert_eq!(st.note_counter, 1, "counter advances on accepted settle");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -155,15 +155,48 @@ async fn commit_success_path_still_updates_state() {
 }
 
 // Audit C-01 follow-up §4 regressions for the §3.2 + §3.3 work
-// (.dev/AUDIT_C01_REAL_SETTLE.md). The audit doc's third proposed
-// case — settle_with_explicit_data_succeeds_against_commit — is
-// dropped here: it depends on the default single-leaf hash gate
-// accepting `hash(data) == tree.root()` for our 1-field commit,
-// which the existing settle_after_commit_returns_409 test
-// demonstrates does NOT hold. Without gate-success the replay
-// scenario (a second settled note_id) is unreachable through the
-// default gate. Re-add when a hash-or-gate combination admits the
-// success path.
+// (.dev/AUDIT_C01_REAL_SETTLE.md).
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn settle_replay_id_returns_409_with_cord() {
+    // The default hash-gate accepts 1-field commits, so the first
+    // /settle settles a note. The second /settle with the same
+    // explicit note_id trips settle-graft's replay check
+    // (settle-graft.hoon:200-202) — kernel emits
+    // [%settle-error 'settle-graft: note already settled'] and the
+    // hull surfaces the cord verbatim in the 409 body via the new
+    // cord routing.
+    let state = boot_state().await;
+
+    let body = r#"{"fields":[{"key":"a","value":"1"}]}"#;
+    let (status, _) = json_post(router(state.clone()), "/commit", body).await;
+    assert_eq!(status, StatusCode::OK, "/commit must succeed first");
+
+    let (status, _) =
+        json_post(router(state.clone()), "/settle", r#"{"note_id": 1}"#).await;
+    assert_eq!(status, StatusCode::OK, "first /settle settles note 1");
+
+    let (status, bytes) =
+        json_post(router(state.clone()), "/settle", r#"{"note_id": 1}"#).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "replay on note_id 1 → kernel emits 'note already settled' cord → 409"
+    );
+    let body: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("error body is JSON");
+    let err = body["error"].as_str().expect("error field is a string");
+    assert!(
+        err.contains("settle-graft: note already settled"),
+        "409 body must contain the kernel cord verbatim; got: {err}"
+    );
+
+    let st = state.lock().await;
+    assert_eq!(
+        st.note_counter, 1,
+        "counter advances exactly once — first settle accepted, replay rejected"
+    );
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn settle_unregistered_hull_returns_409_with_cord() {
