@@ -23,9 +23,9 @@
 mod fixtures;
 
 use anyhow::Result;
-use nock_noun_rs::{jam_to_bytes, make_tag_in, new_stack};
+use nock_noun_rs::{make_tag_in, slab_jam_to_bytes};
 use nockapp::noun::slab::NounSlab;
-use nockvm::noun::{D, T};
+use nockvm::noun::{NounAllocator, D, T};
 use vesl_core::{
     Mint, Tip5Hash, build_forge_prove_poke, build_guard_check_poke,
     build_guard_register_poke, build_mint_commit_poke, tip5_to_atom_le_bytes,
@@ -126,14 +126,15 @@ async fn four_graft_end_to_end() -> Result<()> {
     // 5-40s to this test and requires the full STARK setup.
     // ---------------------------------------------------------------
     let forge_slab = build_forge_prove_poke(DOMAIN_HULL, 101, DOMAIN_LEAF);
-    let mut stack = new_stack();
-    let forge_jam = jam_to_bytes(&mut stack, unsafe { *forge_slab.root() });
+    let forge_jam = slab_jam_to_bytes(&forge_slab);
     assert!(
         !forge_jam.is_empty(),
         "build_forge_prove_poke jam should be non-empty",
     );
     let forge_root = unsafe { *forge_slab.root() };
+    let forge_space = forge_slab.noun_space();
     let forge_tag = forge_root
+        .in_space(&forge_space)
         .as_cell()
         .expect("forge poke is a cell")
         .head()

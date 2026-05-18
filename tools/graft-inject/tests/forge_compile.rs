@@ -22,7 +22,8 @@
 mod fixtures;
 
 use anyhow::Result;
-use nock_noun_rs::{jam_to_bytes, new_stack};
+use nock_noun_rs::slab_jam_to_bytes;
+use nockvm::noun::NounAllocator;
 use vesl_core::{Mint, build_forge_prove_poke, build_mint_commit_poke};
 use vesl_test::GraftTestHarness;
 
@@ -47,12 +48,12 @@ async fn four_graft_compose_boots_and_accepts_forge_shape() -> Result<()> {
 
     // Shape check: forge-prove slab is non-empty, head tag is right.
     let slab = build_forge_prove_poke(1, 101, b"forge_compile data");
-    let mut stack = new_stack();
-    let jam = jam_to_bytes(&mut stack, unsafe { *slab.root() });
+    let jam = slab_jam_to_bytes(&slab);
     assert!(!jam.is_empty(), "build_forge_prove_poke jam should be non-empty");
 
     let noun = unsafe { *slab.root() };
-    let cell = noun.as_cell().expect("forge-prove poke is a cell");
+    let space = slab.noun_space();
+    let cell = noun.in_space(&space).as_cell().expect("forge-prove poke is a cell");
     let tag_atom = cell.head().as_atom().expect("forge-prove tag is an atom");
     let tag_bytes = tag_atom.as_ne_bytes();
     let tag_str = std::str::from_utf8(tag_bytes)
