@@ -21,8 +21,8 @@ use tokio::sync::Mutex;
 use tower_http::limit::RequestBodyLimitLayer;
 
 use vesl_core::{
-    effect_head_tag, fetch_receipt, format_tip5, ChainClient, MerkleTree, NounSlab,
-    SettlementMode, TxReceipt, VerifyTxError,
+    decode_settle_error, effect_head_tag, fetch_receipt, format_tip5, ChainClient, MerkleTree,
+    NounSlab, SettlementMode, TxReceipt, VerifyTxError,
 };
 
 use crate::config::SettlementConfig;
@@ -510,15 +510,27 @@ async fn settle_handler(
     match effect_head_tag(&effects[0]).as_deref() {
         Some("settle-noted") => {}
         Some("settle-error") => {
-            return Err((
-                StatusCode::CONFLICT,
-                Json(ErrorBody {
-                    error: "kernel rejected %settle-note (see kernel slog for the specific \
-                            reason; common causes: note already settled, root not registered, \
-                            root mismatch, gate deny)"
-                        .into(),
-                }),
-            ));
+            // Audit §2.C-01 §3.3: route the kernel's typed cord to a
+            // matching HTTP status. The seven cords below cover every
+            // %settle-error emitted by the %settle-note arm in
+            // settle-graft.hoon:170-228.
+            let cord = decode_settle_error(&effects[0]).unwrap_or_default();
+            let (status, hint) = match cord.as_str() {
+                "settle-graft: malformed payload" => (StatusCode::BAD_REQUEST, cord.clone()),
+                "settle-graft: root not registered"
+                | "settle-graft: root mismatch"
+                | "settle-graft: note root does not match expected root"
+                | "settle-graft: note already settled"
+                | "settle-graft: note already settled (prior epoch)" => {
+                    (StatusCode::CONFLICT, cord.clone())
+                }
+                "settle-graft: verify gate crashed" => (StatusCode::BAD_GATEWAY, cord.clone()),
+                _ => (
+                    StatusCode::CONFLICT,
+                    format!("kernel rejected %settle-note ({cord})"),
+                ),
+            };
+            return Err((status, Json(ErrorBody { error: hint })));
         }
         _ => {
             return Err((
