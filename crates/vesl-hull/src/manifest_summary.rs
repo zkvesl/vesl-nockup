@@ -176,10 +176,10 @@ impl GateSelection {
         if let Some(g) = &self.gate {
             return Some(g.clone());
         }
-        if let Some(chain) = &self.gate_chain {
-            if !chain.is_empty() {
-                return Some(chain.join("&"));
-            }
+        if let Some(chain) = &self.gate_chain
+            && !chain.is_empty()
+        {
+            return Some(chain.join("&"));
         }
         None
     }

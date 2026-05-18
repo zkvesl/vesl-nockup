@@ -17,6 +17,7 @@ use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use nockapp::wire::{SystemWire, Wire};
 use nockapp::NockApp;
+use nockvm::noun::NounAllocator;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tower_http::limit::RequestBodyLimitLayer;
@@ -362,7 +363,8 @@ async fn poke_kernel_with_timeout(
 fn decode_register_rejected_existing_root(effect: &NounSlab) -> Option<String> {
     // SAFETY: the slab outlives this call.
     let root_noun = unsafe { *effect.root() };
-    let outer = root_noun.as_cell().ok()?;
+    let space = effect.noun_space();
+    let outer = root_noun.in_space(&space).as_cell().ok()?;
     let inner = outer.tail().as_cell().ok()?;
     let existing_atom = inner.tail().as_atom().ok()?;
     let bytes = existing_atom.as_ne_bytes();
