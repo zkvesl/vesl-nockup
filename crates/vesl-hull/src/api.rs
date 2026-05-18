@@ -322,6 +322,26 @@ async fn poke_kernel_with_timeout(
     }
 }
 
+/// Decode the `existing-root` atom from a `[%settle-register-rejected
+/// hull=@ existing-root=@]` effect (audit L-09). Returns lowercase hex of
+/// the atom's LE bytes — the same byte representation `tip5_to_atom_le_bytes`
+/// produced at register time. Returns `None` if the effect's tail isn't a
+/// cell with an atom on the right; callers fall back to a generic body
+/// hint in that case.
+fn decode_register_rejected_existing_root(effect: &NounSlab) -> Option<String> {
+    // SAFETY: the slab outlives this call.
+    let root_noun = unsafe { *effect.root() };
+    let outer = root_noun.as_cell().ok()?;
+    let inner = outer.tail().as_cell().ok()?;
+    let existing_atom = inner.tail().as_atom().ok()?;
+    let bytes = existing_atom.as_ne_bytes();
+    let trimmed_len = bytes.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
+    if trimmed_len == 0 {
+        return Some(String::from("00"));
+    }
+    Some(hex::encode(&bytes[..trimmed_len]))
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -408,28 +428,46 @@ async fn commit_handler(
     let register_poke = vesl_core::build_settle_register_poke(st.hull_id, &root);
     let effects = poke_kernel_with_timeout(&mut st.app, register_poke, "settle-register").await?;
 
-    // Audit §2.C-01: empty effects = kernel rejected the %settle-register
-    // (handle-register returns ~ on duplicate hull). Refuse silently
-    // overwriting local state with a root the kernel has not attested.
+    // Belt-and-suspenders: an empty effects list is not produced by the
+    // current %settle-register branch (post-L-09 it emits the typed
+    // %settle-register-rejected effect; pre-L-09 it emitted %settle-error).
+    // Kept for one revision cycle in case a downstream kernel revision
+    // drops the typed effect; remove once all callers track this rev.
     if effects.is_empty() {
         return Err((
             StatusCode::CONFLICT,
             Json(ErrorBody {
-                error: "hull root already registered; this hull is single-shot per process \
-                        (see docs/AUDIT_C01_FOLLOWUP.md)"
-                    .into(),
+                error: "kernel returned empty effects for %settle-register; \
+                        likely an outdated kernel revision".into(),
             }),
         ));
     }
     match effect_head_tag(&effects[0]).as_deref() {
         Some("settle-registered") => {}
+        Some("settle-register-rejected") => {
+            // L-09: typed duplicate-register. Surface the existing root from
+            // the kernel effect so callers can verify what's actually
+            // registered without re-reading the slog.
+            let body_text = match decode_register_rejected_existing_root(&effects[0]) {
+                Some(hex) => format!(
+                    "hull already registered with root 0x{hex}; \
+                     this hull is single-shot per process"
+                ),
+                None => "hull already registered (could not decode existing root \
+                         from kernel effect)"
+                    .into(),
+            };
+            return Err((
+                StatusCode::CONFLICT,
+                Json(ErrorBody { error: body_text }),
+            ));
+        }
         Some("settle-error") => {
             return Err((
                 StatusCode::CONFLICT,
                 Json(ErrorBody {
-                    error: "kernel rejected %settle-register (see kernel slog for the \
-                            specific reason; common causes: hull already registered, \
-                            registered-map at capacity)"
+                    error: "kernel rejected %settle-register; likely cause: \
+                            registered-map at capacity"
                         .into(),
                 }),
             ));
