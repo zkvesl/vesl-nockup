@@ -1035,7 +1035,7 @@ mod tests {
         assert_eq!(arr.len(), 1);
         let first = &arr[0];
         assert_eq!(first["name"], "settle-graft");
-        assert_eq!(first["version"], "0.1.0");
+        assert_eq!(first["version"], "0.2.0");
         assert_eq!(first["priority"], 10);
         assert_eq!(first["applicable"], 5);
         assert_eq!(first["deferred"], false);
