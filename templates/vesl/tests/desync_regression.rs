@@ -119,15 +119,18 @@ async fn settle_after_commit_returns_409() {
     let (status, _) = json_post(router(state.clone()), "/commit", body).await;
     assert_eq!(status, StatusCode::OK, "/commit must succeed first");
 
-    // /settle currently builds a %register poke (audit §2.C-01
-    // disposition: deferred to docs/AUDIT_C01_FOLLOWUP.md). With
-    // hull_id already registered, the kernel returns ~; the fix
-    // makes this surface as 409.
+    // Post-877988f: /settle pokes %settle-note (not %settle-register).
+    // For a 1-field commit, the default single-leaf hash gate's
+    // hash(field_to_leaf_bytes) does not match MerkleTree::root() (the
+    // tree pads/depth-tags), so the gate cleanly returns %.n and the
+    // kernel's ?> panics outside the mule wrap — settle-graft emits no
+    // typed cord. The hull surfaces the empty-effect list as 409. The
+    // counter must NOT advance on this rejection path.
     let (status, _) = json_post(router(state.clone()), "/settle", "{}").await;
     assert_eq!(
         status,
         StatusCode::CONFLICT,
-        "/settle re-pokes %register and the kernel rejects the duplicate"
+        "/settle's %settle-note is gate-denied for 1-field commits, surfaces as 409"
     );
 
     let st = state.lock().await;
@@ -149,4 +152,83 @@ async fn commit_success_path_still_updates_state() {
     assert_eq!(body["has_tree"], serde_json::Value::Bool(true));
     assert_eq!(body["field_count"], serde_json::Value::from(1u64));
     assert!(body["merkle_root"].as_str().is_some());
+}
+
+// Audit C-01 follow-up §4 regressions for the §3.2 + §3.3 work
+// (.dev/AUDIT_C01_REAL_SETTLE.md). The audit doc's third proposed
+// case — settle_with_explicit_data_succeeds_against_commit — is
+// dropped here: it depends on the default single-leaf hash gate
+// accepting `hash(data) == tree.root()` for our 1-field commit,
+// which the existing settle_after_commit_returns_409 test
+// demonstrates does NOT hold. Without gate-success the replay
+// scenario (a second settled note_id) is unreachable through the
+// default gate. Re-add when a hash-or-gate combination admits the
+// success path.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn settle_unregistered_hull_returns_409_with_cord() {
+    // Exercises the new `hull` field on SettleRequest AND the new
+    // cord routing: hull=99 was never registered, so settle-graft
+    // emits [%settle-error 'settle-graft: root not registered']
+    // and the hull surfaces the cord verbatim in the 409 body.
+    let state = boot_state().await;
+
+    let body = r#"{"fields":[{"key":"a","value":"1"}]}"#;
+    let (status, _) = json_post(router(state.clone()), "/commit", body).await;
+    assert_eq!(status, StatusCode::OK, "/commit must succeed first");
+
+    let (status, bytes) =
+        json_post(router(state.clone()), "/settle", r#"{"hull": 99}"#).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "unregistered hull → kernel emits 'root not registered' cord → 409"
+    );
+    let body: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("error body is JSON");
+    let err = body["error"].as_str().expect("error field is a string");
+    assert!(
+        err.contains("settle-graft: root not registered"),
+        "409 body must contain the kernel cord verbatim; got: {err}"
+    );
+
+    let st = state.lock().await;
+    assert_eq!(
+        st.note_counter, 0,
+        "counter must not advance on rejected settle"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn settle_invalid_data_hex_returns_400() {
+    // Exercises the new `data` field's hex-decoding validation in
+    // the hull. "zzz" is not valid hex, so the handler returns 400
+    // before pokeing the kernel — the kernel never sees this
+    // request and the counter must not advance.
+    let state = boot_state().await;
+
+    let body = r#"{"fields":[{"key":"a","value":"1"}]}"#;
+    let (status, _) = json_post(router(state.clone()), "/commit", body).await;
+    assert_eq!(status, StatusCode::OK, "/commit must succeed first");
+
+    let (status, bytes) =
+        json_post(router(state.clone()), "/settle", r#"{"data": "zzz"}"#).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "invalid hex in `data` rejected by hull, never reaches kernel"
+    );
+    let body: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("error body is JSON");
+    let err = body["error"].as_str().expect("error field is a string");
+    assert!(
+        err.contains("invalid hex"),
+        "400 body must explain the hex parse failure; got: {err}"
+    );
+
+    let st = state.lock().await;
+    assert_eq!(
+        st.note_counter, 0,
+        "counter must not advance on hull-side rejection"
+    );
 }
