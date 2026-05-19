@@ -11,3 +11,5 @@ out.jam
 CLAUDE.md
 *.nock
 .data.*/
+sync.sh
+.claude/
