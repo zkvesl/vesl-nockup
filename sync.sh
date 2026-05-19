@@ -320,6 +320,51 @@ for t in graft-scaffold graft-hash-gate graft-intent graft-mint graft-settle \
             sed -i -E \
                 's|path = "\.\./\.\./\.\./nockchain/crates/[^"]*"|git = "https://github.com/nockchain/nockchain.git", rev = "'"$NOCK_PIN"'"|g' \
                 "$toml"
+            # Templates with a bundled vesl-core path-dep introduce a
+            # source diamond: their direct nockapp/nockvm/ibig come from
+            # the just-rewritten git source, but vesl-core's transitive
+            # deps still resolve through `../../../nockchain/...` paths.
+            # Cargo treats path-source and git-source as distinct even
+            # at the same SHA, so the dep graph holds two `ibig::UBig`
+            # types and `cargo check` fails on E0308 mismatches. The
+            # `[patch."<nockchain.git>"]` block below redirects the
+            # rewritten git-deps back to the same local paths the
+            # bundled vesl-core uses — collapses the diamond. Only
+            # appended for templates that consume vesl-core (the others
+            # don't trip the diamond).
+            # Trigger on any bundled-crate path-dep (`vesl-core`,
+            # `nock-noun-rs`, `vesl-hull`, etc.). Any of these reach
+            # nockchain crates through path-deps, so a template that
+            # also declares direct git-deps to nockchain crates trips
+            # the same source-resolution diamond.
+            if grep -qE '"\.\./\.\./crates/' "$toml"; then
+                cat >> "$toml" <<'PATCH_BLOCK'
+
+[patch."https://github.com/nockchain/nockchain.git"]
+nockapp         = { path = "../../../nockchain/crates/nockapp" }
+nockvm          = { path = "../../../nockchain/crates/nockvm/rust/nockvm" }
+nockvm_macros   = { path = "../../../nockchain/crates/nockvm/rust/nockvm_macros" }
+ibig            = { path = "../../../nockchain/crates/nockvm/rust/ibig" }
+nockchain-math  = { path = "../../../nockchain/crates/nockchain-math" }
+nockchain-types = { path = "../../../nockchain/crates/nockchain-types" }
+noun-serde      = { path = "../../../nockchain/crates/noun-serde" }
+PATCH_BLOCK
+                # Restore [patch.crates-io] ibig to path-dep. The main
+                # sed above rewrote it to a git-dep alongside the
+                # [dependencies] table; bundled vesl-signing /
+                # vesl-wallet reference ibig from crates.io and that
+                # [patch.crates-io] redirect would make their ibig
+                # resolve to git source — distinct from the path source
+                # vesl-core's transitive deps resolve to, reintroducing
+                # the diamond. The match string anchors `^ibig = {`
+                # (no leading whitespace), which only the
+                # [patch.crates-io] form matches — the column-aligned
+                # entries inside the [patch."<nockchain.git>"] block
+                # above use leading spaces.
+                sed -i -E \
+                    's|^ibig = \{ git = "https://github.com/nockchain/nockchain.git", rev = "[^"]*" \}$|ibig = { path = "../../../nockchain/crates/nockvm/rust/ibig" }|' \
+                    "$toml"
+            fi
         fi
         # vesl-nockup ships the codegen binary as `nockup-graft` (the
         # sidecar that `nockup graft <subcmd>` dispatches to). vesl-core

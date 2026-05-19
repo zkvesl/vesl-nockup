@@ -20,4 +20,13 @@ tokio = { version = "1.32", features = ["rt-multi-thread", "macros"] }
 anyhow = "1.0"
 
 [patch.crates-io]
-ibig = { git = "https://github.com/nockchain/nockchain.git", rev = "fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f" }
+ibig = { path = "../../../nockchain/crates/nockvm/rust/ibig" }
+
+[patch."https://github.com/nockchain/nockchain.git"]
+nockapp         = { path = "../../../nockchain/crates/nockapp" }
+nockvm          = { path = "../../../nockchain/crates/nockvm/rust/nockvm" }
+nockvm_macros   = { path = "../../../nockchain/crates/nockvm/rust/nockvm_macros" }
+ibig            = { path = "../../../nockchain/crates/nockvm/rust/ibig" }
+nockchain-math  = { path = "../../../nockchain/crates/nockchain-math" }
+nockchain-types = { path = "../../../nockchain/crates/nockchain-types" }
+noun-serde      = { path = "../../../nockchain/crates/noun-serde" }
