@@ -13,3 +13,7 @@ CLAUDE.md
 .data.*/
 sync.sh
 .claude/
+
+# Release tooling (maintainer-local; release.yml workflow stays tracked)
+/scripts/release.sh
+/scripts/release-notes.template.md
