@@ -46,7 +46,7 @@ VESL_CORE_PIN="${VESL_CORE_PIN:-ecf33b9d07baed6da069a6627868d57615e9ded2}"
 # vesl-wallet crates were last synced from. Symmetric to VESL_CORE_PIN
 # above — same tripwire shape, same bump discipline. Overridable via
 # env: VESL_WALLET_PIN=<sha> ./sync.sh
-VESL_WALLET_PIN="${VESL_WALLET_PIN:-aa438bbe3c8fc3cd75bbe91952649bda699c6b3d}"
+VESL_WALLET_PIN="${VESL_WALLET_PIN:-e270b00e0972afad047b584cc7f28c5443dc0765}"
 
 here="$(cd "$(dirname "$0")" && pwd)"
 vesl="${1:-$HOME/projects/nockchain/vesl-core}"
