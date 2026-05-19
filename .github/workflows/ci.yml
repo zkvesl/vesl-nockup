@@ -18,6 +18,17 @@ env:
   VESL_WALLET_PIN: e270b00e0972afad047b584cc7f28c5443dc0765
 
 jobs:
+  check-pins:
+    # Validates that sync.sh canonical defaults agree with ci.yml env
+    # for all 3 pin streams (NOCK, VESL_CORE, VESL_WALLET), that every
+    # SHA is reachable upstream (catches ghost SHAs), and that templates
+    # don't drift from canonical NOCK_PIN. Runs in <1s.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: scripts/check-pins.sh
+        run: ./scripts/check-pins.sh
+
   sync-verify:
     # Detects drift between the bundled crates/templates and what
     # sync.sh would produce given VESL_CORE_PIN. Catches hand-edits
