@@ -25,7 +25,7 @@ mod fixtures;
 
 use anyhow::Result;
 use nockapp::noun::slab::NounSlab;
-use vesl_checkpoint::{resume, snapshot};
+use vesl_checkpoint::{resume_with_data_dir, snapshot};
 use vesl_core::{build_hull_peek_path, unwrap_triple_unit_atom, Mint};
 use vesl_test::GraftTestHarness;
 
@@ -63,8 +63,17 @@ async fn settle_register_state_survives_snapshot_resume() -> Result<()> {
     // 3) Drop harness (and its NockApp) before resuming.
     drop(harness);
 
-    // 4) Resume.
-    let mut resumed_app = resume(&jam_path, &snap, "checkpoint-resume-test").await?;
+    // 4) Resume. Use a fresh tempdir so the resumed kernel's data
+    //    files don't collide with a prior run's `./.data.checkpoint-
+    //    resume-test/` rooted at cwd.
+    let resume_data_dir = tempfile::tempdir()?;
+    let mut resumed_app = resume_with_data_dir(
+        &jam_path,
+        &snap,
+        "checkpoint-resume-test",
+        Some(resume_data_dir.path().to_path_buf()),
+    )
+    .await?;
 
     // 5) Peek on the resumed app — the state should still hold the
     //    registered hull's root.

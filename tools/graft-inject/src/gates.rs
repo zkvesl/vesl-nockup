@@ -91,16 +91,20 @@ pub(crate) const DEFAULT_HASH_GATE_BLOCK: &str = "\
 ///
 /// `gate = "name"` produces a single-line direct binding:
 ///
-///     =/  hash-gate=verify-gate  name:vesl-gates
+/// ```text
+/// =/  hash-gate=verify-gate  name:vesl-gates
+/// ```
 ///
 /// `gate-chain = ["a", "b", ...]` produces an AND-fold:
 ///
-///     =/  hash-gate=verify-gate
-///       |=  [note-id=@ data=* expected-root=@]
-///       ^-  ?
-///       ?&  (a:vesl-gates note-id data expected-root)
-///           (b:vesl-gates note-id data expected-root)
-///       ==
+/// ```text
+/// =/  hash-gate=verify-gate
+///   |=  [note-id=@ data=* expected-root=@]
+///   ^-  ?
+///   ?&  (a:vesl-gates note-id data expected-root)
+///       (b:vesl-gates note-id data expected-root)
+///   ==
+/// ```
 ///
 /// OVERVIEW.md §Out-of-scope keeps `gate-chain` AND-only in v1.
 ///

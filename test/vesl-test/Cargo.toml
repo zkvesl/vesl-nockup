@@ -49,6 +49,11 @@ toml = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Per-instance data dir for GraftTestHarness — keeps lifecycle tests
+# isolated from each other's event-log / pma state. Without this, every
+# harness boot writes into cwd-rooted `./.data.vesl-test/` and replays
+# prior tests' events.
+tempfile = "3"
 
 [dev-dependencies]
 # vesl-checkpoint is the synced bundle from vesl-core; harness-level

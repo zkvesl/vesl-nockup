@@ -351,12 +351,14 @@ pub(crate) fn emit_load_defaults(
 ///
 /// The body is shaped:
 ///
-///     =/  defaults  ^*(versioned-state)
-///     %_  defaults
-///         settle  =/  s  (mole |.(settle.old-state))  ?~(s ^*(settle-state) u.s)
-///         mint    =/  m  (mole |.(mint.old-state))    ?~(m ^*(mint-state) u.m)
-///         ...
-///     ==
+/// ```text
+/// =/  defaults  ^*(versioned-state)
+/// %_  defaults
+///     settle  =/  s  (mole |.(settle.old-state))  ?~(s ^*(settle-state) u.s)
+///     mint    =/  m  (mole |.(mint.old-state))    ?~(m ^*(mint-state) u.m)
+///     ...
+/// ==
+/// ```
 ///
 /// * `^*(versioned-state)` is the wide form of `^*  versioned-state`
 ///   (kettar) — the bunt (type-default) of the kernel's full

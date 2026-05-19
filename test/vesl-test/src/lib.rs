@@ -36,6 +36,10 @@ pub const TEST_PAYLOAD: &[u8] = b"vesl-test fixture payload";
 
 pub struct GraftTestHarness {
     app: NockApp,
+    // Held for the lifetime of the harness so the kernel's data files
+    // (event log, pma snapshots) survive until the harness drops. The
+    // TempDir's Drop wipes the directory, isolating each test run.
+    _data_dir: tempfile::TempDir,
 }
 
 impl GraftTestHarness {
@@ -47,9 +51,21 @@ impl GraftTestHarness {
     }
 
     /// Boot a NockApp from a compiled out.jam.
+    ///
+    /// Each harness instance gets its own scratch data directory so
+    /// parallel tests don't share an event log. Without this, the
+    /// kernel's default data dir resolves to `./.data.vesl-test/`
+    /// (cwd-rooted) and successive boots replay prior tests' events —
+    /// hull-id collisions on `%settle-register` are the visible
+    /// symptom.
     pub async fn boot<P: AsRef<Path>>(jam_path: P) -> Result<Self> {
         let jam_path = jam_path.as_ref();
-        let cli = boot::default_boot_cli(false);
+        let data_dir = tempfile::Builder::new()
+            .prefix("vesl-test-data-")
+            .tempdir()
+            .context("create tempdir for vesl-test harness data")?;
+        let mut cli = boot::default_boot_cli(false);
+        cli.data_dir = Some(data_dir.path().to_path_buf());
         init_capture_tracing(&cli);
         let kernel = fs::read(jam_path)
             .with_context(|| format!("reading kernel jam at {}", jam_path.display()))?;
@@ -57,7 +73,10 @@ impl GraftTestHarness {
             boot::setup(&kernel, cli, &[], "vesl-test", None)
                 .await
                 .map_err(|e| anyhow::anyhow!("boot setup failed: {e}"))?;
-        Ok(Self { app })
+        Ok(Self {
+            app,
+            _data_dir: data_dir,
+        })
     }
 
     /// Send `[%settle-register hull root]`. Returns the effect tag list.
@@ -160,11 +179,13 @@ impl GraftTestHarness {
             &["settle-registered"],
         );
 
-        // 2. duplicate register → error
+        // 2. duplicate register → typed rejection (audit M-01: hull is
+        //    one-shot; settle-graft emits %settle-register-rejected with
+        //    the existing root rather than a generic %settle-error).
         report.record(
             "duplicate-register",
             self.register(TEST_HULL_A, &root).await,
-            &["settle-error"],
+            &["settle-register-rejected"],
         );
 
         // 3. verify (valid payload)

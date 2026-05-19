@@ -304,12 +304,14 @@ pub(crate) fn validate_types(g: &Graft, path: &Path) -> Result<()> {
 /// continuation args aligned at column 6 (under `?& ` + space), `==` at
 /// column 2.
 ///
-///     =/  hash-gate=verify-gate
-///       |=  [note-id=@ data=* expected-root=@]
-///       ^-  ?
-///       ?&  (a:vesl-gates note-id data expected-root)
-///           (b:vesl-gates note-id data expected-root)
-///       ==
+/// ```text
+/// =/  hash-gate=verify-gate
+///   |=  [note-id=@ data=* expected-root=@]
+///   ^-  ?
+///   ?&  (a:vesl-gates note-id data expected-root)
+///       (b:vesl-gates note-id data expected-root)
+///   ==
+/// ```
 pub(crate) fn build_chain_block(chain: &[String]) -> String {
     let mut out = String::from(
         "=/  hash-gate=verify-gate\n  \

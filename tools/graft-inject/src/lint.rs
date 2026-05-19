@@ -28,9 +28,11 @@ use crate::marker::Marker;
 /// union does NOT auto-fix the cross-graft `weld` friction when the
 /// developer's domain arm binds narrowly:
 ///
-///     =/  [efx-c=(list counter-effect) new-counter=counter-state]   :: NARROW
-///       (counter-poke counter.state ...)
-///     (weld efx-c efx-k)                                            :: nest-fail
+/// ```text
+/// =/  [efx-c=(list counter-effect) new-counter=counter-state]   :: NARROW
+///   (counter-poke counter.state ...)
+/// (weld efx-c efx-k)                                            :: nest-fail
+/// ```
 ///
 /// The fix is Pattern B: widen each binding to `(list effect)`. The
 /// lint scans developer code (outside `graft-inject:<X>:begin/:end`
