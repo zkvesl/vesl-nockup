@@ -334,9 +334,14 @@ pub fn verify<C: ReplayCache>(
     let digest = tip5_with_domain(SIWN_DOMAIN_SEPARATOR, bundle.message.as_bytes());
     schnorr_verify(&pk, &digest, &chal, &sig).map_err(|_| SiwnError::BadSignature)?;
 
+    // AUDIT 2026-05-19 H-13: cap the replay-cache TTL. The window is
+    // otherwise expiration_time - issued_at — both attacker-set, so an
+    // 80-year span would pin a cache entry in memory for 80 years.
+    const MAX_SIWN_WINDOW: Duration = Duration::from_secs(3600);
     let window = (params.expiration_time - params.issued_at)
         .to_std()
-        .unwrap_or(Duration::from_secs(3600));
+        .unwrap_or(MAX_SIWN_WINDOW)
+        .min(MAX_SIWN_WINDOW);
     // Key the replay cache on the full message digest, not the bare nonce:
     // the digest commits to domain, chain ID, address, URI and nonce, so a
     // captured bundle cannot be replayed against a different chain or

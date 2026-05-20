@@ -48,7 +48,7 @@ async fn schnorr_gate_register_then_note_happy_path() -> Result<()> {
 
     let mut sk = [Belt(0); 8];
     sk[0] = Belt(0xabad_f00d);
-    let pubkey = derive_pubkey(&sk);
+    let pubkey = derive_pubkey(&sk).expect("test key derives");
     let pk_bytes = pubkey_canonical_bytes(&pubkey);
     let leaf_root = commit_pubkey(&pk_bytes);
 

@@ -264,6 +264,13 @@ pub fn schnorr_verify(
     chal: &UBig,
     sig: &UBig,
 ) -> Result<(), SchnorrError> {
+    // AUDIT 2026-05-19 H-14: reject an off-curve pubkey before any curve
+    // arithmetic. A caller that builds a CheetahPoint from raw F6
+    // coordinates (bypassing decode_signature's in_curve check) would
+    // otherwise get a soundness-broken "valid" result.
+    if !pubkey.in_curve() {
+        return Err(SchnorrError::BadSignature);
+    }
     let zero = UBig::from(0u64);
     if chal <= &zero || chal >= &*G_ORDER {
         return Err(SchnorrError::OutOfRange);

@@ -45,7 +45,7 @@ mod tests {
         let mut sk = [Belt(0); 8];
         sk[0] = Belt(12345);
         sk[1] = Belt(67890);
-        let pk = derive_pubkey(&sk);
+        let pk = derive_pubkey(&sk).expect("demo key derives");
         let pkh = pubkey_hash(&pk);
         let pkh_b58 = pkh.to_base58();
         println!("DEMO_KEY_PKH_BASE58={pkh_b58}");

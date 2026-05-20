@@ -72,6 +72,7 @@ async fn settle_register_state_survives_snapshot_resume() -> Result<()> {
         &snap,
         "checkpoint-resume-test",
         Some(resume_data_dir.path().to_path_buf()),
+        None,
     )
     .await?;
 
