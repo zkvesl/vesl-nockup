@@ -111,11 +111,27 @@ pub fn resolve_with_demo_key_checked(
     toml: &HullConfig,
 ) -> Result<SettlementConfig, String> {
     let settlement_toml = SettlementToml::from(toml);
-    SettlementConfig::resolve_checked(
+    let config = SettlementConfig::resolve_checked(
         overrides,
         &settlement_toml,
         Some(signing::demo_signing_key()),
-    )
+    )?;
+    // AUDIT 2026-05-19 H-15: the demo key is publicly known — a
+    // fakenet-only convenience. Refuse it on the dumbnet chain path so a
+    // fakenet config copied to dumbnet cannot sign real transactions
+    // with it. (resolve_dumbnet derives from the wallet today; this is
+    // the defense-in-depth gate the exported `is_demo_key` was built for.)
+    if config.mode == SettlementMode::Dumbnet
+        && let Some(sk) = config.signing_key
+        && signing::is_demo_key(&sk)
+    {
+        return Err(
+            "refusing to settle on dumbnet with the public demo signing \
+             key — configure a real wallet seed phrase in [wallet]"
+                .to_string(),
+        );
+    }
+    Ok(config)
 }
 
 // ---------------------------------------------------------------------------
