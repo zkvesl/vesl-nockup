@@ -48,6 +48,17 @@ VESL_CORE_PIN="${VESL_CORE_PIN:-a218404e66d47c40c702fd0ada19a2feba9b45e9}"
 # env: VESL_WALLET_PIN=<sha> ./sync.sh
 VESL_WALLET_PIN="${VESL_WALLET_PIN:-43d8b8d1c42ad8c6feafe006583dee67839f22e0}"
 
+# AUDIT 2026-05-19 H-16: every pin must be a 40-char lowercase hex SHA
+# before it reaches the sed rewrite below. An override such as
+# NOCK_PIN='abc", branch = "main' would otherwise inject arbitrary text
+# into a shipped template's Cargo.toml.
+for _pin in NOCK_PIN VESL_CORE_PIN VESL_WALLET_PIN; do
+    if [[ ! "${!_pin}" =~ ^[0-9a-f]{40}$ ]]; then
+        echo "error: $_pin='${!_pin}' is not a 40-char lowercase hex SHA" >&2
+        exit 1
+    fi
+done
+
 here="$(cd "$(dirname "$0")" && pwd)"
 vesl="${1:-$HOME/projects/nockchain/vesl-core}"
 vesl_wallet_repo="${2:-$HOME/projects/nockchain/vesl-wallet}"
@@ -84,13 +95,16 @@ check_sibling_pin() {
         echo "then re-run. CI overrides with $env_var=<sha> ./sync.sh --verify." >&2
         exit 1
     fi
-    # Soft-warn on dirty working tree — pin only guarantees committed
-    # state matches; uncommitted changes leak into the bundle. Includes
-    # untracked files since `cp -rL` copies them too.
+    # AUDIT 2026-05-19 H-17: refuse on a dirty working tree. sync copies
+    # the working tree, not HEAD, so uncommitted or untracked files leak
+    # straight into the shipped bundle; the pin only guarantees committed
+    # state. Commit or stash before syncing.
     if ! git -C "$path" diff --quiet 2>/dev/null || \
        ! git -C "$path" diff --cached --quiet 2>/dev/null || \
        [[ -n "$(git -C "$path" ls-files --others --exclude-standard 2>/dev/null)" ]]; then
-        echo "warning: $path has uncommitted or untracked changes; sync copies working tree, not HEAD" >&2
+        echo "error: $path has uncommitted or untracked changes." >&2
+        echo "       sync copies the working tree, not HEAD — commit or stash first." >&2
+        exit 1
     fi
 }
 
@@ -121,6 +135,23 @@ fi
 # file content). A compromised upstream vesl checkout could plant a
 # symlink to secrets (e.g. ~/.ssh/id_rsa) that ends up committed here.
 # Review incoming vesl changes like any supply-chain input.
+
+# AUDIT 2026-05-19 H-17: copy a directory tree, then prune everything
+# gitignored in the source repo. Plain `cp -rL` copies build artifacts
+# (target/, .data.*, out.jam, app.nock) straight into the shipped
+# bundle. $1 = source repo root (for `git ls-files`); $2 = source dir;
+# $3 = destination dir.
+copy_tree() {
+    local src_repo="$1" src="$2" dst="$3"
+    rm -rf "$dst"
+    cp -rL "$src" "$dst"
+    local rel="${src#"$src_repo"/}" ign
+    while IFS= read -r ign; do
+        if [[ "$ign" == "$rel"/* ]]; then
+            rm -rf "$dst/${ign#"$rel"/}"
+        fi
+    done < <(git -C "$src_repo" ls-files --others --ignored --exclude-standard --directory 2>/dev/null)
+}
 
 # --- destination ---
 # In verify mode, redirect all writes to a fresh empty temp dir. After
@@ -204,6 +235,22 @@ cp "$vesl/protocol/lib/batch-graft.toml"    "$here/hoon/lib/"
 # hoon/common/ subset (wrapper + zeke + ztd only) is too thin to
 # compile a forge-composed kernel. cp -rL flattens nested symlinks
 # (see trust-boundary note above).
+# AUDIT 2026-05-19 H-18: hoon/common, hoon/dat, hoon/jams are symlinks
+# into the sibling nockchain checkout. `cp -rL` dereferences them —
+# assert each resolves into a nockchain/hoon tree before copying, so a
+# rewritten symlink cannot redirect the copy at arbitrary files.
+for _hd in common dat jams; do
+    _tgt="$(realpath "$vesl/hoon/$_hd" 2>/dev/null || echo "")"
+    case "$_tgt" in
+        */nockchain/hoon/"$_hd") ;;
+        *)
+            echo "error: $vesl/hoon/$_hd does not resolve into a nockchain/hoon tree" >&2
+            echo "       resolved: ${_tgt:-<unresolved>}" >&2
+            exit 1
+            ;;
+    esac
+done
+
 echo "  hoon common (full tree, incl. STARK deps for forge-graft)"
 rm -rf "$here/hoon/common"
 cp -rL "$vesl/hoon/common" "$here/hoon/common"
@@ -261,8 +308,7 @@ cp "$vesl/templates/GRAFTING.md"  "$here/templates/GRAFTING.md"
 echo "  rust crates (vesl-core crate stack)"
 mkdir -p "$here/crates"
 for c in nock-noun-rs nockchain-tip5-rs nockchain-client-rs vesl-core vesl-checkpoint; do
-    rm -rf "$here/crates/$c"
-    cp -rL "$vesl/crates/$c" "$here/crates/$c"
+    copy_tree "$vesl" "$vesl/crates/$c" "$here/crates/$c"
 done
 
 # --- vesl-wallet workspace (formerly vesl-identity, OD#10) ---
@@ -275,8 +321,7 @@ echo "  rust crates (vesl-wallet workspace)"
 for c in vesl-signing vesl-wallet-spec vesl-wallet; do
     src="$vesl_wallet_repo/crates/$c"
     if [[ -d "$src" ]]; then
-        rm -rf "$here/crates/$c"
-        cp -rL "$src" "$here/crates/$c"
+        copy_tree "$vesl_wallet_repo" "$src" "$here/crates/$c"
     fi
 done
 
@@ -305,8 +350,7 @@ echo "  templates (graft-scaffold + domain templates + hash-gate demo)"
 for t in graft-scaffold graft-hash-gate graft-intent graft-mint graft-settle \
          data-registry settle-report counter; do
     if [[ -d "$vesl/templates/$t" ]]; then
-        rm -rf "$here/templates/$t"
-        cp -rL "$vesl/templates/$t" "$here/templates/$t"
+        copy_tree "$vesl" "$vesl/templates/$t" "$here/templates/$t"
         # Rewrite nockchain path-deps → git-deps at NOCK_PIN so shipped
         # templates compile without a sibling nockchain/ clone. vesl-core
         # path-deps (../../crates/…) stay — they resolve against the
