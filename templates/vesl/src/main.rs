@@ -42,7 +42,7 @@ enum Cmd {
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     boot::init_default_tracing(&args.boot);
-    let kernel = fs::read("out.jam")?;
+    let kernel = load_kernel()?;
     let app: NockApp = boot::setup(&kernel, args.boot, &[], "{{project_name}}", None).await?;
 
     match args.cmd.unwrap_or(Cmd::Demo) {
@@ -54,6 +54,40 @@ async fn main() -> Result<(), Box<dyn Error>> {
             vesl_hull::serve(state, port, &bind_addr).await
         }
     }
+}
+
+/// Read `out.jam` and verify its integrity before boot.
+///
+/// When `VESL_KERNEL_SHA256` is set, the kernel's sha256 must match it or
+/// boot is refused; when unset, boot proceeds with a warning. This keeps
+/// the edit-Hoon / recompile / rerun loop fast while letting a production
+/// deploy pin the kernel hash (audit C-01).
+fn load_kernel() -> Result<Vec<u8>, Box<dyn Error>> {
+    use sha2::{Digest, Sha256};
+
+    let kernel =
+        fs::read("out.jam").map_err(|e| format!("Failed to read out.jam: {e}"))?;
+    match std::env::var("VESL_KERNEL_SHA256") {
+        Ok(expected) => {
+            let expected = expected.trim();
+            let actual: String = Sha256::digest(&kernel)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            if actual != expected {
+                return Err(format!(
+                    "out.jam sha256 mismatch: expected {expected}, got {actual} \
+                     — refusing to boot"
+                )
+                .into());
+            }
+        }
+        Err(_) => eprintln!(
+            "warning: out.jam integrity unverified — \
+             set VESL_KERNEL_SHA256 to pin the kernel hash"
+        ),
+    }
+    Ok(kernel)
 }
 
 async fn run_demo(mut app: NockApp) -> Result<(), Box<dyn Error>> {

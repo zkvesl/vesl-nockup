@@ -21,6 +21,7 @@ vesl-hull    = { path = "../../crates/vesl-hull" }
 clap   = { version = "4", features = ["derive"] }
 tokio  = { version = "1", features = ["full"] }
 anyhow = "1.0"
+sha2   = "0.10"
 
 [dev-dependencies]
 vesl-test      = { git = "https://github.com/zkvesl/vesl-nockup" }

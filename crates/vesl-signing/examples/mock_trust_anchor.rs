@@ -12,7 +12,7 @@
 
 use chrono::{Duration, Utc};
 use ibig::UBig;
-use vesl_signing::caip122::{verify, SiwnParams, SiwnSigner};
+use vesl_signing::caip122::{verify, SiwnParams, SiwnSigner, SiwnVerifyContext};
 use vesl_signing::replay_cache::InMemoryReplayCache;
 use vesl_signing::schnorr::SchnorrPrivateKey;
 
@@ -51,7 +51,13 @@ fn main() -> anyhow::Result<()> {
 
     // === Verifier side: Hull Authority gate. ===
     let cache = InMemoryReplayCache::new();
-    let identity = verify(&header, trust_anchor_domain, &cache, now)
+    let ctx = SiwnVerifyContext {
+        expected_domain: trust_anchor_domain,
+        expected_chain_id: "nockchain:mainnet",
+        expected_uri: "https://trust.example.org/admin/rotate-key",
+        expected_version: "1",
+    };
+    let identity = verify(&header, &ctx, &cache, now)
         .map_err(|e| anyhow::anyhow!("siwn verify: {e}"))?;
 
     assert_eq!(identity.address, address);
@@ -63,7 +69,7 @@ fn main() -> anyhow::Result<()> {
     println!("  expires:  {}", identity.expiration_time);
 
     // Replay rejection — second attempt with the same nonce must fail.
-    let replay = verify(&header, trust_anchor_domain, &cache, now);
+    let replay = verify(&header, &ctx, &cache, now);
     assert!(
         replay.is_err(),
         "second verify attempt should be replay-rejected"
