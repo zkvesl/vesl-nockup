@@ -154,7 +154,7 @@ cargo +nightly run -- serve --no-auth   # loopback, demo signing key
 ## What the template ships
 
 - `Cargo.toml` — vesl-graft's `[[patches]]` rewrites it to git-deps + both `[patch]` blocks at install time (path-deps remain in the pre-patch template as a fallback for ejected / sibling-clone workflows)
-- `build.rs` — no-op (just declares the `out.jam` rerun-if-changed)
+- `build.rs` — declares the `out.jam` rerun-if-changed and runs `nockup graft doctor` on every build, forwarding project-health findings as `cargo:warning=` lines (it warns only, never fails the build)
 - `src/main.rs` — clap CLI with `Demo` and `Serve` arms (Demo runs the register/settle smoke test; Serve mounts the `vesl-hull` HTTP API)
 - `hoon/app/app.hoon` — markered kernel template
 - `hoon/lib/lib.hoon` — domain-library stub
@@ -163,7 +163,7 @@ The template lives at `templates/vesl/` in this repo. `templates/graft-scaffold/
 
 ## Hull/kernel drift detection
 
-Each shipped scaffold's `build.rs` runs `nockup graft codegen kernel-cause-tags` after `hoonc` and writes `kernel_cause_tags.rs` into `OUT_DIR`. The path is exposed as the `KERNEL_CAUSE_TAGS_PATH` env var (mirroring `COMPILED_HOON_PATH`). Pull it into your hull:
+The demo scaffolds' `build.rs` runs `nockup graft codegen kernel-cause-tags` after `hoonc` and writes `kernel_cause_tags.rs` into `OUT_DIR`. The path is exposed as the `KERNEL_CAUSE_TAGS_PATH` env var (mirroring `COMPILED_HOON_PATH`). Pull it into your hull:
 
 ```rust
 include!(env!("KERNEL_CAUSE_TAGS_PATH"));
@@ -188,6 +188,7 @@ nockup graft codegen kernel-cause-tags hoon/app/app.hoon --out src/kernel_cause_
 nockup graft codegen kernel-cause-tags hoon/app/app.hoon --json
 ```
 
+The `vesl` scaffold's `build.rs` is separate: it runs `nockup graft doctor` on every `cargo build` — project-health checks (schema-version handshake, Cargo `[patch]` consistency, hand-edited graft blocks, a missing `nockup:load-defaults` marker) surfaced as `cargo:warning=` lines. It warns, never fails the build, and is skipped when `NOCKUP_GRAFT_BIN` is unset. See *Updating an existing project*.
 
 ### mint / guard / forge: the other three primitives
 
@@ -364,6 +365,53 @@ If you already have a working nockapp, the three-command flow above doesn't dire
 5. Recompile (`hoonc hoon/app/app.hoon hoon/`) and rebuild (`cargo +nightly build`). Call `vesl_core::build_settle_register_poke`, `build_settle_note_poke`, `build_settle_verify_poke` from your existing `main.rs` alongside your domain pokes.
 
 If `nockup graft inject` reports `warning — markers not found: ...`, you missed a marker or a two-space law violation. The tool is pure text — it does what the regex says.
+
+## Updating an existing project
+
+A project built with vesl-nockup is a frozen snapshot. vesl-nockup reaches it through several independent channels, and none of them auto-propagate — an update is pulled, not pushed. `Cargo.lock` freezes the Rust graph, the template files are your copies, and `app.hoon` is yours. A new vesl-nockup release changes nothing in your project until you act on one of these channels:
+
+| Channel | Carries | Reaches your project via |
+|---|---|---|
+| `nockup-graft` binary | the graft composer | re-running `cargo install --git … --bin nockup-graft` |
+| `zkvesl/vesl-graft` package | the Hoon graft library under `hoon/lib/` | `nockup package install` |
+| `vesl` template | scaffold files (`Cargo.toml`, `build.rs`, `main.rs`, `app.hoon`) | only `nockup project init` — never an existing project |
+| Bundled crates (`vesl-core`, `vesl-hull`, `vesl-test`) | the Rust SDK | git-deps in `Cargo.toml`, frozen by `Cargo.lock` until `cargo update` |
+| Pins (`NOCK_PIN`, `VESL_CORE_PIN`, `VESL_WALLET_PIN`) | the nockchain / vesl-core revs baked into a scaffold | template `Cargo.toml` revs, set once at scaffold time |
+
+The `nockup-graft` binary and the `vesl-graft` package update on separate schedules and aren't version-locked to each other. Update both in the same pass so the composer and the manifests it reads stay in step.
+
+### The update sequence
+
+Run from the project root, in order:
+
+1. **Commit or stash all work.** `nockup graft update` rewrites `app.hoon`; you want that diff isolated and reviewable.
+2. **Snapshot live state.** If this is a running deployment, `vesl-checkpoint::snapshot` the kernel before recompiling — see *State checkpoints* below.
+3. **Update the composer:** `cargo install --git https://github.com/zkvesl/vesl-nockup --bin nockup-graft --force`. Do this first — `nockup graft update` cannot replace its own running binary, and stops with this instruction if the refreshed library needs a newer one.
+4. **Run `nockup graft update hoon/app/app.hoon`.** One verb for the recomposition: it runs `nockup package install` to refresh the graft library, previews the recomposition together with the `nockup graft doctor` health report, prompts for confirmation, then does `inject --apply`. Read the preview before pressing `y` — a `hand-edited-block` finding means a customization inside a banner pair is about to be overwritten. `--yes` skips the prompt for CI.
+5. **Reconcile `Cargo.toml`.** A pin bump changes the nockchain / vesl-core revs your deps should resolve to. The `nockup package install` step 4 runs re-applies vesl-graft's `[[patches]]`; confirm the `[patch]` blocks still point at the rev `vesl-core` resolves to — a mismatch fails `cargo build` on `ibig` (see *Troubleshooting*) — then `cargo update -p vesl-core` rather than a blanket `cargo update`.
+6. **Recompile:** `hoonc hoon/app/app.hoon hoon/ && [ -s out.jam ]`. The guard is load-bearing — hoonc can exit 0 with no jam written.
+7. **Rebuild:** `cargo +nightly build`. The scaffold's `build.rs` re-runs `nockup graft doctor`, so any residual finding shows up in the build output.
+8. **Resume.** If you snapshotted, `vesl-checkpoint::resume` from the new `out.jam`, then re-poke to restore state — resume reinitializes graft state to per-graft defaults.
+9. **Re-run the lifecycle suite** with `vesl-test` to confirm the kernel still behaves.
+
+`nockup graft update` absorbs the old install/preview/apply trio; running `nockup graft inject --apply` by hand still works when you want to drive composition without the orchestrator.
+
+### Re-injection is not a merge
+
+`nockup graft inject` owns the region between each `::  graft-inject:<graft>:<marker>:begin` and `:end` banner pair. Every `--apply` — and every `nockup graft update` — strips that region and re-emits it from the manifest. It does not merge: edits made between the banners are discarded on the next re-injection, whether or not the manifest changed.
+
+Domain code added at the `::  nockup:*` markers but outside any banner pair — your causes, peeks, and `?-` arms — is not touched; re-injection only rewrites banner-bounded blocks. The hazard is editing *inside* a block. The most common case is replacing a verification gate by editing the gate body inside a `%settle-*` arm: that arm lives inside the `settle-graft:poke` block, so the next re-injection reverts it to the default hash-gate. Change a gate through `[graft.gates]` in the manifest instead (see *Replace the default verification gate* under *Customizing*). `nockup graft doctor` flags a hand-edited block before it is lost — it runs on every `cargo build` (see *What the template ships*) and in `nockup graft update`'s preview.
+
+### When an update breaks the build
+
+Most update-time failures are catalogued in *Troubleshooting* below. The ones an update specifically provokes:
+
+- **`hoonc` exits 0 with no `out.jam`** — a newer graft library pulled a Hoon import your frozen `hoon/common`, `hoon/dat`, or `hoon/jams` subset doesn't satisfy. Refresh those trees from your vesl-nockup checkout.
+- **`hoonc` fails `mint-lost` / `-lost %<tag>`** — the composer and the manifests are out of step. Re-run steps 3 and 4 together.
+- **`cargo build` fails on `ibig` / `UBig`** — a pin moved and the `[patch]` block no longer matches the nockchain rev `vesl-core` resolves to. Realign the patch (step 7).
+- **A poke returns `Ok(vec![])` with `slog: invalid cause` on stderr** — the kernel re-composed with a renamed cause-tag the hull still calls by its old name. Update the hull's `build_*_poke` calls; guard future renames at compile time with `assert_kernel_cause_tag!` (see *Hull/kernel drift detection*).
+- **Post-resume pokes emit nothing** — the snapshot was taken against a different graft composition. See *State checkpoints*.
+- **`nockup graft inject` or `nockup graft update` errors `manifest schema too new`** — the graft library declares a newer manifest schema than your installed `nockup-graft`. Update the binary (step 3) and re-run.
 
 ## State checkpoints
 
@@ -886,6 +934,12 @@ Settle-graft's peek paths are **namespaced**: `[%settle-registered hull ~]`, `[%
 
 **`out.jam` changed but `nockup graft inject` reported nothing**
 A comment-only or whitespace edit in a transitively-parsed `.hoon` library (anything under `hoon/lib/`, including helpers like `domain-patterns.hoon` that no marker imports directly) can shift `out.jam` even when `nockup graft inject`'s per-graft summary reports `injected 0/N; skipped` across the board. The cause is hoonc-side, not `nockup graft inject` — something position-sensitive in the source (likely span metadata) bleeds into the jammed output. `nockup graft inject` is **manifest-keyed**: it re-injects only when a `<graft>.toml` digest changes, so library `.hoon` edits slip past it. If you need byte-stable `out.jam`, treat any `.hoon` edit as material — bump the corresponding `.toml`'s body to force a re-inject pass — even if you intended only a comment.
+
+**`nockup graft inject` (or `update`) errors with `manifest schema too new`**
+The graft library in `hoon/lib/` declares a `schema_version` newer than your installed `nockup-graft` understands. The composer refuses rather than mis-compose a schema it can't model. Update the binary: `cargo install --git https://github.com/zkvesl/vesl-nockup --bin nockup-graft --force`, then re-run.
+
+**`cargo build` prints `cargo:warning=doctor: ...` lines**
+The `vesl` scaffold's `build.rs` runs `nockup graft doctor` on every build. Each `doctor:` line is a project-health finding — a schema-version skew, a Cargo `[patch]` inconsistency, a hand-edited graft block, or a missing `nockup:load-defaults` marker. They never fail the build; run `nockup graft doctor hoon/app/app.hoon` for the full report with remediation detail.
 
 ## Reference
 
