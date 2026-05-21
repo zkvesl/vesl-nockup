@@ -79,7 +79,7 @@ pub struct ComposedArtifacts {
 /// Creates (and destroys) a scratch tree at `target/<scratch_subdir>/`
 /// populated from the repo's canonical `templates/app.hoon` and
 /// `hoon/{lib,common,dat,jams}` trees, runs `graft-inject --grafts
-/// <csv> …`, then shells to `hoonc --new …`. Returns the produced
+/// <csv> …`, then shells to `hoonc --ephemeral …`. Returns the produced
 /// `out.jam` path.
 ///
 /// `grafts` selects which manifests graft-inject consumes. Pass
@@ -225,8 +225,14 @@ fn compose_and_compile_inner(
         bail!("graft-inject exited with status {status}");
     }
 
+    // Compile with `--ephemeral`, not `--new`: `--new` boots hoonc's
+    // NockApp against the shared ~/.nockapp/hoonc data dir and requires it
+    // empty, so a second lifecycle test in the same run collides on
+    // leftover durability state. `--ephemeral` uses a throwaway data dir —
+    // parallel-safe, no shared state, the post-PMA mode for compile-only
+    // hoonc use.
     let hoonc_status = Command::new("hoonc")
-        .arg("--new")
+        .arg("--ephemeral")
         .arg("hoon/app/app.hoon")
         .arg("hoon/")
         .current_dir(&scratch)
