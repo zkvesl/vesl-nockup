@@ -52,8 +52,12 @@ echo ">> tempdir: ${TEMPDIR}"
 echo ">> nockup:  ${NOCKUP_BIN}"
 echo ">> vesl-nockup: ${VESL_NOCKUP}"
 
-# Render the registry fixture into the tempdir.
-sed "s|__VESL_NOCKUP_PATH__|${VESL_NOCKUP}|g" "${TEMPLATE}" > "${TEMPDIR}/registry.toml"
+# Render the registry fixture into the tempdir. AUDIT 2026-05-20 M-25:
+# substitute via bash parameter expansion, not sed — ${VESL_NOCKUP} is a
+# path, and a `|`, `&`, or `\` in it would corrupt a sed `s|...|...|`.
+while IFS= read -r line || [[ -n "$line" ]]; do
+  printf '%s\n' "${line//__VESL_NOCKUP_PATH__/${VESL_NOCKUP}}"
+done < "${TEMPLATE}" > "${TEMPDIR}/registry.toml"
 
 # Pin the template commit to whatever HEAD is in the local checkout. The
 # fetcher's default is `main`, which on a feature branch may not contain
