@@ -40,13 +40,13 @@ NOCK_PIN="${NOCK_PIN:-fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f}"
 # synced from. sync.sh aborts when the sibling vesl-core's HEAD does
 # not match this — bump the pin deliberately (edit this line) before
 # re-running. Overridable via env: VESL_CORE_PIN=<sha> ./sync.sh
-VESL_CORE_PIN="${VESL_CORE_PIN:-f6b1580843da65f7c3fa0265753dfe6bb7658bb4}"
+VESL_CORE_PIN="${VESL_CORE_PIN:-79b34f3bc20ed30852c7d1578370da452f4ca319}"
 
 # vesl-wallet rev that the bundled vesl-signing / vesl-wallet-spec /
 # vesl-wallet crates were last synced from. Symmetric to VESL_CORE_PIN
 # above — same tripwire shape, same bump discipline. Overridable via
 # env: VESL_WALLET_PIN=<sha> ./sync.sh
-VESL_WALLET_PIN="${VESL_WALLET_PIN:-f1354c6ff6c5b2ace170075bca51e780227c3fef}"
+VESL_WALLET_PIN="${VESL_WALLET_PIN:-b0eee1a4b62a70f67637a245d34a4eab1295b2be}"
 
 # AUDIT 2026-05-19 H-16: every pin must be a 40-char lowercase hex SHA
 # before it reaches the sed rewrite below. An override such as
