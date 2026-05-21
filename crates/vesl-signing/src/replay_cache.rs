@@ -65,7 +65,10 @@ impl InMemoryReplayCache {
     /// Drop any entries whose `inserted + ttl < now`. Called on every
     /// `seen()` so the cache never grows unboundedly.
     fn sweep(&self, now: Instant, ttl: Duration) {
-        let mut guard = self.inner.lock().expect("replay cache poisoned");
+        // AUDIT 2026-05-20 M-16: recover a poisoned lock instead of
+        // panicking — one panic elsewhere must not permanently brick the
+        // replay cache (and the service that depends on it).
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         guard.retain(|_, inserted| now.duration_since(*inserted) <= ttl);
     }
 }
@@ -74,7 +77,8 @@ impl ReplayCache for InMemoryReplayCache {
     fn seen(&self, nonce: &[u8], ttl: Duration) -> bool {
         let now = Instant::now();
         self.sweep(now, ttl);
-        let mut guard = self.inner.lock().expect("replay cache poisoned");
+        // AUDIT 2026-05-20 M-16: recover a poisoned lock, never panic.
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         match guard.get(nonce) {
             Some(inserted) if now.duration_since(*inserted) <= ttl => true,
             _ => {

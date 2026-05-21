@@ -65,10 +65,24 @@ const TAG_NON_HARDENED: u8 = 0x01;
 
 /// Derived material: a Cheetah scalar and the chain code that lets the
 /// wallet derive its children.
-#[derive(Clone, Debug)]
+///
+/// AUDIT 2026-05-20 M-13: not zeroized on drop — `scalar` is an
+/// `ibig::UBig` with no `Zeroize` impl, so this UBig-containing struct
+/// cannot be cleanly `ZeroizeOnDrop` (see `SchnorrPrivateKey`). The root
+/// seed and mnemonic, the secrets these descend from, ARE zeroized.
+#[derive(Clone)]
 pub(crate) struct ExtKey {
     pub(crate) scalar: UBig,
     pub(crate) chain_code: ChainCode,
+}
+
+// AUDIT 2026-05-20 M-12: redact — both fields (the extended private
+// scalar and the BIP32 chain code) are secret key material; a derived
+// Debug would print them through any `{:?}`.
+impl std::fmt::Debug for ExtKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ExtKey { <redacted> }")
+    }
 }
 
 impl ExtKey {

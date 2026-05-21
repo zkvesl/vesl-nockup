@@ -148,7 +148,7 @@ pub fn peek_loobean(result: &NounSlab) -> Option<bool> {
 ///   extra `[~ ...]` layer beyond the standard 2-deep peek wrap; the
 ///   walk handles either depth without caller awareness.
 pub fn peek_atom_u64(result: &NounSlab) -> Option<u64> {
-    let noun = unsafe { *result.root() };
+    let noun = slab_root_noun(result);
     let space = result.noun_space();
     let mut handle = noun.in_space(&space);
     loop {
@@ -162,6 +162,82 @@ pub fn peek_atom_u64(result: &NounSlab) -> Option<u64> {
         }
         handle = cell.tail();
     }
+}
+
+/// Error returned by [`peek_atom_u64_strict`] when a peek result does not
+/// match the expected `[~ … [~ (unit @)]]` shape.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PeekError {
+    /// A `[~ …]` envelope layer was not a `~`-headed cell.
+    BadWrapper,
+    /// The innermost `(unit @)` slot was neither `~` nor `[~ @]`.
+    BadUnit,
+    /// The bound value did not fit in a `u64`.
+    ValueTooLarge,
+}
+
+impl std::fmt::Display for PeekError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PeekError::BadWrapper => f.write_str("peek result: malformed unit-envelope layer"),
+            PeekError::BadUnit => {
+                f.write_str("peek result: innermost (unit @) is neither ~ nor [~ @]")
+            }
+            PeekError::ValueTooLarge => f.write_str("peek result: bound value exceeds u64"),
+        }
+    }
+}
+
+impl std::error::Error for PeekError {}
+
+/// Depth-aware, null-vs-zero-distinguishing counterpart to [`peek_atom_u64`].
+///
+/// [`peek_atom_u64`] cannot tell "path bound to `0`" from "path didn't bind":
+/// at equal nesting depth those are the *same noun*, and its depth-agnostic
+/// walk collapses shorter `~` nestings onto `Some(0)`. When the absence has
+/// security meaning — an RBAC permission count, say — use this instead.
+///
+/// `unit_wraps` is the number of `[~ …]` envelope layers the graft's `++peek`
+/// arm places around the `(unit @)` payload: `2` for the standard peek wrap,
+/// `3` for log/rbac/validate (see [`peek_atom_u64`]'s note on the extra
+/// layer). The caller chose the path, so it knows the depth.
+///
+/// Returns:
+/// - `Ok(Some(v))` — the `(unit @)` held `v`.
+/// - `Ok(None)` — the `(unit @)` was `~`: path bound, key absent / no value.
+/// - `Err(PeekError)` — the result was not a clean `[~ … [~ (unit @)]]`
+///   shape, or the bound value overflowed `u64`.
+pub fn peek_atom_u64_strict(
+    result: &NounSlab,
+    unit_wraps: usize,
+) -> Result<Option<u64>, PeekError> {
+    let space = result.noun_space();
+    let mut handle = slab_root_noun(result).in_space(&space);
+
+    // Peel exactly `unit_wraps` `[~ inner]` envelope layers.
+    for _ in 0..unit_wraps {
+        let cell = handle.as_cell().map_err(|_| PeekError::BadWrapper)?;
+        let head = cell.head().as_atom().map_err(|_| PeekError::BadWrapper)?;
+        if !head.as_ne_bytes().iter().all(|&b| b == 0) {
+            return Err(PeekError::BadWrapper);
+        }
+        handle = cell.tail();
+    }
+
+    // `handle` is now the `(unit @)` slot: `~` (atom 0) or `[~ @]`.
+    if let Ok(atom) = handle.as_atom() {
+        if atom.as_ne_bytes().iter().all(|&b| b == 0) {
+            return Ok(None);
+        }
+        return Err(PeekError::BadUnit);
+    }
+    let unit = handle.as_cell().map_err(|_| PeekError::BadUnit)?;
+    let head = unit.head().as_atom().map_err(|_| PeekError::BadUnit)?;
+    if !head.as_ne_bytes().iter().all(|&b| b == 0) {
+        return Err(PeekError::BadUnit);
+    }
+    let value = unit.tail().as_atom().map_err(|_| PeekError::BadUnit)?;
+    value.as_u64().map(Some).map_err(|_| PeekError::ValueTooLarge)
 }
 
 /// Decode a triple-unit peek result whose payload is `(unit (list T))`.
@@ -238,8 +314,7 @@ pub fn peek_unit_list<T>(
 /// returns `None` purely because of byte-encoding noise — only when the
 /// effect's *shape* prevents a head-tag from being read at all).
 pub fn effect_head_tag(effect: &NounSlab) -> Option<String> {
-    // SAFETY: the slab outlives this function call.
-    let root = unsafe { *effect.root() };
+    let root = slab_root_noun(effect);
     let space = effect.noun_space();
     let cell = root.in_space(&space).as_cell().ok()?;
     let tag_atom = cell.head().as_atom().ok()?;
@@ -270,8 +345,7 @@ pub fn decode_settle_error(effect: &NounSlab) -> Option<String> {
     if effect_head_tag(effect).as_deref() != Some("settle-error") {
         return None;
     }
-    // SAFETY: the slab outlives this function call.
-    let root = unsafe { *effect.root() };
+    let root = slab_root_noun(effect);
     let space = effect.noun_space();
     let cell = root.in_space(&space).as_cell().ok()?;
     let msg_atom = cell.tail().as_atom().ok()?;
@@ -303,8 +377,7 @@ pub fn decode_queue_popped(effects: &[NounSlab]) -> Option<(u64, Vec<u8>)> {
         }
 
         // Tag matched: effect_head_tag confirmed [%queue-popped *].
-        // SAFETY: the slab outlives this function call.
-        let root = unsafe { *slab.root() };
+        let root = slab_root_noun(slab);
         let space = slab.noun_space();
         let cell = root.in_space(&space).as_cell().ok()?;
 
@@ -330,6 +403,19 @@ pub fn decode_queue_popped(effects: &[NounSlab]) -> Option<(u64, Vec<u8>)> {
     None
 }
 
+/// Copy a slab's root [`Noun`] out by value.
+///
+/// Centralizes the one `unsafe` deref of `NounSlab::root()` that the
+/// peek and effect decoders share.
+///
+/// SAFETY: `root()` returns a pointer into the slab's arena. The
+/// `&NounSlab` borrow keeps that arena alive for the duration of the
+/// call, and `Noun` is `Copy`, so the returned value is a self-contained
+/// copy that outlives the borrow.
+pub(crate) fn slab_root_noun(slab: &NounSlab) -> Noun {
+    unsafe { *slab.root() }
+}
+
 /// Atoms are word-aligned little-endian; trim trailing zero padding so
 /// the returned bytes match the cord/atom the caller fed in.
 fn trim_trailing_zeros(bytes: &[u8]) -> &[u8] {
@@ -345,7 +431,7 @@ fn trim_trailing_zeros(bytes: &[u8]) -> &[u8] {
 /// outlives every caller of this function.
 fn strip_triple_unit_envelope(result: &NounSlab) -> Option<Noun> {
     let space = result.noun_space();
-    let noun = unsafe { *result.root() };
+    let noun = slab_root_noun(result);
     let outer = noun.in_space(&space).as_cell().ok()?;
     let inner_cell = outer.tail().as_cell().ok()?;
     Some(inner_cell.tail().noun())
@@ -358,7 +444,7 @@ mod tests {
     #[test]
     fn build_hull_peek_path_emits_three_element_path() {
         let slab = build_hull_peek_path("settle-registered", 42);
-        let noun = unsafe { *slab.root() };
+        let noun = slab_root_noun(&slab);
         let space = slab.noun_space();
         let outer = noun.in_space(&space).as_cell().expect("outer cell");
         let _tag = outer.head();
@@ -374,7 +460,7 @@ mod tests {
     #[test]
     fn build_keyed_peek_path_round_trips_cord() {
         let slab = build_keyed_peek_path("kv-value", "greeting");
-        let noun = unsafe { *slab.root() };
+        let noun = slab_root_noun(&slab);
         let space = slab.noun_space();
         let outer = noun.in_space(&space).as_cell().unwrap();
         let tail = outer.tail().as_cell().unwrap();
@@ -386,7 +472,7 @@ mod tests {
     #[test]
     fn build_keyless_peek_path_is_two_element() {
         let slab = build_keyless_peek_path("log-len");
-        let noun = unsafe { *slab.root() };
+        let noun = slab_root_noun(&slab);
         let space = slab.noun_space();
         let outer = noun.in_space(&space).as_cell().unwrap();
         assert_eq!(
@@ -523,6 +609,38 @@ mod tests {
         let outer = T(&mut slab, &[D(0), inner]);
         slab.set_root(outer);
         assert_eq!(peek_atom_u64(&slab), None);
+    }
+
+    // ---- peek_atom_u64_strict ----
+
+    #[test]
+    fn peek_atom_u64_strict_distinguishes_absent_from_zero() {
+        // [~ [~ ~]] — 2 wraps, (unit @) = ~  → path bound, no value.
+        let absent = wrap_n_unit(2, |_| D(0));
+        assert_eq!(peek_atom_u64_strict(&absent, 2), Ok(None));
+
+        // [~ [~ [~ 0]]] — 2 wraps, (unit @) = [~ 0]  → value really is 0.
+        let zero = wrap_n_unit(2, |s| {
+            let inner = atom_from_u64(s, 0);
+            T(s, &[D(0), inner])
+        });
+        assert_eq!(peek_atom_u64_strict(&zero, 2), Ok(Some(0)));
+    }
+
+    #[test]
+    fn peek_atom_u64_strict_reads_value_and_rejects_malformed() {
+        // [~ [~ [~ 42]]] — value 42 at the standard 2-wrap depth.
+        let v = wrap_n_unit(2, |s| {
+            let inner = atom_from_u64(s, 42);
+            T(s, &[D(0), inner])
+        });
+        assert_eq!(peek_atom_u64_strict(&v, 2), Ok(Some(42)));
+
+        // Non-`~` wrapper head — malformed envelope.
+        let mut slab: NounSlab = NounSlab::new();
+        let bad = T(&mut slab, &[D(1), D(0)]);
+        slab.set_root(bad);
+        assert_eq!(peek_atom_u64_strict(&slab, 1), Err(PeekError::BadWrapper));
     }
 
     // ---- decode_queue_popped ----

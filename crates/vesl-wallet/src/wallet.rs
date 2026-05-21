@@ -61,7 +61,10 @@ impl VeslWallet {
     ) -> Result<Self, WalletError> {
         let mnemonic =
             Mnemonic::parse(phrase).map_err(|e| WalletError::InvalidMnemonic(e.to_string()))?;
-        let seed = mnemonic.to_seed_normalized(passphrase);
+        // AUDIT 2026-05-20 M-13: wipe the 64-byte BIP-39 seed once the
+        // master key is derived — it is the root secret every key
+        // descends from, so it must not linger in freed memory.
+        let seed = zeroize::Zeroizing::new(mnemonic.to_seed_normalized(passphrase));
         Self::from_seed(&seed, coin_type)
     }
 

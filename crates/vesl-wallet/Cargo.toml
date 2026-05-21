@@ -18,7 +18,7 @@ vesl-wallet-spec = { path = "../vesl-wallet-spec", version = "0.0.0" }
 # BIP39 mnemonic <-> seed via PBKDF2-HMAC-SHA512 (the one piece that has
 # to follow the BIP-39 specification verbatim so 12/24-word mnemonics
 # stay portable across implementations).
-bip39 = { workspace = true, features = ["std"] }
+bip39 = { workspace = true, features = ["std", "zeroize"] }
 # Big-integer arithmetic shared with vesl-signing (G_ORDER is UBig).
 ibig = { workspace = true }
 # Lazy statics used to memoize the bip39 -> seed PBKDF2 result in the
