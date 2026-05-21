@@ -121,7 +121,7 @@ impl VeslWallet {
     /// chain-agnostic and self-contained.
     pub fn receiving_pubkey(&self, account: u32) -> Result<CheetahPoint, WalletError> {
         let path = DerivationPath::new(self.coin_type, account, ROLE_RECEIVING, 0);
-        Ok(self.derive(path)?.private_key.public_key())
+        Ok(self.derive(path)?.private_key.public_key()?)
     }
 
     /// An opaque 5-Belt fingerprint of the receiving pubkey. Useful as

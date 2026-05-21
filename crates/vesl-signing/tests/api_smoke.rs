@@ -56,7 +56,7 @@ fn end_to_end_signature_via_public_api() {
     // Build a key, hash a payload under a domain, sign, encode, decode,
     // verify. No crate-internals reached.
     let sk = SchnorrPrivateKey::new(UBig::from(42_424_242_u64)).unwrap();
-    let pk = sk.public_key();
+    let pk = sk.public_key().unwrap();
 
     let payload = serde_json::json!({ "intent_id": "abc", "value": "100" });
     let digest = hash_canonical(domain_separators::VESL_INTENT, &payload).unwrap();

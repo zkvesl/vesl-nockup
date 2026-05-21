@@ -454,7 +454,15 @@ async fn commit_handler(
     // Build Merkle tree from field data
     let leaf_data: Vec<Vec<u8>> = req.fields.iter().map(field_to_leaf_bytes).collect();
     let leaf_refs: Vec<&[u8]> = leaf_data.iter().map(|v| v.as_slice()).collect();
-    let tree = MerkleTree::build(&leaf_refs);
+    // AUDIT 2026-05-21 L-21: MerkleTree::build is fallible (empty leaves).
+    let tree = MerkleTree::build(&leaf_refs).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: format!("merkle tree build failed: {e}"),
+            }),
+        )
+    })?;
     let root = tree.root();
     let root_hex = format_tip5(&root);
     let field_count = req.fields.len();
@@ -709,12 +717,16 @@ async fn verify_handler(
     });
 
     let valid = match position {
-        Some(idx) => {
-            let proof = tree.proof(idx);
-            // Verify against current root (the only one we have locally)
-            nockchain_tip5_rs::verify_proof(&leaf_bytes, &proof, &root)
-                && target_root_hex == current_root_hex
-        }
+        // AUDIT 2026-05-21 L-21: MerkleTree::proof is fallible; a proof
+        // that cannot be generated reads as "not valid".
+        Some(idx) => match tree.proof(idx) {
+            Ok(proof) => {
+                // Verify against current root (the only one we have locally)
+                nockchain_tip5_rs::verify_proof(&leaf_bytes, &proof, &root)
+                    && target_root_hex == current_root_hex
+            }
+            Err(_) => false,
+        },
         None => false,
     };
 

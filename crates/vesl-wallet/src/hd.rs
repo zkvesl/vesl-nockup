@@ -113,7 +113,7 @@ pub(crate) fn ckd_hardened(parent: &ExtKey, index: u32) -> Result<ExtKey, Wallet
     let mut transcript = Vec::with_capacity(1 + 32 + 32 + 4);
     transcript.push(TAG_HARDENED);
     transcript.extend_from_slice(&parent.chain_code);
-    transcript.extend_from_slice(&ubig_to_be_32(&parent.scalar));
+    transcript.extend_from_slice(&ubig_to_be_32(&parent.scalar)?);
     transcript.extend_from_slice(&hardened_index.to_be_bytes());
 
     let tweak = scalar_from_transcript(&transcript)?;
@@ -135,7 +135,7 @@ pub(crate) fn ckd_non_hardened(parent: &ExtKey, index: u32) -> Result<ExtKey, Wa
         return Err(WalletError::IndexOverflow(index));
     }
     let parent_sk = SchnorrPrivateKey::new(parent.scalar.clone())?;
-    let parent_pk = parent_sk.public_key();
+    let parent_pk = parent_sk.public_key()?;
 
     let mut transcript = Vec::with_capacity(1 + 32 + 97 + 4);
     transcript.push(TAG_NON_HARDENED);
@@ -202,12 +202,21 @@ fn chain_code_from_belts(belts: &[Belt; 5]) -> ChainCode {
 /// Big-endian 32-byte encoding of a `UBig` in `[0, G_ORDER)`. `G_ORDER`
 /// is ~255 bits so a 32-byte buffer always fits with the most-significant
 /// byte clear.
-fn ubig_to_be_32(n: &UBig) -> [u8; 32] {
+///
+/// AUDIT 2026-05-21 L-23: a `UBig` wider than 32 bytes would panic the
+/// `copy_from_slice` below — the `saturating_sub` offset clamps to 0, so
+/// the destination slice is shorter than `bytes`. Every `ExtKey` scalar is
+/// reduced mod `G_ORDER`, so this is unreachable in practice; return
+/// [`WalletError::ScalarTooWide`] rather than panic, for defence in depth.
+fn ubig_to_be_32(n: &UBig) -> Result<[u8; 32], WalletError> {
     let bytes = n.to_be_bytes();
+    if bytes.len() > 32 {
+        return Err(WalletError::ScalarTooWide);
+    }
     let mut out = [0u8; 32];
     let offset = 32usize.saturating_sub(bytes.len());
     out[offset..offset + bytes.len()].copy_from_slice(&bytes);
-    out
+    Ok(out)
 }
 
 /// Deterministic byte serialization of a Cheetah point: 6 × 8-byte

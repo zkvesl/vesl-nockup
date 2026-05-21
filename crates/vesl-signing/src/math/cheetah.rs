@@ -198,6 +198,12 @@ impl CheetahPoint {
     /// reversed).
     const BYTES: usize = 97;
 
+    /// Upper bound on a base58 string [`Self::from_base58`] will decode. A
+    /// 97-byte point is ≈133 base58 chars; 256 leaves generous headroom
+    /// while bounding the `bs58::decode` allocation against a hostile
+    /// oversized string. AUDIT 2026-05-21 L-24.
+    const MAX_B58_LEN: usize = 256;
+
     pub fn into_base58(&self) -> Result<String, CheetahError> {
         Ok(bs58::encode(self.to_bytes()?).into_string())
     }
@@ -220,6 +226,13 @@ impl CheetahPoint {
     }
 
     pub fn from_base58(b58: &str) -> Result<Self, CheetahError> {
+        // AUDIT 2026-05-21 L-24: bound the input before `bs58::decode`
+        // allocates — a hostile multi-megabyte base58 string would
+        // otherwise drive an unbounded heap allocation before the
+        // post-decode length check below ever runs.
+        if b58.len() > Self::MAX_B58_LEN {
+            return Err(CheetahError::InvalidLength(b58.len()));
+        }
         let v = bs58::decode(b58).into_vec()?;
         if v.len() != Self::BYTES {
             return Err(CheetahError::InvalidLength(v.len()));
@@ -248,8 +261,14 @@ impl CheetahPoint {
         if *self == A_ID {
             return true;
         }
-        let scaled = ch_scal_big(&G_ORDER, self).expect("scalar multiplication");
-        scaled == A_ID
+        // AUDIT 2026-05-21 L-25: an off-curve point can drive `ch_scal_big`
+        // into an F6 division by zero. `in_curve` runs on attacker-supplied
+        // points (`from_base58`, `schnorr_verify`), so treat a curve-arith
+        // error as "not on the curve" rather than panicking.
+        match ch_scal_big(&G_ORDER, self) {
+            Ok(scaled) => scaled == A_ID,
+            Err(_) => false,
+        }
     }
 }
 

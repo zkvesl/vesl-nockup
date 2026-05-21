@@ -205,7 +205,10 @@ impl SettlePayloadBuilder for ManifestVerifyPayloadBuilder {
                 value: value.to_string(),
             });
             field_pairs.push((name.as_bytes().to_vec(), leaf));
-            proofs.push(tree.proof(idx));
+            // AUDIT 2026-05-21 L-21: MerkleTree::proof is fallible.
+            proofs.push(tree.proof(idx).map_err(|e| {
+                SettleBuilderError::BadRequest(format!("fields[{i}] merkle proof: {e}"))
+            })?);
         }
 
         let borrowed: Vec<(&[u8], &[u8])> = field_pairs
@@ -261,7 +264,7 @@ mod tests {
     fn dummy_tree(leaves: &[&[u8]]) -> (MerkleTree, Tip5Hash) {
         let mut mint = Mint::new();
         let root = mint.commit(leaves);
-        let tree = MerkleTree::build(leaves);
+        let tree = MerkleTree::build(leaves).expect("dummy_tree leaves are non-empty");
         (tree, root)
     }
 

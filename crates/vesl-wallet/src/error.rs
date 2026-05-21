@@ -29,6 +29,14 @@ pub enum WalletError {
     #[error("derivation index {0} exceeds 31-bit BIP-32 limit")]
     IndexOverflow(u32),
 
+    /// An HD scalar did not fit the 32-byte big-endian transcript buffer.
+    /// Unreachable for any `ExtKey` this crate produces — every scalar is
+    /// reduced mod `G_ORDER` (~255 bits) — but surfaced as a typed error,
+    /// not a slice-out-of-bounds panic, so a future construction path that
+    /// skips the reduction fails loudly. AUDIT 2026-05-21 L-23.
+    #[error("HD scalar exceeds the 32-byte transcript width")]
+    ScalarTooWide,
+
     /// Bubbled up from the underlying Schnorr layer (e.g. signing or
     /// verification failure on a derived key).
     #[error(transparent)]

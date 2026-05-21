@@ -18,7 +18,8 @@ use crate::math::cheetah::CheetahPoint;
 use crate::replay_cache::{domains as replay_domains, prefixed, ReplayCache};
 use crate::schnorr::SchnorrSignatureJson;
 use crate::schnorr::{
-    decode_signature, encode_signature, schnorr_sign, schnorr_verify, SchnorrPrivateKey,
+    decode_signature, encode_signature, schnorr_sign, schnorr_verify, SchnorrError,
+    SchnorrPrivateKey,
 };
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
@@ -228,9 +229,9 @@ pub struct SiwnSigner {
 }
 
 impl SiwnSigner {
-    pub fn new(sk: SchnorrPrivateKey) -> Self {
-        let pk = sk.public_key();
-        Self { sk, pk }
+    pub fn new(sk: SchnorrPrivateKey) -> Result<Self, SchnorrError> {
+        let pk = sk.public_key()?;
+        Ok(Self { sk, pk })
     }
 
     /// Sign `params` and return the header bundle (not base64-encoded).
@@ -369,13 +370,13 @@ mod tests {
     use ibig::UBig;
 
     fn signer() -> SiwnSigner {
-        SiwnSigner::new(SchnorrPrivateKey::new(UBig::from(999_888_777u64)).unwrap())
+        SiwnSigner::new(SchnorrPrivateKey::new(UBig::from(999_888_777u64)).unwrap()).unwrap()
     }
 
     fn params(signer: &SiwnSigner, now: DateTime<Utc>, nonce: &str) -> SiwnParams {
         SiwnParams {
             domain: "api.example.com".into(),
-            address: signer.sk.public_key().into_base58().unwrap(),
+            address: signer.sk.public_key().unwrap().into_base58().unwrap(),
             uri: "https://api.example.com/weather".into(),
             version: "1".into(),
             chain_id: "nockchain:mainnet".into(),

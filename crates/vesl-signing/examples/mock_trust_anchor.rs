@@ -23,10 +23,10 @@ fn main() -> anyhow::Result<()> {
     // The pubkey-as-base58 doubles as the address in SIWN. Compute it
     // before handing the key to the signer (which consumes the key).
     let address = sk
-        .public_key()
+        .public_key()?
         .into_base58()
         .map_err(|e| anyhow::anyhow!("base58: {e}"))?;
-    let signer = SiwnSigner::new(sk);
+    let signer = SiwnSigner::new(sk)?;
 
     // The trust-anchor service domain. NOT x402 — this is what makes the
     // example interesting: same crypto surface, completely different
