@@ -134,7 +134,7 @@ fn load_defaults_codegen_is_idempotent() -> Result<()> {
         .expect("scratch parent")
         .join("hoon/lib");
     let status = Command::new(graft_inject_bin())
-        .arg("--lib-dir")
+        .arg("--accept-untrusted-libs").arg("--lib-dir")
         .arg(&lib_dir)
         .arg("--grafts")
         .arg("settle-graft,rbac-graft")
@@ -172,7 +172,7 @@ fn load_defaults_codegen_replaces_overlay_when_graft_added() -> Result<()> {
 
     let lib_dir = jam.parent().expect("scratch parent").join("hoon/lib");
     let status = Command::new(graft_inject_bin())
-        .arg("--lib-dir")
+        .arg("--accept-untrusted-libs").arg("--lib-dir")
         .arg(&lib_dir)
         .arg("--grafts")
         .arg("settle-graft,rbac-graft,registry-graft")
@@ -218,7 +218,7 @@ fn load_defaults_codegen_skipped_when_marker_absent() -> Result<()> {
     fs::write(hoon_app.join("app.hoon"), stripped + "\n")?;
 
     let status = Command::new(graft_inject_bin())
-        .arg("--lib-dir")
+        .arg("--accept-untrusted-libs").arg("--lib-dir")
         .arg(&hoon_lib)
         .arg("--grafts")
         .arg("settle-graft")

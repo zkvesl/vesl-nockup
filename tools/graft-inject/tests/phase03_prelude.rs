@@ -163,7 +163,7 @@ async fn prelude_is_idempotent_under_rerun() -> Result<()> {
 
     // Run graft-inject again on the already-injected file.
     let status = std::process::Command::new(fixtures::graft_inject_bin())
-        .arg("--lib-dir")
+        .arg("--accept-untrusted-libs").arg("--lib-dir")
         .arg(&art.lib_dir)
         .arg("--grafts")
         .arg("settle-graft,guard-test-graft")

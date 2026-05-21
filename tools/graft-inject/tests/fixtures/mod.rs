@@ -213,7 +213,7 @@ fn compose_and_compile_inner(
 
     let graft_inject = graft_inject_bin();
     let status = Command::new(&graft_inject)
-        .arg("--lib-dir")
+        .arg("--accept-untrusted-libs").arg("--lib-dir")
         .arg(&hoon_lib)
         .arg("--grafts")
         .arg(grafts.join(","))

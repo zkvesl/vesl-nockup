@@ -96,28 +96,40 @@ fn collect_src_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> 
     Ok(())
 }
 
-/// Warn loudly when `--lib-dir` points outside the project tree.
+/// Refuse a `--lib-dir` outside any project tree unless the caller
+/// opted in with `--accept-untrusted-libs`.
 ///
-/// AUDIT 2026-04-19 L-21: a developer running `graft-inject --lib-dir
-/// /etc ...` (or any path without a `nockapp.toml` ancestor) is almost
-/// certainly not doing what they meant. The loader is content to parse
-/// any `*.toml` with a `[graft]` table — including ones from an
-/// attacker-controlled location. Warn rather than hard-fail so tests
-/// and other legitimate out-of-tree uses still run, but make the
-/// trust posture explicit.
-pub(crate) fn warn_if_lib_dir_out_of_tree(lib_dir: &Path) {
+/// AUDIT 2026-05-20 M-24 (was L-21, warn-only): a `--lib-dir` with no
+/// `nockapp.toml` ancestor is almost always a mistake — and the loader
+/// splices any `*.toml` `[graft]` table it finds verbatim into the
+/// user's compiled Hoon. An out-of-tree lib-dir is now a hard error;
+/// `--accept-untrusted-libs` downgrades it to a warning for tests and
+/// other deliberate out-of-tree uses.
+pub(crate) fn check_lib_dir_trust(
+    lib_dir: &Path,
+    accept_untrusted: bool,
+) -> anyhow::Result<()> {
     let canonical = match lib_dir.canonicalize() {
         Ok(p) => p,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
-    if !has_nockapp_toml_ancestor(&canonical) {
+    if has_nockapp_toml_ancestor(&canonical) {
+        return Ok(());
+    }
+    if accept_untrusted {
         eprintln!(
-            "graft-inject: warning — --lib-dir {} is outside any \
-             project (no `nockapp.toml` ancestor). Manifests loaded \
-             from here are trusted as-is; ensure you trust their source.",
+            "graft-inject: warning — --lib-dir {} is outside any project \
+             (no `nockapp.toml` ancestor); accepted via --accept-untrusted-libs.",
             canonical.display()
         );
+        return Ok(());
     }
+    anyhow::bail!(
+        "--lib-dir {} is outside any project (no `nockapp.toml` ancestor). \
+         Graft manifests there are spliced verbatim into compiled Hoon — \
+         re-run with --accept-untrusted-libs if you trust this directory.",
+        canonical.display()
+    )
 }
 
 fn has_nockapp_toml_ancestor(start: &Path) -> bool {

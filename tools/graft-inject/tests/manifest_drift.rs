@@ -45,7 +45,7 @@ fn setup_scratch(scratch_subdir: &str) -> Result<std::path::PathBuf> {
 
 fn run_graft_inject(scratch: &std::path::Path, grafts: &str) -> Result<std::process::Output> {
     Command::new(graft_inject_bin())
-        .arg("--lib-dir")
+        .arg("--accept-untrusted-libs").arg("--lib-dir")
         .arg(scratch.join("hoon/lib"))
         .arg("--grafts")
         .arg(grafts)

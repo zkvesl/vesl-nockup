@@ -168,7 +168,7 @@ async fn postlude_is_idempotent_under_rerun() -> Result<()> {
     let after_first = std::fs::read_to_string(&art.source_path)?;
 
     let status = std::process::Command::new(fixtures::graft_inject_bin())
-        .arg("--lib-dir")
+        .arg("--accept-untrusted-libs").arg("--lib-dir")
         .arg(&art.lib_dir)
         .arg("--grafts")
         .arg("settle-graft,tap-graft")

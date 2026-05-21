@@ -66,7 +66,7 @@ fn missing_after_hint_is_soft() {
     fs::write(lib.join("beta-graft.toml"), BETA_TOML).unwrap();
 
     let output = Command::new(graft_inject_bin())
-        .arg("--lib-dir")
+        .arg("--accept-untrusted-libs").arg("--lib-dir")
         .arg(&lib)
         .arg("--list")
         .arg("--json")

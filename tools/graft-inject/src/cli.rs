@@ -30,7 +30,7 @@ use crate::lint::{print_weld_lint, run_lint};
 use crate::manifest::{Graft, atomic_write, discover_grafts};
 use crate::marker::Marker;
 use crate::DEFAULT_LIB_DIR;
-use crate::util::warn_if_lib_dir_out_of_tree;
+use crate::util::check_lib_dir_trust;
 
 pub(crate) const ASCII_LOGO: &str = r#"
 ██╗   ██╗███████╗███████╗██╗
@@ -81,6 +81,12 @@ pub(crate) struct Cli {
     /// Manifest discovery root.
     #[arg(long, default_value = DEFAULT_LIB_DIR)]
     lib_dir: PathBuf,
+
+    /// Allow a `--lib-dir` outside any project tree (no `nockapp.toml`
+    /// ancestor). Without it, an out-of-tree lib-dir is refused — its
+    /// graft manifests are spliced verbatim into compiled Hoon.
+    #[arg(long, global = true)]
+    accept_untrusted_libs: bool,
 
     /// Print discovered grafts and exit. Pair with --json for machine-readable.
     #[arg(long)]
@@ -324,6 +330,7 @@ pub(crate) fn dispatch(cli: Cli) -> Result<()> {
             grafts,
             exclude,
             lib_dir,
+            accept_untrusted_libs: cli.accept_untrusted_libs,
             list: false,
             json: false,
             dry_run: false,
@@ -340,6 +347,7 @@ pub(crate) fn dispatch(cli: Cli) -> Result<()> {
             grafts: Vec::new(),
             exclude,
             lib_dir,
+            accept_untrusted_libs: cli.accept_untrusted_libs,
             list: true,
             json,
             dry_run: false,
@@ -651,7 +659,7 @@ pub(crate) fn select_grafts(cli: &Cli) -> Result<Vec<Graft>> {
             cli.lib_dir.display()
         );
     }
-    warn_if_lib_dir_out_of_tree(&cli.lib_dir);
+    check_lib_dir_trust(&cli.lib_dir, cli.accept_untrusted_libs)?;
     let mut discovered = discover_grafts(&cli.lib_dir)
         .with_context(|| format!("discovering grafts under {}", cli.lib_dir.display()))?;
     if discovered.is_empty() {
@@ -865,6 +873,7 @@ mod tests {
             grafts: Vec::new(),
             exclude: Vec::new(),
             lib_dir,
+            accept_untrusted_libs: true,
             list: false,
             json: false,
             dry_run: false,
