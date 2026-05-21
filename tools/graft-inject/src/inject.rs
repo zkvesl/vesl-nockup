@@ -1136,6 +1136,7 @@ mod tests {
             },
             gates: None,
             types: None,
+            schema_version: None,
             sha256: String::new(),
         };
         let contaminant = synthetic_graft("contaminant", 20);
@@ -1236,6 +1237,7 @@ mod tests {
             },
             gates: None,
             types: None,
+            schema_version: None,
             sha256: String::new(),
         };
         let (first, _) = inject(BARE_SCAFFOLD, std::slice::from_ref(&nested)).unwrap();

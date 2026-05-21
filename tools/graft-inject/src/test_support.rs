@@ -215,6 +215,7 @@ pub(crate) fn synthetic_graft(name: &str, priority: i32) -> Graft {
         },
         gates: None,
         types: None,
+        schema_version: None,
         sha256: String::new(),
     }
 }

@@ -27,7 +27,7 @@ use crate::inject::{
     InjectReport, MigrationReport, inject, migrate_legacy_effect, print_migration_line,
 };
 use crate::lint::{print_weld_lint, run_lint};
-use crate::manifest::{Graft, atomic_write, discover_grafts};
+use crate::manifest::{Graft, atomic_write, check_schema_compat, discover_grafts};
 use crate::marker::Marker;
 use crate::DEFAULT_LIB_DIR;
 use crate::util::check_lib_dir_trust;
@@ -582,6 +582,22 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
     if cli.list {
         emit_list(&grafts, cli.json);
         return Ok(());
+    }
+
+    // P2 handshake: refuse to compose against a manifest authored for a
+    // newer nockup-graft than this binary models. An unmodelled schema
+    // would be mis-composed silently, so bail before any bytes render.
+    // `--list` (handled above) is read-only and stays non-erroring.
+    if let Some(skew) = check_schema_compat(&grafts).first() {
+        bail!(
+            "manifest schema too new: graft `{}` targets schema_version {} \
+             but this nockup-graft supports up to {}.\n  \
+             Update the binary: cargo install --git \
+             https://github.com/zkvesl/vesl-nockup --bin nockup-graft --force",
+            skew.graft,
+            skew.manifest_version,
+            skew.binary_version,
+        );
     }
 
     let path = cli.path.as_ref().ok_or_else(|| {

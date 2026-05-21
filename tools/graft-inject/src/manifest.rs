@@ -43,6 +43,14 @@ pub(crate) struct Graft {
     /// with `types == None`.
     #[serde(default)]
     pub(crate) types: Option<GraftTypes>,
+    /// Schema version this manifest targets, from `schema_version` in the
+    /// `[graft]` table. `None` means a pre-handshake manifest — always
+    /// compatible, since the schema is append-only and an old manifest
+    /// parses on any binary. A value greater than
+    /// [`crate::MANIFEST_SCHEMA_VERSION`] means the manifest was authored
+    /// for a newer nockup-graft; see `check_schema_compat`.
+    #[serde(default)]
+    pub(crate) schema_version: Option<u32>,
     /// Hex sha256 of the raw TOML bytes. Populated by `load_manifest` at
     /// discovery time so the composer can surface per-manifest digests
     /// in the preview report and `--list --json` output (AUDIT 2026-04-19
@@ -298,6 +306,35 @@ pub(crate) fn validate_types(g: &Graft, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// A graft manifest declaring a schema version newer than this binary
+/// supports. One per offending graft, produced by `check_schema_compat`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SchemaSkew {
+    pub(crate) graft: String,
+    pub(crate) manifest_version: u32,
+    pub(crate) binary_version: u32,
+}
+
+/// Find every graft whose declared `schema_version` exceeds the binary's
+/// [`crate::MANIFEST_SCHEMA_VERSION`]. A manifest with no `schema_version`
+/// (`None`) predates the handshake and is always compatible — the schema
+/// is append-only, so an old manifest parses on any binary. Pure: no I/O
+/// and no side effects, so each caller picks the policy — `inject`
+/// hard-errors, `doctor` reports a finding, `build.rs` warns.
+pub(crate) fn check_schema_compat(grafts: &[Graft]) -> Vec<SchemaSkew> {
+    grafts
+        .iter()
+        .filter_map(|g| {
+            let declared = g.schema_version?;
+            (declared > crate::MANIFEST_SCHEMA_VERSION).then(|| SchemaSkew {
+                graft: g.name.clone(),
+                manifest_version: declared,
+                binary_version: crate::MANIFEST_SCHEMA_VERSION,
+            })
+        })
+        .collect()
+}
+
 /// Build the AND-fold gate-chain Hoon block. Layout matches the rest of
 /// settle-graft.toml's poke body: `=/` at column 0, inner lines indented
 /// by 2 spaces, `?&` first-arg on the same line (Hoon tall-form style),
@@ -426,6 +463,68 @@ mod tests {
             err.to_string().contains("invalid graft name"),
             "got: {err}"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---------- Workstream A: schema-version handshake ----------
+
+    /// `check_schema_compat` flags only grafts whose declared
+    /// `schema_version` exceeds the binary's `MANIFEST_SCHEMA_VERSION`.
+    /// `None` (pre-handshake) and an equal version are both compatible.
+    #[test]
+    fn check_schema_compat_flags_only_future_versions() {
+        let absent = synthetic_graft("absent", 10);
+        let mut equal = synthetic_graft("equal", 20);
+        equal.schema_version = Some(crate::MANIFEST_SCHEMA_VERSION);
+        let mut future = synthetic_graft("future", 30);
+        future.schema_version = Some(crate::MANIFEST_SCHEMA_VERSION + 1);
+
+        let skew = check_schema_compat(&[absent, equal, future]);
+        assert_eq!(skew.len(), 1, "only the future-schema graft is skew");
+        assert_eq!(skew[0].graft, "future");
+        assert_eq!(skew[0].manifest_version, crate::MANIFEST_SCHEMA_VERSION + 1);
+        assert_eq!(skew[0].binary_version, crate::MANIFEST_SCHEMA_VERSION);
+    }
+
+    /// An all-compatible graft set yields no skew.
+    #[test]
+    fn check_schema_compat_empty_when_all_compatible() {
+        let a = synthetic_graft("a", 10);
+        let mut b = synthetic_graft("b", 20);
+        b.schema_version = Some(crate::MANIFEST_SCHEMA_VERSION);
+        assert!(check_schema_compat(&[a, b]).is_empty());
+    }
+
+    /// `load_manifest` reads `schema_version` from the `[graft]` table.
+    #[test]
+    fn load_manifest_parses_schema_version() {
+        let dir = tempdir_for_test("load_schema_version");
+        let path = dir.join("g.toml");
+        fs::write(
+            &path,
+            "[graft]\nname = \"g\"\nversion = \"0.1.0\"\npriority = 50\n\
+             schema_version = 3\n\n[graft.blocks.poke]\nbody = \"  %g-do\"\n",
+        )
+        .unwrap();
+        let g = load_manifest(&path).unwrap().expect("[graft] table present");
+        assert_eq!(g.schema_version, Some(3));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A manifest without `schema_version` parses with `None` — the
+    /// append-only schema keeps pre-handshake manifests loadable.
+    #[test]
+    fn load_manifest_schema_version_absent_is_none() {
+        let dir = tempdir_for_test("load_schema_version_absent");
+        let path = dir.join("g.toml");
+        fs::write(
+            &path,
+            "[graft]\nname = \"g\"\nversion = \"0.1.0\"\npriority = 50\n\n\
+             [graft.blocks.poke]\nbody = \"  %g-do\"\n",
+        )
+        .unwrap();
+        let g = load_manifest(&path).unwrap().expect("[graft] table present");
+        assert_eq!(g.schema_version, None);
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -1309,6 +1309,7 @@ mod tests {
             },
             types: None,
             gates: None,
+            schema_version: None,
             sha256: "0".repeat(64),
         }
     }

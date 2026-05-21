@@ -37,6 +37,15 @@ use std::process::ExitCode;
 const MARKER_PREFIX: &str = "::  nockup:";
 const DEFAULT_LIB_DIR: &str = "hoon/lib";
 
+/// Manifest-schema version this binary understands. A graft manifest may
+/// declare `schema_version` in its `[graft]` table; a manifest targeting
+/// a HIGHER version was authored for a newer nockup-graft. The compose
+/// path (`inject`) hard-errors on such a manifest, `doctor` reports a
+/// finding, and the scaffold `build.rs` warns. Absent or lower = always
+/// compatible — the schema is append-only. Bump only on a manifest or
+/// banner change an older binary cannot model correctly.
+const MANIFEST_SCHEMA_VERSION: u32 = 1;
+
 mod cli;
 mod codegen;
 mod gates;
