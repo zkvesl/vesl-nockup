@@ -166,11 +166,17 @@ pub(crate) fn leading_whitespace(s: &str) -> &str {
     &s[..end]
 }
 
-pub(crate) fn strip_banner_pair(
-    lines: &mut Vec<String>,
+/// Locate a graft's `:begin`/`:end` banner pair for `marker`. Returns
+/// the inclusive `(begin_idx, end_idx)` line indices, or `None` when the
+/// pair isn't present. The begin match is a prefix (`begin_banner`), so
+/// it catches both the sha256-suffixed and the legacy banner forms.
+/// Read-only — `strip_banner_pair` is the mutating wrapper, and
+/// `doctor`'s hand-edit check uses this to slice a live block out.
+pub(crate) fn find_banner_pair(
+    lines: &[String],
     graft_name: &str,
     marker: Marker,
-) -> Option<usize> {
+) -> Option<(usize, usize)> {
     let begin_prefix = begin_banner(graft_name, marker);
     let end_str = end_banner(graft_name, marker);
     let begin_idx = lines
@@ -182,6 +188,24 @@ pub(crate) fn strip_banner_pair(
         .skip(begin_idx + 1)
         .find(|(_, l)| l.trim() == end_str)
         .map(|(i, _)| i)?;
+    Some((begin_idx, end_idx))
+}
+
+/// Extract the `sha256:<hex>` token from a begin-banner line. `None` for
+/// a legacy (pre-A2) banner that carries no suffix.
+pub(crate) fn banner_sha256(line: &str) -> Option<&str> {
+    line.split(" sha256:")
+        .nth(1)
+        .map(|tail| tail.split_whitespace().next().unwrap_or(""))
+        .filter(|s| !s.is_empty())
+}
+
+pub(crate) fn strip_banner_pair(
+    lines: &mut Vec<String>,
+    graft_name: &str,
+    marker: Marker,
+) -> Option<usize> {
+    let (begin_idx, end_idx) = find_banner_pair(lines, graft_name, marker)?;
     lines.drain(begin_idx..=end_idx);
     Some(begin_idx)
 }

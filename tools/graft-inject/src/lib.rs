@@ -20,6 +20,9 @@
 //!   migration). Owns `binding_stub`.
 //! - [`codegen`] — typed effect-union, load-defaults overlay,
 //!   `kernel-cause-tags` Rust emission.
+//! - [`doctor`] — project-health checks (schema-version
+//!   handshake, Cargo `[patch]` consistency, hand-edited
+//!   blocks, missing load-defaults marker) + `run_doctor` driver.
 //! - [`lint`] — five advisory passes (weld-friction,
 //!   bare-tilde, collision-check, transitive-imports,
 //!   internal-dupes) + `run_lint` CLI driver.
@@ -48,6 +51,7 @@ const MANIFEST_SCHEMA_VERSION: u32 = 1;
 
 mod cli;
 mod codegen;
+mod doctor;
 mod gates;
 mod inject;
 mod lint;

@@ -268,6 +268,34 @@ fn canonicalize_marker_section(
     }
 }
 
+/// Prepend `indent` to a non-empty line; an empty line stays empty.
+/// The whitespace rule the composer applies to every banner and body
+/// line it emits.
+fn indent_line(indent: &str, line: &str) -> String {
+    if line.is_empty() {
+        String::new()
+    } else {
+        format!("{indent}{line}")
+    }
+}
+
+/// The lines `emit_block` writes *between* a graft's begin and end
+/// banner at `marker`, indented by `indent` — the canonical "what this
+/// block body should be". Read-only: `emit_block` renders with it, and
+/// `doctor`'s hand-edit check compares it against the live source.
+/// Empty when the graft declares no block at `marker`.
+pub(crate) fn expected_block_body(graft: &Graft, marker: Marker, indent: &str) -> Vec<String> {
+    graft
+        .block(marker)
+        .map(|b| {
+            b.trimmed_body()
+                .lines()
+                .map(|l| indent_line(indent, l))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Insert composed body lines after the marker, each pending graft wrapped
 /// in a `::  graft-inject:<name>:<marker>:begin` / `:end` banner pair. The
 /// banners carry per-graft-per-marker idempotence (AUDIT 2026-04-19
@@ -282,29 +310,19 @@ fn emit_block(
     marker: Marker,
     pending: &[&Graft],
 ) {
+    // canonicalize_marker_section only routes grafts here that declare a
+    // block at `marker`, so expected_block_body always returns that
+    // block's body.
     let mut composed: Vec<String> = Vec::new();
     for g in pending.iter() {
-        composed.push(begin_banner_with_sha(&g.name, marker, g.sha256_short()));
-        let body = g
-            .block(marker)
-            .expect("emit_block called with a graft missing this marker")
-            .trimmed_body();
-        for line in body.lines() {
-            composed.push(line.to_string());
-        }
-        composed.push(end_banner(&g.name, marker));
+        composed.push(indent_line(
+            indent,
+            &begin_banner_with_sha(&g.name, marker, g.sha256_short()),
+        ));
+        composed.extend(expected_block_body(g, marker, indent));
+        composed.push(indent_line(indent, &end_banner(&g.name, marker)));
     }
-    let indented: Vec<String> = composed
-        .into_iter()
-        .map(|l| {
-            if l.is_empty() {
-                String::new()
-            } else {
-                format!("{}{}", indent, l)
-            }
-        })
-        .collect();
-    for (offset, line) in indented.into_iter().enumerate() {
+    for (offset, line) in composed.into_iter().enumerate() {
         lines.insert(marker_idx + 1 + offset, line);
     }
 }

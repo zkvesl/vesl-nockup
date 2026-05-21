@@ -23,6 +23,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::codegen::{CodegenReport, CodegenStatus, run_codegen_kernel_cause_tags};
+use crate::doctor::run_doctor;
 use crate::inject::{
     InjectReport, MigrationReport, inject, migrate_legacy_effect, print_migration_line,
 };
@@ -183,6 +184,31 @@ pub(crate) enum Command {
         /// JSON output mode (machine-readable).
         #[arg(long)]
         json: bool,
+    },
+
+    /// Project-health check: schema-version handshake, Cargo `[patch]`
+    /// consistency, hand-edited injected blocks, and a missing
+    /// `nockup:load-defaults` marker. Exits nonzero on findings so CI
+    /// can gate on it.
+    Doctor {
+        /// Target Hoon source file (the project's app.hoon).
+        path: PathBuf,
+
+        /// Manifest discovery root.
+        #[arg(long, default_value = DEFAULT_LIB_DIR)]
+        lib_dir: PathBuf,
+
+        /// Emit a machine-readable JSON report to stdout instead of the
+        /// grouped human surface. Overrides `--format human`.
+        #[arg(long)]
+        json: bool,
+
+        /// Text output format: `human` (grouped stderr, default) or
+        /// `build-warnings` (one `doctor: <msg>` line per finding to
+        /// stdout, always exit 0 — the scaffold build.rs forwards these
+        /// as `cargo:warning=`).
+        #[arg(long, value_enum, default_value = "human")]
+        format: crate::doctor::DoctorFormat,
     },
 
     /// Emit Rust source from app.hoon — codegen target depends on the
@@ -359,6 +385,12 @@ pub(crate) fn dispatch(cli: Cli) -> Result<()> {
             lib_dir,
             json,
         }) => run_lint(&path, &lib_dir, json),
+        Some(Command::Doctor {
+            path,
+            lib_dir,
+            json,
+            format,
+        }) => run_doctor(&path, &lib_dir, json, format),
         Some(Command::Codegen { target }) => match target {
             CodegenTarget::KernelCauseTags {
                 path,
@@ -419,7 +451,7 @@ fn validate_kernel_name(s: &str) -> Result<()> {
 /// Locate the project root by walking up from `start` until a directory
 /// containing `nockapp.toml` is found. Mirrors `has_nockapp_toml_ancestor`
 /// but returns the path so callers can read/write files relative to it.
-fn find_project_root(start: &Path) -> Option<PathBuf> {
+pub(crate) fn find_project_root(start: &Path) -> Option<PathBuf> {
     let mut cur = Some(start);
     while let Some(dir) = cur {
         if dir.join("nockapp.toml").is_file() {
