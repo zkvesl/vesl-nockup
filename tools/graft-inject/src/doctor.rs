@@ -140,13 +140,7 @@ pub(crate) fn run_doctor(
         Vec::new()
     };
 
-    let project_root = resolve_project_root(path);
-
-    let mut findings: Vec<DoctorFinding> = Vec::new();
-    findings.extend(check_schema(&grafts));
-    findings.extend(check_patch_consistency(project_root.as_deref()));
-    findings.extend(check_hand_edits(path, &source, &grafts));
-    findings.extend(check_load_defaults_marker(path, &source));
+    let findings = collect_findings(path, &source, &grafts);
 
     match format {
         DoctorFormat::BuildWarnings => {
@@ -166,6 +160,22 @@ pub(crate) fn run_doctor(
             }
         }
     }
+}
+
+/// Run all four checks and return the findings — the shared substrate
+/// behind both `run_doctor` and `update`'s pre-apply preview.
+pub(crate) fn collect_findings(
+    path: &Path,
+    source: &str,
+    grafts: &[Graft],
+) -> Vec<DoctorFinding> {
+    let project_root = resolve_project_root(path);
+    let mut findings: Vec<DoctorFinding> = Vec::new();
+    findings.extend(check_schema(grafts));
+    findings.extend(check_patch_consistency(project_root.as_deref()));
+    findings.extend(check_hand_edits(path, source, grafts));
+    findings.extend(check_load_defaults_marker(path, source));
+    findings
 }
 
 /// Walk up from the kernel file (canonicalized) to the project root —
@@ -379,7 +389,8 @@ fn emit_json(findings: &[DoctorFinding]) {
 }
 
 /// Default human surface: a grouped, explanatory report to stderr.
-fn emit_human(path: &Path, findings: &[DoctorFinding]) {
+/// Also the findings block of `update`'s pre-apply preview.
+pub(crate) fn emit_human(path: &Path, findings: &[DoctorFinding]) {
     eprintln!(
         "graft-inject doctor: {} ({} finding(s))",
         path.display(),

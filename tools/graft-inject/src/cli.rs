@@ -30,6 +30,7 @@ use crate::inject::{
 use crate::lint::{print_weld_lint, run_lint};
 use crate::manifest::{Graft, atomic_write, check_schema_compat, discover_grafts};
 use crate::marker::Marker;
+use crate::update::run_update;
 use crate::DEFAULT_LIB_DIR;
 use crate::util::check_lib_dir_trust;
 
@@ -209,6 +210,24 @@ pub(crate) enum Command {
         /// as `cargo:warning=`).
         #[arg(long, value_enum, default_value = "human")]
         format: crate::doctor::DoctorFormat,
+    },
+
+    /// Update the graft library and recompose the kernel: refresh
+    /// `hoon/lib/` via `nockup package install`, preview the
+    /// recomposition with the doctor health report, confirm, then
+    /// `inject --apply`. Preview-by-default; `--yes` skips the prompt.
+    Update {
+        /// Target Hoon source file (the project's app.hoon).
+        path: PathBuf,
+
+        /// Manifest discovery root.
+        #[arg(long, default_value = DEFAULT_LIB_DIR)]
+        lib_dir: PathBuf,
+
+        /// Skip the interactive confirmation prompt (for CI). The
+        /// preview still prints; only the y/N gate is bypassed.
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Emit Rust source from app.hoon — codegen target depends on the
@@ -391,6 +410,11 @@ pub(crate) fn dispatch(cli: Cli) -> Result<()> {
             json,
             format,
         }) => run_doctor(&path, &lib_dir, json, format),
+        Some(Command::Update {
+            path,
+            lib_dir,
+            yes,
+        }) => run_update(&path, &lib_dir, yes),
         Some(Command::Codegen { target }) => match target {
             CodegenTarget::KernelCauseTags {
                 path,
@@ -780,7 +804,7 @@ pub(crate) fn emit_list(grafts: &[Graft], json: bool) {
 /// so preview users can pipe the rendered file out cleanly. Includes the
 /// per-manifest sha256 so supply-chain reviewers can confirm what's
 /// about to be composed (AUDIT 2026-04-19 H-10).
-fn print_report(path: &Path, report: &InjectReport, grafts: &[Graft], applied: bool) {
+pub(crate) fn print_report(path: &Path, report: &InjectReport, grafts: &[Graft], applied: bool) {
     eprintln!("graft-inject: {}", path.display());
     let sha_by_name: HashMap<&str, &str> = grafts
         .iter()

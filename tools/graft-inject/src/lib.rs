@@ -29,6 +29,8 @@
 //! - [`cli`] — clap definitions (`Cli` / `Command`), subcommand
 //!   `dispatch`, `run_inject`, `run_rename_kernel`, report
 //!   printers, `--list --json` schema.
+//! - [`update`] — the `update` orchestrator: schema preflight,
+//!   `nockup package install`, preview + confirm, `inject --apply`.
 //! - [`util`] — binary staleness check + `--lib-dir`
 //!   trust-posture warning.
 //!
@@ -57,6 +59,7 @@ mod inject;
 mod lint;
 mod manifest;
 mod marker;
+mod update;
 mod util;
 
 #[cfg(test)]
