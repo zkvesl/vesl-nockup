@@ -1,4 +1,4 @@
-//! Workstream C — `nockup graft update` orchestrator.
+//! `nockup graft update` orchestrator — integration tests.
 //!
 //! `update` chains schema preflight → `nockup package install` →
 //! re-check → inject preview + doctor report → confirm → `inject

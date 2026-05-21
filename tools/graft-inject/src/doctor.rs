@@ -192,7 +192,7 @@ fn resolve_project_root(path: &Path) -> Option<PathBuf> {
     crate::cli::find_project_root(&cwd)
 }
 
-/// Check 1 — manifest-schema handshake (failure mode 3.2).
+/// Check 1 — manifest-schema handshake.
 fn check_schema(grafts: &[Graft]) -> Vec<DoctorFinding> {
     check_schema_compat(grafts)
         .into_iter()
@@ -241,12 +241,12 @@ fn collect_nockchain_revs(value: &toml::Value, out: &mut BTreeSet<String>) {
     }
 }
 
-/// Check 2 — Cargo `[patch]` / nockchain-rev consistency (failure mode
-/// 3.5). Flags a project `Cargo.toml` that pins more than one distinct
-/// nockchain rev — the partial-update state that surfaces later as the
-/// `ibig` / `UBig` type mismatch on `cargo build`. When the project
-/// root or `Cargo.toml` cannot be read or parsed, emits nothing: this
-/// check false-negatives rather than false-positives.
+/// Check 2 — Cargo `[patch]` / nockchain-rev consistency. Flags a
+/// project `Cargo.toml` that pins more than one distinct nockchain rev
+/// — the partial-update state that surfaces later as the `ibig` /
+/// `UBig` type mismatch on `cargo build`. When the project root or
+/// `Cargo.toml` cannot be read or parsed, emits nothing: this check
+/// false-negatives rather than false-positives.
 fn check_patch_consistency(project_root: Option<&Path>) -> Vec<DoctorFinding> {
     let Some(root) = project_root else {
         return Vec::new();
@@ -282,12 +282,12 @@ fn check_patch_consistency(project_root: Option<&Path>) -> Vec<DoctorFinding> {
     }]
 }
 
-/// Check 3 — hand-edited injected blocks (failure mode 3.1, detection
-/// only). For each graft and each covered marker whose banner pair is
-/// present and whose banner sha still matches the manifest, compares the
-/// lines between the banners against what the manifest would render now.
-/// A mismatch means the block was edited in place — the next
-/// `inject --apply` that re-injects it will silently overwrite the edit.
+/// Check 3 — hand-edited injected blocks (detection only). For each
+/// graft and each covered marker whose banner pair is present and whose
+/// banner sha still matches the manifest, compares the lines between the
+/// banners against what the manifest would render now. A mismatch means
+/// the block was edited in place — the next `inject --apply` that
+/// re-injects it will silently overwrite the edit.
 fn check_hand_edits(path: &Path, source: &str, grafts: &[Graft]) -> Vec<DoctorFinding> {
     let lines: Vec<String> = source.lines().map(String::from).collect();
     let mut findings = Vec::new();
@@ -334,7 +334,7 @@ fn check_hand_edits(path: &Path, source: &str, grafts: &[Graft]) -> Vec<DoctorFi
     findings
 }
 
-/// Check 4 — missing `nockup:load-defaults` marker (failure mode 3.3).
+/// Check 4 — missing `nockup:load-defaults` marker.
 /// A grafted kernel without the marker has no defaults overlay in
 /// `++load`, so a schema-extension resume silently drops effects for
 /// grafts past the first added priority band. Fires only when the kernel

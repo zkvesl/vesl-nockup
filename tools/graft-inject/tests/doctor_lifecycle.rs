@@ -1,4 +1,4 @@
-//! Workstream B — `nockup graft doctor` project-health checks.
+//! `nockup graft doctor` project-health checks — integration tests.
 //!
 //! `doctor` runs four checks against a composed kernel: the
 //! schema-version handshake, Cargo `[patch]` consistency, hand-edited

@@ -466,7 +466,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    // ---------- Workstream A: schema-version handshake ----------
+    // ---------- schema-version handshake ----------
 
     /// `check_schema_compat` flags only grafts whose declared
     /// `schema_version` exceeds the binary's `MANIFEST_SCHEMA_VERSION`.

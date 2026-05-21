@@ -1,4 +1,4 @@
-//! Workstream A — manifest-schema version handshake (P2).
+//! Manifest-schema version handshake — integration tests.
 //!
 //! A graft manifest may declare `schema_version` in its `[graft]` table.
 //! When a discovered manifest targets a version newer than this binary's

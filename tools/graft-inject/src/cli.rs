@@ -640,10 +640,10 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
         return Ok(());
     }
 
-    // P2 handshake: refuse to compose against a manifest authored for a
-    // newer nockup-graft than this binary models. An unmodelled schema
-    // would be mis-composed silently, so bail before any bytes render.
-    // `--list` (handled above) is read-only and stays non-erroring.
+    // Manifest-schema handshake: refuse to compose against a manifest
+    // authored for a newer nockup-graft than this binary models. An
+    // unmodelled schema would be mis-composed silently, so bail before
+    // any bytes render — `--list` (handled above) stays non-erroring.
     if let Some(skew) = check_schema_compat(&grafts).first() {
         bail!(
             "manifest schema too new: graft `{}` targets schema_version {} \
