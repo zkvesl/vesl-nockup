@@ -443,7 +443,7 @@ async fn run_verify_jam(project: &Path, json_out: bool) -> Result<u8> {
             eprintln!("    hoonc --new {kernel_rel} hoon/ && [ -s out.jam ] || \\");
             eprintln!("      (echo \"hoonc silent-failed\" >&2; exit 1)");
             eprintln!(
-                "    sha256sum {kernel_rel} hoon/lib/*.toml > .out-jam-source-fingerprint"
+                "    sha256sum {kernel_rel} hoon/lib/*.hoon hoon/lib/*.toml > .out-jam-source-fingerprint"
             );
         }
         return Ok(2);
@@ -507,7 +507,7 @@ async fn run_verify_jam(project: &Path, json_out: bool) -> Result<u8> {
         eprintln!("    hoonc --new {kernel_rel} hoon/ && [ -s out.jam ] || \\");
         eprintln!("      (echo \"hoonc silent-failed\" >&2; exit 1)");
         eprintln!(
-            "    sha256sum {kernel_rel} hoon/lib/*.toml > .out-jam-source-fingerprint"
+            "    sha256sum {kernel_rel} hoon/lib/*.hoon hoon/lib/*.toml > .out-jam-source-fingerprint"
         );
     }
 
