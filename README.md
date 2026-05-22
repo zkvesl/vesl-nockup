@@ -149,7 +149,7 @@ The same scaffold ships an HTTP server backed by the `vesl-hull` crate. Run the 
 cargo +nightly run -- serve --no-auth   # loopback, demo signing key
 ```
 
-`--no-auth` is only honored on loopback binds; the kernel-side endpoints stay behind `HULL_API_KEY` on any non-loopback `--bind-addr`. The server-side router is `vesl_hull::router(state)`; merge it with your own routes via `Router::merge(...)` to add domain handlers. See [`templates/vesl/README.md`](./templates/vesl/README.md#cli) for the full flag table and endpoint catalog.
+`--no-auth` is only honored on loopback binds; the kernel-side endpoints stay behind `HULL_API_KEY` on any non-loopback `--bind-addr`. To add domain handlers, pass your routes to `vesl_hull::serve_with_extra_routes` (or `vesl_hull::router_with_extra`) — not `Router::merge(vesl_hull::router(state), ...)`, which attaches them outside the auth / 4 MiB body-limit / rate-limit layers and leaves them unauthenticated. See [`templates/vesl/README.md`](./templates/vesl/README.md#cli) for the full flag table and endpoint catalog.
 
 ## What the template ships
 
