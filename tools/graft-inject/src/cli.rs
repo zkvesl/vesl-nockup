@@ -27,7 +27,7 @@ use crate::doctor::run_doctor;
 use crate::inject::{
     InjectReport, MigrationReport, inject, migrate_legacy_effect, print_migration_line,
 };
-use crate::lint::{print_weld_lint, run_lint};
+use crate::lint::{lint_bare_tilde_ambiguity, print_weld_lint, run_lint};
 use crate::manifest::{Graft, atomic_write, check_schema_compat, discover_grafts};
 use crate::marker::Marker;
 use crate::update::run_update;
@@ -687,6 +687,37 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
     };
     print_migration_line(&migration);
 
+    // Structural pre-apply guard. A domain `?-` arm whose body ends in a
+    // bare `~` line makes the peek-chain emitter mistake it for the chain
+    // terminator and splice the peek chain into the poke body. Surface it
+    // before composing; refuse to write on `--apply`, since composing the
+    // file is the step that corrupts it.
+    let bare_tilde =
+        lint_bare_tilde_ambiguity(&source.lines().map(String::from).collect::<Vec<_>>());
+    for f in &bare_tilde.findings {
+        eprintln!(
+            "graft-inject: bare-tilde ambiguity at {}:{} — domain arm `%{}` body ends in a bare `~` line.",
+            path.display(),
+            f.line,
+            f.arm,
+        );
+    }
+    if !bare_tilde.findings.is_empty() {
+        eprintln!("  graft-inject's peek-chain emitter can mistake that `~` for the chain");
+        eprintln!("  terminator and splice the peek chain into the poke body. Refactor each");
+        eprintln!("  arm so its body does not end in a bare `~` line — `^- (list effect) ~`");
+        eprintln!(
+            "  on one line works. `graft-inject lint {}` reports the full set.",
+            path.display(),
+        );
+        if cli.apply {
+            bail!(
+                "refusing to write {}: resolve the bare-tilde ambiguity above first",
+                path.display(),
+            );
+        }
+    }
+
     let (output, report) = inject(&source, &grafts)
         .with_context(|| format!("injecting into {}", path.display()))?;
 
@@ -705,6 +736,16 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
         if output != source {
             atomic_write(path, &output)
                 .with_context(|| format!("writing {}", path.display()))?;
+            eprintln!();
+            eprintln!(
+                "graft-inject: wrote {}. out.jam is now stale — recompile before",
+                path.display(),
+            );
+            eprintln!("  `cargo build`, or the build links the previous kernel:");
+            eprintln!(
+                "    hoonc {} hoon/ && [ -s out.jam ] || (echo 'hoonc produced no out.jam' >&2; exit 1)",
+                path.display(),
+            );
         }
     } else {
         print!("{output}");
@@ -1025,6 +1066,35 @@ mod tests {
         assert!(
             err.to_string().contains("unknown graft `nosuch`"),
             "error should name the bad graft, got: {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `inject --apply` on a kernel whose domain `?-` arm body ends in a
+    /// bare `~` line must refuse to write — the peek-chain emitter would
+    /// otherwise splice the chain into the poke body and corrupt the file.
+    #[test]
+    fn inject_apply_refuses_bare_tilde_ambiguity() {
+        let dir = tempdir_with_two_manifests("bare_tilde_refuse");
+        let kernel = dir.join("app.hoon");
+        fs::write(
+            &kernel,
+            "?-  -.u.act\n    %ping\n  :_  state\n  ^-  (list effect)\n  ~\n==\n",
+        )
+        .unwrap();
+        let before = fs::read_to_string(&kernel).unwrap();
+        let mut cli = cli_with(dir.clone());
+        cli.path = Some(kernel.clone());
+        cli.apply = true;
+        let err = run_inject(cli).expect_err("bare-tilde + --apply must refuse");
+        assert!(
+            err.to_string().contains("bare-tilde"),
+            "error should name the bare-tilde ambiguity, got: {err}"
+        );
+        assert_eq!(
+            fs::read_to_string(&kernel).unwrap(),
+            before,
+            "the file must be untouched after a refused --apply",
         );
         let _ = fs::remove_dir_all(&dir);
     }
