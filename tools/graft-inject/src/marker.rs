@@ -140,16 +140,26 @@ pub(crate) fn find_marker(lines: &[String], marker: Marker) -> Result<Option<usi
     let needle = format!("{}{}", MARKER_PREFIX, marker.label());
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim_start();
-        // Two-space law: the marker comment must be `::  nockup:<name>`.
-        // We accept trailing whitespace and require exact prefix match.
-        if trimmed.starts_with(&needle) {
-            // Ensure the character right after the marker name is either
-            // end-of-line or whitespace — guards against `nockup:pokemon`
-            // swallowing a poke match.
-            let tail = &trimmed[needle.len()..];
-            if tail.is_empty() || tail.chars().all(|c| c.is_whitespace()) {
-                return Ok(Some(i));
-            }
+        // A marker comment is `::`, one or more spaces, then `nockup:<name>`.
+        // Hoon treats one and two spaces after `::` identically, so a
+        // one-space marker must match too — requiring exactly two would
+        // silently skip the graft on a stray-spacing comment.
+        let Some(after_colons) = trimmed.strip_prefix("::") else {
+            continue;
+        };
+        let after_spaces = after_colons.trim_start_matches(' ');
+        if after_spaces.len() == after_colons.len() {
+            // `::` not followed by a space — a bare `::` or `::nockup:`.
+            continue;
+        }
+        let Some(tail) = after_spaces.strip_prefix(&needle) else {
+            continue;
+        };
+        // The character after the marker name must be end-of-line or
+        // whitespace — guards against `nockup:pokemon` swallowing a
+        // `nockup:poke` match.
+        if tail.is_empty() || tail.chars().all(|c| c.is_whitespace()) {
+            return Ok(Some(i));
         }
     }
     Ok(None)
@@ -230,5 +240,42 @@ mod tests {
         assert!(Marker::parse("load").is_none());
         assert!(Marker::parse("arms").is_none());
         assert!(Marker::parse("nonsense").is_none());
+    }
+
+    #[test]
+    fn find_marker_accepts_one_or_more_spaces() {
+        // Hoon treats one and two spaces alike; both must match, plus
+        // any wider run, a leading-indented line, and a trailing run.
+        for line in [
+            "::  nockup:poke",
+            ":: nockup:poke",
+            "::   nockup:poke",
+            "    :: nockup:poke",
+            "::  nockup:poke  ",
+        ] {
+            let lines = vec![line.to_string()];
+            assert_eq!(
+                find_marker(&lines, Marker::Poke).unwrap(),
+                Some(0),
+                "expected a match for {line:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn find_marker_rejects_no_space_and_name_collision() {
+        for line in [
+            "::nockup:poke",      // no space after `::`
+            "::  nockup:pokemon", // longer name must not swallow `poke`
+            "::  nockup:pokefoo",
+            "::",
+        ] {
+            let lines = vec![line.to_string()];
+            assert_eq!(
+                find_marker(&lines, Marker::Poke).unwrap(),
+                None,
+                "expected no match for {line:?}",
+            );
+        }
     }
 }

@@ -39,7 +39,10 @@
 use clap::Parser;
 use std::process::ExitCode;
 
-const MARKER_PREFIX: &str = "::  nockup:";
+/// The marker namespace. A marker comment is `::`, one or more spaces,
+/// then this string followed by a marker label (e.g. `::  nockup:poke`).
+/// The templates emit two spaces as the canonical form.
+const MARKER_PREFIX: &str = "nockup:";
 const DEFAULT_LIB_DIR: &str = "hoon/lib";
 
 /// Manifest-schema version this binary understands. A graft manifest may
