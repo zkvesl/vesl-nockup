@@ -67,6 +67,17 @@ fn load_kernel() -> Result<Vec<u8>, Box<dyn Error>> {
 
     let kernel =
         fs::read("out.jam").map_err(|e| format!("Failed to read out.jam: {e}"))?;
+    // hoonc can exit 0 while producing no kernel: a structural error in the
+    // Hoon surfaces as a "no panic!" line and an empty `out.jam`, not a
+    // non-zero exit. Reject the empty artifact here so a silently-failed
+    // compile cannot boot a garbage kernel.
+    if kernel.is_empty() {
+        return Err("out.jam is empty — hoonc exited 0 but produced no kernel. \
+                    Recompile and check hoonc's output for the structural \
+                    error (look for a [DIAG] / mote line); compile.sh makes \
+                    that failure loud."
+            .into());
+    }
     match std::env::var("VESL_KERNEL_SHA256") {
         Ok(expected) => {
             let expected = expected.trim();
