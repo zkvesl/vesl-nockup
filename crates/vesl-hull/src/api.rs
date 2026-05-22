@@ -184,6 +184,22 @@ const MAX_FIELD_BYTES: usize = 100_000;
 /// `unsafe { env::set_var() }` pattern (V-N01).
 static NO_AUTH: AtomicBool = AtomicBool::new(false);
 
+/// Constant-time byte-slice equality. A plain `==` on the API key would
+/// return as soon as two bytes differ, leaking the position of the first
+/// mismatch through response timing; this folds every byte before
+/// returning. The length check is deliberate — key length is not the
+/// secret, and comparing unequal-length buffers any other way leaks more.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// API key authentication middleware (C-004).
 ///
 /// Checks `Authorization: Bearer <key>` against the HULL_API_KEY env
@@ -213,9 +229,13 @@ async fn check_api_key(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "));
 
-    match provided {
-        Some(token) if token == expected => Ok(next.run(req).await),
-        _ => Err(StatusCode::UNAUTHORIZED),
+    let authorized = provided
+        .map(|token| constant_time_eq(token.as_bytes(), expected.as_bytes()))
+        .unwrap_or(false);
+    if authorized {
+        Ok(next.run(req).await)
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
     }
 }
 
@@ -832,4 +852,19 @@ pub async fn serve_with_extra_routes(
     println!("  GET  /health    -- liveness check");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constant_time_eq_matches_plain_equality() {
+        assert!(constant_time_eq(b"s3cret-key", b"s3cret-key"));
+        assert!(constant_time_eq(b"", b""));
+        assert!(!constant_time_eq(b"s3cret-key", b"s3cret-keX"));
+        assert!(!constant_time_eq(b"s3cret-key", b"s3cret-ke")); // shorter
+        assert!(!constant_time_eq(b"s3cret-key", b"s3cret-key-")); // longer
+        assert!(!constant_time_eq(b"", b"x"));
+    }
 }
