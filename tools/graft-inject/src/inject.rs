@@ -21,8 +21,9 @@
 //! `binding_stub` is exported as `pub(crate)` because codegen needs the
 //! same `-graft` suffix-stripper for its load-defaults overlay.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use crate::codegen::{CodegenReport, LoadDefaultsReport, emit_effect_union, emit_load_defaults};
 use crate::lint::{WeldLint, lint_weld_friction};
@@ -228,6 +229,42 @@ pub(crate) fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectRe
             load_defaults,
         },
     ))
+}
+
+/// Refuse a compose where an active graft contributes a block for a
+/// marker absent from `path`. The block has nowhere to land and is
+/// silently dropped — a partial, misleading kernel — so this is a hard
+/// error, not a buried warning. A marker absent because *no* active
+/// graft needs it (selective composition, or a codegen-only marker) is
+/// fine and not flagged.
+pub(crate) fn enforce_markers_placeable(report: &InjectReport, path: &Path) -> Result<()> {
+    let mut unplaceable: Vec<(&str, Marker)> = Vec::new();
+    for g in &report.grafts {
+        for marker in &g.applicable {
+            if report.markers_missing.contains(marker) {
+                unplaceable.push((g.name.as_str(), *marker));
+            }
+        }
+    }
+    if unplaceable.is_empty() {
+        return Ok(());
+    }
+    for (name, marker) in &unplaceable {
+        eprintln!(
+            "graft-inject: {} contributes a `{}` block, but {} has no \
+             `::  nockup:{}` marker to place it at.",
+            name,
+            marker.label(),
+            path.display(),
+            marker.label(),
+        );
+    }
+    bail!(
+        "{} graft block(s) could not be placed — add the missing marker(s) \
+         to {} and re-run (the vesl template carries the canonical marker set)",
+        unplaceable.len(),
+        path.display(),
+    )
 }
 
 /// A single placement strategy for graft blocks at one marker. Strips
@@ -842,8 +879,11 @@ mod tests {
         }
     }
 
+    /// `inject()` itself records missing markers in the report without
+    /// erroring. The hard-error policy lives in `run_inject` / `run_update`
+    /// via `enforce_markers_placeable`.
     #[test]
-    fn missing_marker_is_warning_not_error() {
+    fn inject_records_missing_markers_in_report() {
         let grafts = settle_only_grafts();
         let src = "::  just a comment\n";
         let result = inject(src, &grafts);

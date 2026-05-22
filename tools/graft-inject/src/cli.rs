@@ -25,7 +25,8 @@ use std::path::{Path, PathBuf};
 use crate::codegen::{CodegenReport, CodegenStatus, run_codegen_kernel_cause_tags};
 use crate::doctor::run_doctor;
 use crate::inject::{
-    InjectReport, MigrationReport, inject, migrate_legacy_effect, print_migration_line,
+    InjectReport, MigrationReport, enforce_markers_placeable, inject, migrate_legacy_effect,
+    print_migration_line,
 };
 use crate::lint::{lint_bare_tilde_ambiguity, print_weld_lint, run_lint};
 use crate::manifest::{Graft, atomic_write, check_schema_compat, discover_grafts};
@@ -721,6 +722,10 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
     let (output, report) = inject(&source, &grafts)
         .with_context(|| format!("injecting into {}", path.display()))?;
 
+    // Refuse a partial compose: a graft contributing a block for an
+    // absent marker would have that block silently dropped.
+    enforce_markers_placeable(&report, path)?;
+
     if cli.dry_run {
         eprintln!(
             "graft-inject: --dry-run is deprecated; preview is the default. \
@@ -1095,6 +1100,26 @@ mod tests {
             fs::read_to_string(&kernel).unwrap(),
             before,
             "the file must be untouched after a refused --apply",
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `inject` refuses when an active graft contributes a block for a
+    /// marker absent from the file — the block would be silently dropped.
+    #[test]
+    fn inject_refuses_when_a_graft_block_has_no_marker() {
+        let dir = tempdir_with_two_manifests("missing_marker");
+        let kernel = dir.join("app.hoon");
+        // Only the imports marker is present; settle-graft also needs
+        // state / cause / poke / peek markers.
+        fs::write(&kernel, "::  nockup:imports\n").unwrap();
+        let mut cli = cli_with(dir.clone());
+        cli.path = Some(kernel.clone());
+        cli.grafts = vec!["settle-graft".to_string()];
+        let err = run_inject(cli).expect_err("a graft block with no marker must refuse");
+        assert!(
+            err.to_string().contains("could not be placed"),
+            "error should explain the unplaceable block, got: {err}"
         );
         let _ = fs::remove_dir_all(&dir);
     }

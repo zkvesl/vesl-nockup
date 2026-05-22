@@ -21,7 +21,7 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use crate::cli::print_report;
 use crate::doctor::{collect_findings, emit_human};
-use crate::inject::{inject, migrate_legacy_effect, print_migration_line};
+use crate::inject::{enforce_markers_placeable, inject, migrate_legacy_effect, print_migration_line};
 use crate::manifest::{Graft, atomic_write, check_schema_compat, discover_grafts};
 
 /// `nockup graft update` entry point.
@@ -66,6 +66,7 @@ pub(crate) fn run_update(path: &Path, lib_dir: &Path, yes: bool) -> Result<()> {
     let (source, migration) = migrate_legacy_effect(&raw_source);
     let (output, report) = inject(&source, &grafts)
         .with_context(|| format!("composing {}", path.display()))?;
+    enforce_markers_placeable(&report, path)?;
     eprintln!();
     eprintln!("update: preview — `inject --apply` would compose:");
     print_migration_line(&migration);

@@ -366,8 +366,8 @@ Version bumps to this schema append fields, never reshape existing ones.
 | `after` references an absent graft | stderr `note`; hint silently dropped, priority-based ordering applies (selective composition stays valid) |
 | `--grafts` names an absent graft | hard error |
 | Two manifests claim the same `name` | hard error at discovery; both source paths named in the message |
-| Marker missing from target file | warning; that marker is skipped, others continue |
-| All nine markers missing | hard error (nothing to wire) |
+| Marker absent, but an active graft contributes a block for it | hard error; the block has nowhere to land |
+| Marker absent, and no active graft needs it | skipped; selective composition stays valid |
 | Banner `::  graft-inject:<name>:<marker>:begin` already present | skip that graft-marker pair; log `skipped` |
 | Body contains tabs (mixed indentation) | injection proceeds — `hoonc` may fail downstream |
 
