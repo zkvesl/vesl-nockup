@@ -33,13 +33,13 @@ anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 # verify-jam subcommand recomputes sha256s of source files listed in
-# the .out-jam-source-fingerprint sidecar (RM2 §2.1).
+# the .out-jam-source-fingerprint sidecar.
 sha2 = "0.10"
 # Read [project].kernel_name from a project's nockapp.toml so the
 # verify-jam hint strings reference the user's actual kernel filename
 # rather than the default `app.hoon`.
 toml = "0.8"
-# The `vesl-test watch` subcommand (RM4 Tool 4) reads stdin (io-std),
+# The `vesl-test watch` subcommand reads stdin (io-std),
 # spawns the run loop and a render task (rt-multi-thread), uses
 # `tokio::sync::broadcast` to subscribe to the kernel's
 # effect_broadcast (sync), and bounds per-event effect drains with
@@ -58,5 +58,5 @@ tempfile = "3"
 [dev-dependencies]
 # vesl-checkpoint is the synced bundle from vesl-core; harness-level
 # integration tests use snapshot/resume to verify state-equivalence
-# across composition changes (RM2's defining test surface).
+# across composition changes.
 vesl-checkpoint = { path = "../../crates/vesl-checkpoint" }

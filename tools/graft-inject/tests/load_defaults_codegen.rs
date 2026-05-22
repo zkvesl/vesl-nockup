@@ -1,4 +1,4 @@
-//! RM4 §1 v0.2 — `nockup:load-defaults` codegen.
+//! `nockup:load-defaults` codegen — integration tests.
 //!
 //! Walks the structural surfaces of the load-defaults marker:
 //!

@@ -1,7 +1,6 @@
-//! RM4 §1 — HARD-BUG-2 regression: post-resume effect emission across
-//! priority bands.
+//! Post-resume effect emission across priority bands.
 //!
-//! `A_to_B.md` reported that pokes against rbac-graft (priority 80)
+//! An earlier composition showed that pokes against rbac-graft (priority 80)
 //! emit effects post-resume but pokes against registry-graft (priority
 //! 90), log-graft (priority 130), and domain causes silently produce
 //! empty effect lists. State roundtrips correctly; only effect
@@ -72,30 +71,30 @@ async fn resume_preserves_effect_emission_across_priority_bands() -> Result<()> 
     // migration concerns).
     let mut resumed = resume(&jam_path, &snap, "rm4-hard-bug-2-test").await?;
 
-    // RM4 HARD-BUG-2 — post-resume each priority band must STILL emit.
+    // Post-resume, each priority band must STILL emit.
     let tags = poke_via_app(&mut resumed, build_rbac_grant_poke(1, &["write"])).await?;
     assert!(
         tags.iter().any(|t| t == "rbac-granted"),
-        "POST-RESUME rbac-grant (priority 80) must emit (working in RM4): {tags:?}",
+        "POST-RESUME rbac-grant (priority 80) must emit: {tags:?}",
     );
     let tags = poke_via_app(&mut resumed, build_registry_put_poke(2, &payload)).await?;
     assert!(
         tags.iter().any(|t| t == "registry-stored"),
-        "POST-RESUME registry-put (priority 90) must emit (DROPPED in RM4 HARD-BUG-2): {tags:?}",
+        "POST-RESUME registry-put (priority 90) must emit: {tags:?}",
     );
     let tags = poke_via_app(&mut resumed, build_log_append_poke("audit-post", &payload)).await?;
     assert!(
         tags.iter().any(|t| t == "log-appended"),
-        "POST-RESUME log-append (priority 130) must emit (DROPPED in RM4 HARD-BUG-2): {tags:?}",
+        "POST-RESUME log-append (priority 130) must emit: {tags:?}",
     );
 
     Ok(())
 }
 
-/// RM4 §1 — HARD-BUG-2 (schema-change variant): snapshot a smaller
-/// kernel composition, resume into a kernel with extra grafts injected
-/// at higher priorities. Mirrors the actual A→B dogfood transition
-/// (snapshot post-A had settle+mint+guard; B added rbac+registry+log).
+/// Schema-change variant: snapshot a smaller kernel composition,
+/// resume into a kernel with extra grafts injected at higher
+/// priorities. Mirrors a real composition extension (the snapshot had
+/// settle+mint+guard; the resume target added rbac+registry+log).
 ///
 /// Active under the v0.2 load-defaults codegen (`nockup:load-defaults`
 /// marker populated by graft-inject). The codegen replaces the marker
@@ -125,9 +124,10 @@ async fn resume_into_larger_kernel_emits_effects_for_added_grafts() -> Result<()
         .expect("kernel_a out.jam has a parent")
         .join("hoon/app/app.hoon");
 
-    // Kernel B: A's grafts plus rbac (80), registry (90), log (130).
-    // The three new grafts straddle the priority threshold RM4 said
-    // matters (rbac=80 worked, registry=90 and above did not).
+    // The larger kernel: the original grafts plus rbac (80),
+    // registry (90), log (130). The three new grafts straddle the
+    // priority threshold that matters (rbac=80 worked, registry=90
+    // and above did not).
     let kernel_b = fixtures::compose_and_compile(
         "resume_schema_b",
         &[
@@ -172,12 +172,12 @@ async fn resume_into_larger_kernel_emits_effects_for_added_grafts() -> Result<()
     let tags = poke_via_app(&mut resumed, build_registry_put_poke(1, &payload)).await?;
     assert!(
         tags.iter().any(|t| t == "registry-stored"),
-        "POST-RESUME registry-put after schema change (priority 90, RM4 fail point): {tags:?}",
+        "POST-RESUME registry-put after schema change (priority 90): {tags:?}",
     );
     let tags = poke_via_app(&mut resumed, build_log_append_poke("audit", &payload)).await?;
     assert!(
         tags.iter().any(|t| t == "log-appended"),
-        "POST-RESUME log-append after schema change (priority 130, RM4 fail point): {tags:?}",
+        "POST-RESUME log-append after schema change (priority 130): {tags:?}",
     );
 
     Ok(())
@@ -191,9 +191,9 @@ async fn poke_via_app(app: &mut NockApp, slab: NounSlab) -> Result<Vec<String>> 
     Ok(effect_head_tags(&effects))
 }
 
-/// RM4 §1 v0.2 — exhaustive 3→6 graft schema-extension regression.
+/// Exhaustive 3→6 graft schema-extension regression.
 ///
-/// Mirrors the canonical A→B dogfood transition with intermediate poke
+/// Mirrors a real composition extension with intermediate poke
 /// state on every original graft (settle/mint/guard) before the
 /// snapshot, then asserts each pre-snapshot poke emitted its expected
 /// effect AND each post-resume poke against both the original and the
@@ -303,17 +303,17 @@ async fn resume_3_to_6_grafts_emits_for_old_and_new_grafts() -> Result<()> {
     let tags = poke_via_app(&mut resumed, build_rbac_grant_poke(1, &["read"])).await?;
     assert!(
         tags.iter().any(|t| t == "rbac-granted"),
-        "POST-RESUME rbac-grant (priority 80, RM4 fail point): {tags:?}",
+        "POST-RESUME rbac-grant (priority 80): {tags:?}",
     );
     let tags = poke_via_app(&mut resumed, build_registry_put_poke(1, &payload)).await?;
     assert!(
         tags.iter().any(|t| t == "registry-stored"),
-        "POST-RESUME registry-put (priority 90, RM4 fail point): {tags:?}",
+        "POST-RESUME registry-put (priority 90): {tags:?}",
     );
     let tags = poke_via_app(&mut resumed, build_log_append_poke("audit", &payload)).await?;
     assert!(
         tags.iter().any(|t| t == "log-appended"),
-        "POST-RESUME log-append (priority 130, RM4 fail point): {tags:?}",
+        "POST-RESUME log-append (priority 130): {tags:?}",
     );
 
     Ok(())

@@ -1,5 +1,5 @@
-//! Regression tests for audit §2.C-01 — the hull's /commit and
-//! /settle handlers must propagate kernel rejection back to the
+//! Regression tests for the commit/settle desync hazard: the hull's
+//! /commit and /settle handlers must propagate kernel rejection back to the
 //! HTTP caller instead of silently overwriting local state with a
 //! root the settle kernel has not attested.
 //!
@@ -168,7 +168,7 @@ async fn commit_success_path_still_updates_state() {
     assert_eq!(body["has_tree"], serde_json::Value::Bool(true));
     assert_eq!(body["field_count"], serde_json::Value::from(1u64));
     assert!(body["merkle_root"].as_str().is_some());
-    // R6 §2: /status surfaces active gate + composed grafts + per-graft
+    // /status surfaces active gate + composed grafts + per-graft
     // sha256s. ManifestSummary::empty() backs this test, so the operator
     // sees default-hash + empty arrays — the shape is what matters here.
     assert_eq!(
@@ -179,8 +179,7 @@ async fn commit_success_path_still_updates_state() {
     assert!(body["manifest_shas"].is_object(), "manifest_shas must be a JSON object");
 }
 
-// Audit C-01 follow-up §4 regressions for the §3.2 + §3.3 work
-// (.dev/AUDIT_C01_REAL_SETTLE.md).
+// Regressions for the real-settle commit path.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn settle_replay_id_returns_409_with_cord() {

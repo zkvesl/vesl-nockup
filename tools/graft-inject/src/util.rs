@@ -1,7 +1,5 @@
 //! Cross-cutting helpers that don't fit any single pipeline module:
 //! binary staleness detection and `--lib-dir` trust-posture warnings.
-//!
-//! Audit §3.2 extraction.
 
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -13,11 +11,10 @@ use std::path::{Path, PathBuf};
 /// case where a global `cargo install --path tools/graft-inject` ran
 /// weeks ago and has fallen behind source.
 ///
-/// RH1 step 3 (HARD-FRICTION-1): pre-RH1 the metric was `git log -1
-/// -- src` (latest commit touching src/), which fired in a working
-/// checkout where source had advanced past the binary's git context
-/// even when the binary's `src/` bytes already matched. A content-hash
-/// fires only when actual bytes differ.
+/// An earlier metric — `git log -1 -- src`, the latest commit touching
+/// src/ — fired in a working checkout where source had advanced past
+/// the binary's git context even when the binary's `src/` bytes already
+/// matched. A content-hash fires only when actual bytes differ.
 ///
 /// Silent when:
 /// - The build hash is `unknown` (build.rs couldn't walk src/).
@@ -99,12 +96,11 @@ fn collect_src_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> 
 /// Refuse a `--lib-dir` outside any project tree unless the caller
 /// opted in with `--accept-untrusted-libs`.
 ///
-/// AUDIT 2026-05-20 M-24 (was L-21, warn-only): a `--lib-dir` with no
-/// `nockapp.toml` ancestor is almost always a mistake — and the loader
-/// splices any `*.toml` `[graft]` table it finds verbatim into the
-/// user's compiled Hoon. An out-of-tree lib-dir is now a hard error;
-/// `--accept-untrusted-libs` downgrades it to a warning for tests and
-/// other deliberate out-of-tree uses.
+/// A `--lib-dir` with no `nockapp.toml` ancestor is almost always a
+/// mistake — and the loader splices any `*.toml` `[graft]` table it
+/// finds verbatim into the user's compiled Hoon. An out-of-tree
+/// lib-dir is a hard error; `--accept-untrusted-libs` downgrades it to
+/// a warning for tests and other deliberate out-of-tree uses.
 pub(crate) fn check_lib_dir_trust(
     lib_dir: &Path,
     accept_untrusted: bool,

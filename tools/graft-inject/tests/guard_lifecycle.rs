@@ -1,11 +1,11 @@
-//! Guard-graft lifecycle integration test (Phase 8b).
+//! Guard-graft lifecycle integration test.
 //!
 //! Composes a kernel from `[settle-graft, mint-graft, guard-graft]`,
 //! compiles it with `hoonc`, boots it through `vesl-test`, and drives
 //! the full mint → guard-register → guard-check flow. ~30-50s runtime
 //! (most of it `hoonc`); treat accordingly in CI.
 //!
-//! Phase 11 factored the scratch/compose/peek machinery into
+//! The scratch/compose/peek machinery lives in
 //! `tests/fixtures/` — what remains here is the assertion script.
 
 mod fixtures;

@@ -51,7 +51,7 @@ The Serve arm wires `vesl_hull::serve(...)` which mounts:
 
 | Gate | Body shape | Notes |
 |---|---|---|
-| `default-hash` | `{}` (re-mints from `field[0]`) or `{"data": "<hex>"}` | Pre-R6 default. |
+| `default-hash` | `{}` (re-mints from `field[0]`) or `{"data": "<hex>"}` | The original default. |
 | `manifest-verify` | `{"fields": [{"name": "...", "value": "..."}, ...]}` | Hull re-derives proofs from the committed tree. |
 
 Adding a new catalog-gate impl (schnorr, ed25519, membership, bounded) is a `SettlePayloadBuilder` impl in `crates/vesl-hull/src/settle_builder.rs` plus a `payload_builder_for_gate` match arm. Unknown gates warn and fall back to default-hash.

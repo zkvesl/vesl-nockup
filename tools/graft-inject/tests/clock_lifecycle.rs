@@ -1,4 +1,4 @@
-//! Clock-graft lifecycle integration test (Phase 03 P3a.1).
+//! Clock-graft lifecycle integration test.
 //!
 //! Composes a kernel from `[settle-graft, clock-graft]`, compiles via
 //! `hoonc`, boots through `vesl-test`, and exercises the deterministic
@@ -6,7 +6,7 @@
 //!
 //! No hostile-input case: %clock-tick has no payload to cue (the cause
 //! cell is just `[%clock-tick ~]`). C1 regression-guard pattern is
-//! exercised by log-graft's lifecycle test (P3a.2).
+//! exercised by log-graft's lifecycle test.
 //!
 //! What this test pins:
 //!   - peek before any tick reads back 0 (initial @da)

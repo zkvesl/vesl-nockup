@@ -1,4 +1,4 @@
-//! Phase 03b: poke-prelude marker integration tests.
+//! Poke-prelude marker integration tests.
 //!
 //! Validates the new `[graft.blocks.poke-prelude]` capability that
 //! graft-inject ships ahead of any consumer (validate-graft / fsm-graft
@@ -48,7 +48,7 @@ const GUARD_TEST_HOON: &str = "\
 --
 ";
 
-const GUARD_TEST_TOML: &str = r#"# guard-test-graft — Phase 03b prelude integration test fixture.
+const GUARD_TEST_TOML: &str = r#"# guard-test-graft — prelude integration test fixture.
 #
 # Synthetic graft whose only purpose is to exercise the new
 # [graft.blocks.poke-prelude] marker. Adds a %guard-trip cause and

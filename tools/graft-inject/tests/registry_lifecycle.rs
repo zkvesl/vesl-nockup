@@ -1,4 +1,4 @@
-//! Registry-graft lifecycle integration test (Phase 02 P2.5).
+//! Registry-graft lifecycle integration test.
 //!
 //! Composes a kernel from
 //! `[settle-graft, kv-graft, counter-graft, queue-graft, rbac-graft,
@@ -6,7 +6,7 @@
 //! and exercises strict put/update/del semantics plus the C1
 //! hostile-input regression guards on both put and update.
 //!
-//! Registry is the heaviest C1 surface in Phase 02 — it has *two*
+//! Registry is the heaviest C1 surface — it has *two*
 //! cue sites (put + update). The hostile-input cases mirror the
 //! pattern set by queue-graft.
 

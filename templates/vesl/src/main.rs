@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 /// When `VESL_KERNEL_SHA256` is set, the kernel's sha256 must match it or
 /// boot is refused; when unset, boot proceeds with a warning. This keeps
 /// the edit-Hoon / recompile / rerun loop fast while letting a production
-/// deploy pin the kernel hash (audit C-01).
+/// deploy pin the kernel hash.
 fn load_kernel() -> Result<Vec<u8>, Box<dyn Error>> {
     use sha2::{Digest, Sha256};
 
@@ -117,7 +117,7 @@ fn build_app_state(app: NockApp) -> Result<vesl_hull::SharedState, Box<dyn Error
     let output_dir = PathBuf::from(".");
     let note_counter = vesl_hull::load_note_counter(Path::new(&output_dir));
     // Snapshot the manifest dir once at boot so /status can surface the
-    // active gate, the composed grafts, and per-graft sha256s (R6 §2).
+    // active gate, the composed grafts, and per-graft sha256s.
     // Missing dir is non-fatal: the hull falls back to a default-hash
     // empty summary if run outside a graft project scaffold.
     let manifest = vesl_hull::ManifestSummary::from_manifest_dir(Path::new("hoon/lib"))
@@ -125,7 +125,7 @@ fn build_app_state(app: NockApp) -> Result<vesl_hull::SharedState, Box<dyn Error
             eprintln!("WARNING: failed to scan hoon/lib for graft manifests: {e}");
             vesl_hull::ManifestSummary::empty()
         });
-    // Pick the SettlePayloadBuilder impl from the active gate (R6 §3).
+    // Pick the SettlePayloadBuilder impl from the active gate.
     // Stock /settle dispatches through this so manifest-verify (or any
     // future catalog gate with a SettlePayloadBuilder impl) succeeds
     // without a custom route. Unknown gates warn and fall back to

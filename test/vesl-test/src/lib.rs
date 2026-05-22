@@ -5,7 +5,7 @@
 //! Reuses the poke shapes from vesl-core and nock-noun-rs — no kernel
 //! knowledge required from the caller.
 //!
-//! Phase 12A renamed the primitive from `vesl-graft` to `settle-graft`;
+//! The primitive was renamed from `vesl-graft` to `settle-graft`;
 //! the method names below track the new naming (`register` /  `verify`
 //! /  `note`). The `settle` method remains as a deprecated alias so
 //! existing tests outside this repo keep compiling for one release.
@@ -98,8 +98,8 @@ impl GraftTestHarness {
     }
 
     /// Deprecated alias for [`GraftTestHarness::note`]. The `%vesl-settle`
-    /// cause tag became `%settle-note` in Phase 12A.
-    #[deprecated(since = "0.2.0", note = "renamed in Phase 12A; use note()")]
+    /// cause tag became `%settle-note`.
+    #[deprecated(since = "0.2.0", note = "renamed; use note()")]
     pub async fn settle(&mut self, payload: &[u8]) -> Result<Vec<String>> {
         self.note(payload).await
     }
@@ -332,7 +332,7 @@ impl PokeReport {
 /// Decode the leading tag of an `invalid cause` noun. Handles two
 /// canonical slog shapes:
 ///
-/// 1. **Cord-decoded** (post-RM4 §3 / RM5 §1 templates/app.hoon):
+/// 1. **Cord-decoded** (the current `templates/app.hoon` shape):
 ///    `"[%g-set ...] (full: [499.918.253.415 ...])"` → `Some("g-set")`.
 ///    The `?@` ladder in the kernel's `?~ act` slog renders the head
 ///    atom as `@tas` when it fits, and falls back to `%unknown` for
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn decode_cause_tag_handles_cord_decoded_head() {
-        // Post-RM5 §1 cord-decoder ladder renders @tas heads as %<tag>
+        // The cord-decoder ladder renders @tas heads as %<tag>
         // inline, with the full noun after `(full: ...)`.
         let noun = "[%g-mint ...] (full: [128.017.563.987.303 0])";
         assert_eq!(decode_cause_tag(noun).as_deref(), Some("g-mint"));

@@ -2,7 +2,7 @@
 //! re-emits banner-wrapped per-graft blocks at each `::  nockup:<X>`
 //! marker, and bridges to the codegen + lint passes.
 //!
-//! Audit §3.2 extraction. The flow is:
+//! The flow is:
 //!
 //!   1. Auto-prune orphan banner pairs whose graft is no longer in the
 //!      active set (`orphan_graft_names`).
@@ -51,7 +51,7 @@ pub(crate) struct InjectReport {
     pub(crate) codegen: CodegenReport,
     /// Weld-friction lint findings in domain code.
     pub(crate) weld_lint: WeldLint,
-    /// RM4 §1 v0.2: outcome of the `++load` defaults codegen pass.
+    /// Outcome of the `++load` defaults codegen pass.
     pub(crate) load_defaults: LoadDefaultsReport,
 }
 
@@ -97,7 +97,7 @@ pub(crate) fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectRe
         })
         .collect();
 
-    // RH1 step 1: auto-prune banner pairs whose graft is no longer in
+    // Auto-prune banner pairs whose graft is no longer in
     // `grafts`. Runs before the strip/inject loop so orphan blocks
     // referencing now-missing variants are gone before hoonc sees them
     // and before drift detection runs against a clean tree.
@@ -166,7 +166,7 @@ pub(crate) fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectRe
                 }
                 InjectStatus::Legacy => {
                     eprintln!(
-                        "graft-inject: {}: legacy banner at {} (pre-A2, no sha256). Re-injecting in current format.",
+                        "graft-inject: {}: legacy banner at {} (no sha256 suffix). Re-injecting in current format.",
                         g.name,
                         marker.label()
                     );
@@ -181,12 +181,11 @@ pub(crate) fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectRe
             }
         }
 
-        // RH2 step 2 (HARD-BUG-2 + HARD-BUG-3): collapse the dual
-        // placement strategy (drift-preserve at orig_idx vs fresh-batch
-        // at marker_idx+1) to a single canonical re-emit. The marker
-        // section's graft blocks become a pure function of the active
-        // set, so drop+readd is byte-identical and peek drift no longer
-        // jumps to the chain tail.
+        // Collapse the dual placement strategy (drift-preserve at
+        // orig_idx vs fresh-batch at marker_idx+1) to a single canonical
+        // re-emit. The marker section's graft blocks become a pure
+        // function of the active set, so drop+readd is byte-identical
+        // and peek drift no longer jumps to the chain tail.
         canonicalize_marker_section(&mut lines, marker, &indent, &grafts_at_marker);
     }
 
@@ -195,7 +194,7 @@ pub(crate) fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectRe
     // graft set on every rerun.
     let codegen = emit_effect_union(&mut lines, grafts)?;
 
-    // RM4 §1 v0.2: load-defaults codegen runs after effect-union. Same
+    // Load-defaults codegen runs after effect-union. Same
     // REPLACE-IF-PRESENT shape; populates the `++load` overlay so
     // resumed snapshots with a smaller noun shape get defaults at the
     // current kernel's new graft axes.
@@ -231,17 +230,17 @@ pub(crate) fn inject(source: &str, grafts: &[Graft]) -> Result<(String, InjectRe
     ))
 }
 
-/// RH2 step 2: a single placement strategy for graft blocks at one
-/// marker. Strips every active-graft banner pair at `marker`, then
-/// re-emits the slice in canonical (priority-then-name) order. The
-/// final layout is a pure function of `grafts_for_marker`, so:
+/// A single placement strategy for graft blocks at one marker. Strips
+/// every active-graft banner pair at `marker`, then re-emits the slice
+/// in canonical (priority-then-name) order. The final layout is a pure
+/// function of `grafts_for_marker`, so:
 ///
-/// - drop+readd cycles produce byte-identical output (HARD-BUG-3),
+/// - drop+readd cycles produce byte-identical output,
 /// - drift re-injection does not relocate the drifted block to a new
-///   position relative to its peers (HARD-BUG-2 for peek; same fix
+///   position relative to its peers (at the peek marker, and the same
 ///   for all other markers).
 ///
-/// Replaces RH1 step 2's `emit_position_preserving` dispatcher and the
+/// Replaces the earlier `emit_position_preserving` dispatcher and the
 /// `*_single_at` emitters. Codegen-only markers (DomainEffect,
 /// EffectUnion, LoadDefaults) yield an empty slice from the caller's
 /// filter, so the early return covers them — `emit_effect_union` and
@@ -298,8 +297,8 @@ pub(crate) fn expected_block_body(graft: &Graft, marker: Marker, indent: &str) -
 
 /// Insert composed body lines after the marker, each pending graft wrapped
 /// in a `::  graft-inject:<name>:<marker>:begin` / `:end` banner pair. The
-/// banners carry per-graft-per-marker idempotence (AUDIT 2026-04-19
-/// H-11..H-14): re-runs scan for the begin banner by exact trimmed-line
+/// banners carry per-graft-per-marker idempotence: re-runs scan for the
+/// begin banner by exact trimmed-line
 /// match rather than hunting for body substrings inside an expanding
 /// `?-` switch. Distinct marker labels keep a graft's banner at one
 /// marker from being mistaken for its banner at another.
@@ -330,7 +329,7 @@ fn emit_block(
 /// Imports-specific emission that dedupes `/+  *foo` / `/-  *foo`
 /// directives against what's already in the source file.
 ///
-/// AUDIT 2026-04-19 M-22: four shipped grafts (settle/mint/guard/forge)
+/// Four shipped grafts (settle/mint/guard/forge)
 /// each import `*vesl-merkle`, so composing all four with a plain
 /// concatenation produced four identical `/+  *vesl-merkle` lines.
 /// Hoonc tolerates the duplicates but the noise lets a malicious manifest
@@ -461,10 +460,10 @@ pub(crate) fn binding_stub(name: &str) -> &str {
 
 /// Per-graft-per-marker idempotence status. Distinguishes "banner
 /// present and current" from "banner present but stale" (manifest drift
-/// or pre-A2 legacy format) so the inject pass can strip-and-reinject
+/// or legacy format) so the inject pass can strip-and-reinject
 /// rather than silently leave a stale block in place.
 ///
-/// R5/A2 surfaced this gap: pre-A2 graft-inject treated mere banner
+/// An earlier graft-inject treated mere banner
 /// presence as the skip signal, so editing `<graft>.toml` (e.g. swapping
 /// `[graft.gates] gate = "sig-verify-schnorr"` to `"sig-verify-ed25519"`)
 /// and re-running `graft-inject --apply` left the old gate body in place.
@@ -476,7 +475,7 @@ enum InjectStatus {
     /// Banner present but embedded sha256 differs — manifest drift.
     /// The caller strips the banner pair and re-injects.
     Drift { old_sha: String },
-    /// Banner present in pre-A2 legacy format (no sha256 suffix).
+    /// Banner present in legacy format (no sha256 suffix).
     /// Force-reinject once to stamp the new format.
     Legacy,
     /// No banner present. Fresh inject.
@@ -485,14 +484,14 @@ enum InjectStatus {
 
 /// Per-graft-per-marker idempotence check.
 ///
-/// AUDIT 2026-04-19 H-11..H-14: the pre-audit implementation walked a
-/// marker window for the graft's sentinel string. That had three
-/// failure modes — cross-graft false positives (A's body containing B's
-/// sentinel), peek-chain overflow past the 10-line window at 6+ grafts,
-/// and early termination on an inner `==` inside any poke body. A banner
-/// comment emitted alongside each injected block removed those three
-/// footguns. R5/A2 (2026-05-04) extended the banner with a 12-char
-/// sha256 prefix so re-runs detect manifest drift as well.
+/// An earlier implementation walked a marker window for the graft's
+/// sentinel string. That had three failure modes — cross-graft false
+/// positives (A's body containing B's sentinel), peek-chain overflow
+/// past the 10-line window at 6+ grafts, and early termination on an
+/// inner `==` inside any poke body. A banner comment emitted alongside
+/// each injected block removed those three footguns; the banner was
+/// later extended with a 12-char sha256 prefix so re-runs detect
+/// manifest drift as well.
 fn check_injection(lines: &[String], graft: &Graft, marker: Marker) -> InjectStatus {
     let prefix = begin_banner(&graft.name, marker);
     let current_sha = graft.sha256_short();
@@ -559,7 +558,7 @@ fn orphan_graft_names(
 
 /// Last bare `~` between the peek marker and the block's closing `==`.
 /// The pre-audit implementation capped the scan at 10 lines, which broke
-/// idempotence once 6+ grafts were wired (AUDIT 2026-04-19 H-13): new
+/// idempotence once 6+ grafts were wired: new
 /// grafts landed ahead of the existing chain, duplicating the `~` and
 /// preempting earlier grafts' peek semantics. Scanning the entire block
 /// and returning the last bare `~` keeps the new pair inserted just
@@ -896,7 +895,7 @@ mod tests {
                 .trimmed_body();
             // Body lands one row after the begin banner, which carries a
             // ` sha256:<short>` suffix — assert on the prefix, not the live
-            // sha256. Design: R5/A2 §2.1 (extends AUDIT 2026-04-19 H-11..H-14).
+            // sha256.
             let expected_prefix =
                 format!("{marker_indent}::  graft-inject:settle-graft:{}:begin", marker.label());
             assert!(
@@ -970,7 +969,7 @@ mod tests {
             .map(|l| l.trim_start().to_string())
             .collect();
         assert_eq!(peek_lines.len(), 13, "expected 13 lines after peek marker");
-        // R5/A2: begin banners now carry a ` sha256:<short>` suffix.
+        // Begin banners carry a ` sha256:<short>` suffix.
         // Match on the prefix to avoid coupling tests to live sha256
         // values of fixture manifests.
         assert!(peek_lines[0].starts_with("::  graft-inject:settle-graft:peek:begin"));
@@ -1100,7 +1099,7 @@ mod tests {
         //   ~                                   <- terminal fallback
         //
         // The `=/` binding wraps the legacy flat replacement — same runtime
-        // semantics. Design: AUDIT 2026-04-19 banner refactor.
+        // semantics.
         let grafts = settle_only_grafts();
         let (out, _) = inject(BARE_SCAFFOLD, &grafts).unwrap();
         let peek_lines: Vec<&str> = out
@@ -1265,16 +1264,15 @@ mod tests {
         assert!(report.grafts[0].injected.is_empty());
     }
 
-    /// RH1 step 1 (HARD-BUG-1): removing a graft from the injection set
-    /// auto-prunes its banner-pair-bounded blocks. Pre-RH1 the tool was
-    /// additive-only; orphan blocks then referenced types missing from the
-    /// shrunk effect-union and hoonc failed silently. The new contract is:
-    /// drop a graft from `--grafts`, re-run with `--apply`, and the orphan
+    /// Removing a graft from the injection set auto-prunes its
+    /// banner-pair-bounded blocks. An additive-only tool would leave
+    /// orphan blocks that reference types missing from the shrunk
+    /// effect-union, and hoonc would fail silently. The contract: drop a
+    /// graft from `--grafts`, re-run with `--apply`, and the orphan
     /// blocks are stripped automatically.
     ///
-    /// Byte-identical round-trip across drop-then-readd is a Step 2 concern
-    /// (HARD-FRICTION-2 — preserve position on fresh-inject after a partial
-    /// drop). This test isolates the prune contract.
+    /// Byte-identical round-trip across drop-then-readd is covered
+    /// separately; this test isolates the prune contract.
     #[test]
     fn removed_graft_auto_prunes_orphan_banners() {
         let a = synthetic_graft("alpha", 10);
@@ -1306,15 +1304,15 @@ mod tests {
         );
     }
 
-    /// RH1 step 2 (HARD-FRICTION-2): manifest drift on a non-first graft
-    /// must re-inject the block at its ORIGINAL line position, not at the
-    /// marker line. Pre-RH1 the strip-then-reinject path placed the
-    /// drifted graft's block at marker_idx+1, pushing every later graft
-    /// down by one — so a non-semantic edit (e.g., a gate-selection swap
-    /// in the manifest) changed `sha256(app.hoon)` even though the file
-    /// was logically equivalent. After Step 2, drift re-injection at
-    /// emit_block-class markers preserves position; the file is byte-
-    /// identical when the drifted manifest is reverted.
+    /// Manifest drift on a non-first graft must re-inject the block at
+    /// its ORIGINAL line position, not at the marker line. An earlier
+    /// strip-then-reinject path placed the drifted graft's block at
+    /// marker_idx+1, pushing every later graft down by one — so a
+    /// non-semantic edit (e.g., a gate-selection swap in the manifest)
+    /// changed `sha256(app.hoon)` even though the file was logically
+    /// equivalent. Drift re-injection at emit_block-class markers now
+    /// preserves position; the file is byte-identical when the drifted
+    /// manifest is reverted.
     #[test]
     fn drift_reinject_preserves_block_position() {
         let alpha = synthetic_graft("alpha", 10);
@@ -1356,7 +1354,7 @@ mod tests {
         assert!(
             alpha_poke2 < beta_poke2,
             "drift re-injection must preserve order: alpha:poke still precedes beta:poke. \
-             Pre-RH1 the drifted graft jumped to marker_idx+1, inverting the order."
+             An earlier path jumped the drifted graft to marker_idx+1, inverting the order."
         );
 
         // Revert beta to its original sha. The result is byte-identical
@@ -1364,22 +1362,21 @@ mod tests {
         let (after_revert, _) = inject(&after_drift, &[alpha, beta]).unwrap();
         assert_eq!(
             after_revert, composed,
-            "drift-then-revert is byte-identical (Step 2 invariant)"
+            "drift-then-revert is byte-identical (drift round-trip invariant)"
         );
     }
 
-    /// RH2 HARD-BUG-2 regression guard: peek-marker drift re-injection
-    /// must preserve relative order between graft peek blocks. Pre-fix
-    /// (RH1 step 2) Peek was excluded from the position-preservation
-    /// gate, so peek drift fell through to the batch fresh-inject path
-    /// (`emit_peek_chain`) which inserts before the chain's terminal
-    /// `~` — relocating the drifted block to the tail. Post-fix (RH2
-    /// step 2) `canonicalize_marker_section` strips and re-emits all
-    /// active grafts in canonical order regardless of marker type.
+    /// Peek-marker drift re-injection must preserve relative order
+    /// between graft peek blocks. An earlier implementation excluded
+    /// peek from the position-preservation gate, so peek drift fell
+    /// through to the batch fresh-inject path (`emit_peek_chain`) which
+    /// inserts before the chain's terminal `~` — relocating the drifted
+    /// block to the tail. `canonicalize_marker_section` now strips and
+    /// re-emits all active grafts in canonical order regardless of
+    /// marker type.
     ///
-    /// Test shape: drift the FIRST graft of a 3-graft chain.
-    /// Reproduces the post-mortem's settle-graft peek migration
-    /// (line 101 → 113) at HARD-REV-SWAP-GATE.
+    /// Test shape: drift the FIRST graft of a 3-graft chain — the
+    /// settle-graft peek-migration scenario.
     #[test]
     fn peek_drift_reinject_preserves_block_position() {
         let mut alpha = synthetic_graft("alpha", 10);
@@ -1413,8 +1410,8 @@ mod tests {
         assert!(
             pos(&after_drift, "alpha") < pos(&after_drift, "beta"),
             "drift re-injection must preserve order at the peek marker: \
-             alpha:peek still precedes beta:peek. HARD-BUG-2 currently \
-             relocates the drifted peek block to the chain tail."
+             alpha:peek still precedes beta:peek. An earlier path \
+             relocated the drifted peek block to the chain tail."
         );
         assert!(
             pos(&after_drift, "beta") < pos(&after_drift, "gamma"),
@@ -1424,15 +1421,15 @@ mod tests {
         let (after_revert, _) = inject(&after_drift, &[alpha, beta, gamma]).unwrap();
         assert_eq!(
             after_revert, composed,
-            "peek drift-then-revert is byte-identical (HARD-BUG-2 invariant)"
+            "peek drift-then-revert is byte-identical (drift round-trip invariant)"
         );
     }
 
-    /// RH2 HARD-BUG-3: dropping a graft and re-adding it currently lands
-    /// the re-injected block at marker_idx+1 (position 1 of each marker
-    /// section), displacing any other graft blocks below the marker.
-    /// After the canonical-re-emit refactor, the final layout is a pure
-    /// function of the active graft set and drop+readd is byte-identical.
+    /// Dropping a graft and re-adding it must not land the re-injected
+    /// block at marker_idx+1 (position 1 of each marker section),
+    /// displacing other graft blocks below the marker. With the
+    /// canonical-re-emit strategy, the final layout is a pure function
+    /// of the active graft set and drop+readd is byte-identical.
     #[test]
     fn drop_readd_preserves_position_byte_identical() {
         let alpha = synthetic_graft("alpha", 10);
@@ -1451,17 +1448,15 @@ mod tests {
         let (after_readd, _) = inject(&after_drop, &[alpha, beta, gamma]).unwrap();
         assert_eq!(
             after_readd, composed,
-            "drop+readd is byte-identical (HARD-BUG-3 invariant). \
-             Pre-fix the re-added beta lands at marker_idx+1 in each \
-             section instead of between alpha and gamma."
+            "drop+readd is byte-identical. An earlier path re-added \
+             beta at marker_idx+1 in each section instead of between \
+             alpha and gamma."
         );
     }
 
-    /// RH2 HARD-BUG-3 cross-marker scenario: matches the post-mortem's
-    /// HARD-REV-IDEMPOTENCE-CHAIN sequence with four grafts. The byte-
-    /// identical assertion catches both the direct (re-added graft
-    /// position) and the collateral (other grafts moving) symptoms in a
-    /// single check.
+    /// Cross-marker drop+readd with four grafts. The byte-identical
+    /// assertion catches both the direct (re-added graft position) and
+    /// the collateral (other grafts moving) symptoms in a single check.
     #[test]
     fn cross_marker_drop_readd_no_collateral_movement() {
         let a = synthetic_graft("aaa", 10);
@@ -1480,9 +1475,8 @@ mod tests {
         assert_eq!(
             after_readd, composed,
             "drop+readd cycle (4 grafts) is byte-identical. \
-             Catches the HARD-BUG-3 collateral-movement symptom — \
-             the post-mortem's `log-graft jumps to position 1 even \
-             though only validate was re-added` bug."
+             Catches the collateral-movement symptom — a graft jumping \
+             to position 1 even though a different graft was re-added."
         );
     }
     /// Scaffold + a domain `%set` arm that binds narrowly. Used to

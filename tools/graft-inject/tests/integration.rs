@@ -1,9 +1,9 @@
-//! End-to-end four-graft integration test (Phase 11).
+//! End-to-end four-graft integration test.
 //!
 //! Composes `[settle-graft, mint-graft, guard-graft, forge-graft]` on
 //! top of the bare `templates/app.hoon` scaffold, compiles the
 //! kernel, boots it through `vesl-test`, and exercises every
-//! primitive the plan treats as in-scope for PARAMETIZATION:
+//! primitive in the composed kernel:
 //!
 //!   * settle-graft: the full 7-test standard suite — register /
 //!     duplicate-register / verify / register-b / settle /
@@ -90,8 +90,7 @@ async fn four_graft_end_to_end() -> Result<()> {
     // ---------------------------------------------------------------
     // guard-graft: register the same root, then check a valid leaf.
     // The cross-graft peek confirms guard stored the same root mint
-    // committed — the unified-hull convention from the plan's
-    // Architecture section.
+    // committed — the unified-hull convention.
     // ---------------------------------------------------------------
     let tags = harness
         .poke_slab(build_guard_register_poke(DOMAIN_HULL, &mint_root))

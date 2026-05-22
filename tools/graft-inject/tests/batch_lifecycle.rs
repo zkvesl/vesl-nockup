@@ -1,4 +1,4 @@
-//! Batch-graft lifecycle integration test (Phase 03e P3e.1).
+//! Batch-graft lifecycle integration test.
 //!
 //! Composes a kernel from `[settle-graft, batch-graft]`, compiles
 //! via `hoonc`, boots through `vesl-test`, and exercises the

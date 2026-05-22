@@ -17,8 +17,8 @@
 //!   6. Peek `[%settle-registered hull=1 ~]` on the resumed app and
 //!      assert the stored root equals the pre-snapshot root.
 //!
-//! If this test passes, RM2's "does state from earlier profiles
-//! survive through composition changes?" question can finally be
+//! If this test passes, the "does state from an earlier composition
+//! survive through later composition changes?" question is
 //! exercised.
 
 mod fixtures;

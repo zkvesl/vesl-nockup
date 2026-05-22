@@ -1,9 +1,8 @@
 //! Gate catalog + `[graft.gates]` validation and application.
 //!
-//! Audit §3.2 extraction: pulls the gate-specific validators and the
-//! poke-body rewriter out of the pre-split monolith. The catalog itself
-//! (`TIER_1A_GATES`) lives here so adding a Tier 1b gate is a single-
-//! file change.
+//! Holds the gate-specific validators and the poke-body rewriter. The
+//! catalog itself (`TIER_1A_GATES`) lives here so adding a Tier 1b gate
+//! is a single-file change.
 
 use anyhow::{Result, bail};
 use std::path::Path;
@@ -106,7 +105,7 @@ pub(crate) const DEFAULT_HASH_GATE_BLOCK: &str = "\
 ///   ==
 /// ```
 ///
-/// OVERVIEW.md §Out-of-scope keeps `gate-chain` AND-only in v1.
+/// `gate-chain` is AND-only in v1.
 ///
 /// If the manifest declares `[graft.gates]` but the poke body doesn't
 /// contain the default hash-gate block, that's a mismatch worth flagging

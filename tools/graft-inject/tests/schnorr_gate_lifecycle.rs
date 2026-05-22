@@ -1,13 +1,13 @@
-//! Schnorr-gate lifecycle integration test (R2-03B).
+//! Schnorr-gate lifecycle integration test.
 //!
-//! Closes R2-03's deferred success criterion #4: compose a kernel with
+//! Compose a kernel with
 //! `[graft.gates] gate = "sig-verify-schnorr"`, compile it via hoonc,
 //! boot it through `vesl-test`, sign a 32-byte message with the
 //! Cheetah-Schnorr signing path, settle-note via the schnorr poke
 //! builder, and assert `%settle-noted` with a matching expected-root.
 //!
-//! Pre-R2-03B the gate's `(hash-hashable:tip5 leaf+data)` digest crashed
-//! on any payload over ~7 bytes, so this happy path was unreachable.
+//! An earlier `(hash-hashable:tip5 leaf+data)` digest crashed on any
+//! payload over ~7 bytes, so this happy path was unreachable.
 //! Verifies the chunked `hash-leaf-digest` reduction the fix put in
 //! place: the signing helper and the gate must agree on a digest for
 //! arbitrary `&[u8]` so the signature verifies.

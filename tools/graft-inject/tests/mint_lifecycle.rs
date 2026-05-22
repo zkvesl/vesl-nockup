@@ -1,11 +1,11 @@
-//! Mint-graft lifecycle integration test (Phase 7b).
+//! Mint-graft lifecycle integration test.
 //!
 //! Composes a kernel from `[settle-graft, mint-graft]`, compiles it with
 //! `hoonc`, boots it through `vesl-test`, and exercises the full
 //! mint-commit / peek flow. Runs end-to-end in ~30-50s (the bulk is
 //! `hoonc`); treat accordingly in CI.
 //!
-//! Phase 11 factored the scratch/compose/peek machinery into
+//! The scratch/compose/peek machinery lives in
 //! `tests/fixtures/`. The assertions below are the only thing that
 //! stays test-local.
 

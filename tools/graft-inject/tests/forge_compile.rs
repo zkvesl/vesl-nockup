@@ -1,4 +1,4 @@
-//! Forge-graft compile-only test (Phase 9b).
+//! Forge-graft compile-only test.
 //!
 //! The purpose here is narrow: prove that a kernel composed from ALL
 //! FOUR grafts — vesl + mint + guard + forge — actually compiles to
@@ -16,8 +16,8 @@
 //! Regression check: mint-commit still dispatches on the same
 //! composed kernel, so adding forge doesn't clobber earlier grafts.
 //!
-//! Phase 11 factored the scratch/compose machinery into
-//! `tests/fixtures/`; this test now reads as the shape-check it is.
+//! The scratch/compose machinery lives in `tests/fixtures/`; this
+//! test is just the shape-check.
 
 mod fixtures;
 

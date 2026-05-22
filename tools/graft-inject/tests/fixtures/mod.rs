@@ -7,8 +7,7 @@
 //! against the scratch app with a chosen graft set; (3) run `hoonc`
 //! and return the path to the produced `out.jam`. This module
 //! packages that sequence as [`compose_and_compile`], plus a handful
-//! of helpers that were duplicated across the three lifecycle tests
-//! before Phase 11 extracted them.
+//! of helpers that were once duplicated across the lifecycle tests.
 //!
 //! Peek-path helpers (`peek_hull_value`, `peek_keyed_value`,
 //! `peek_keyless_atom`) are thin async wrappers over `vesl_core::peek`'s
@@ -95,7 +94,7 @@ pub fn compose_and_compile(scratch_subdir: &str, grafts: &[&str]) -> Result<Path
 
 /// Synthetic graft fixture inlined into a test's scratch hoon/lib/.
 ///
-/// Phase 03b prelude/postlude integration tests need synthetic grafts
+/// The prelude/postlude integration tests need synthetic grafts
 /// that exist only for the duration of the test — writing them into
 /// the shared `vesl-nockup/hoon/lib/` would pollute the discovery tree
 /// for every other test. This struct lets a test ship its own
@@ -125,10 +124,9 @@ pub struct ManifestOverride<'a> {
 /// into the scratch's `hoon/lib/`, then hoonc-compile it.
 ///
 /// Use this when a test needs a graft that doesn't (and shouldn't)
-/// live in the shared discovery tree — e.g. the Phase 03b prelude /
-/// postlude tests, which exercise the new graft-inject markers via
-/// minimal synthetic grafts rather than waiting on real Phase 03c
-/// consumers (validate / fsm) to land.
+/// live in the shared discovery tree — e.g. the prelude / postlude
+/// tests, which exercise the prelude/postlude graft-inject markers
+/// via minimal synthetic grafts rather than real consumers.
 pub fn compose_and_compile_with_extras(
     scratch_subdir: &str,
     grafts: &[&str],

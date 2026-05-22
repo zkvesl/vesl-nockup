@@ -1,4 +1,4 @@
-//! Validate-graft lifecycle integration test (Phase 03c P3c.1).
+//! Validate-graft lifecycle integration test.
 //!
 //! Composes a kernel from `[settle-graft, validate-graft]`, compiles
 //! via `hoonc`, boots through `vesl-test`, and exercises the

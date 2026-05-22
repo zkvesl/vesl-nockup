@@ -1,11 +1,11 @@
 //! Typed effect-union, load-defaults overlay, and kernel-cause-tags
 //! codegen passes.
 //!
-//! Audit §3.2 extraction. These passes synthesize Hoon (or Rust, in the
-//! cause-tags case) at codegen-owned banner pairs in the composed
-//! source. The lint suite consumes their report variant lists and
-//! rendered output by reference — there's no hidden state coupling, so
-//! the two layers split cleanly.
+//! These passes synthesize Hoon (or Rust, in the cause-tags case) at
+//! codegen-owned banner pairs in the composed source. The lint suite
+//! consumes their report variant lists and rendered output by
+//! reference — there's no hidden state coupling, so the two layers
+//! split cleanly.
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -39,7 +39,7 @@ pub(crate) struct CodegenReport {
     pub(crate) variants: Vec<String>,
 }
 
-/// RM4 §1 v0.2: outcome of the load-defaults codegen pass. Mirrors
+/// Outcome of the load-defaults codegen pass. Mirrors
 /// `CodegenReport` but tracks the `++load` overlay block separately so
 /// the `print_report` line can call out the schema-migration scope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -236,7 +236,7 @@ pub(crate) fn render_effect_union_block(indent: &str, variants: &[String]) -> Ve
     out
 }
 
-/// RM4 §1 v0.2: synthesize the load-defaults overlay beneath the
+/// Synthesize the load-defaults overlay beneath the
 /// `nockup:load-defaults` marker. Same REPLACE-IF-PRESENT shape as
 /// `emit_effect_union` — the codegen owns everything between its
 /// banner pair, and re-running with the same graft set is byte-identical.
@@ -459,10 +459,10 @@ pub(crate) fn is_bare_effect_open_type(s: &str) -> bool {
 /// `KERNEL_CAUSE_TAGS: &[&str]` slice plus an `assert_kernel_cause_tag!`
 /// macro that compile-time checks tags against the slice.
 ///
-/// Closes RM1 HARD-BUG-3 (kernel rename leaves driver pointing at a
-/// dead tag) and HARD-FRICTION-4 (driver tag with no kernel arm) by
-/// shifting the failure left from "no effects observed at runtime" to
-/// `cargo build` errors.
+/// Shifts two failures left to `cargo build` errors: a kernel rename
+/// that leaves the driver pointing at a dead tag, and a driver tag with
+/// no matching kernel arm — both otherwise surface only as "no effects
+/// observed at runtime".
 pub(crate) fn run_codegen_kernel_cause_tags(
     path: &Path,
     lib_dir: &Path,
@@ -486,7 +486,7 @@ pub(crate) fn run_codegen_kernel_cause_tags(
     let lines: Vec<String> = source.lines().map(String::from).collect();
 
     // Collect tags by walking the literal `+$ cause` definition in
-    // `path` (RM2 §2.2). Each member is either:
+    // `path`. Each member is either:
     //   * an inline `[%<tag> ...]` variant — emit `<tag>` directly
     //     (this captures domain causes — the previously-missed class
     //     that left `assert_kernel_cause_tag!("submit-artifact")` etc.
@@ -497,8 +497,8 @@ pub(crate) fn run_codegen_kernel_cause_tags(
     //     poke-arm tags via `extract_graft_cause_tags`.
     //
     // Inactive grafts (manifests under lib_dir whose cause type is not
-    // referenced from the union) contribute nothing, closing RM2
-    // NEW-FRICTION-1 (false-positive tags from placeholder grafts).
+    // referenced from the union) contribute nothing, so a placeholder
+    // graft can't inject false-positive tags.
     let grafts = if lib_dir.is_dir() {
         discover_grafts(lib_dir)
             .with_context(|| format!("discovering grafts under {}", lib_dir.display()))?
@@ -939,7 +939,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // load-defaults overlay codegen (RM4 §1 v0.2)
+    // load-defaults overlay codegen
     // ---------------------------------------------------------------
 
     #[test]

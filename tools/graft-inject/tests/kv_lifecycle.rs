@@ -1,4 +1,4 @@
-//! KV-graft lifecycle integration test (Phase 02 P2.1).
+//! KV-graft lifecycle integration test.
 //!
 //! Composes a kernel from `[settle-graft, kv-graft]`, compiles it
 //! through `hoonc`, boots it via `vesl-test`, and exercises the
@@ -7,11 +7,11 @@
 //! The bare scaffold's `versioned-state` is empty without a graft
 //! providing state; `settle-graft` rides along here purely so the
 //! composed kernel has a non-trivial state slot to graft `kv-state`
-//! beside. P2.6 audit covers a state-only smoke composition.
+//! beside. The full-catalog test covers a state-only smoke composition.
 //!
 //! No hostile-input case: kv-graft has no `cue payload` site (keys
 //! and values arrive as typed atoms in the cause cell). The C1
-//! mule-wrap regression-guard pattern lands with queue-graft (P2.3).
+//! mule-wrap regression-guard pattern lands with queue-graft.
 
 mod fixtures;
 

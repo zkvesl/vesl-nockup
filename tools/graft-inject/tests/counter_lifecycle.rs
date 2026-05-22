@@ -1,12 +1,11 @@
-//! Counter-graft lifecycle integration test (Phase 02 P2.2).
+//! Counter-graft lifecycle integration test.
 //!
 //! Composes a kernel from `[settle-graft, kv-graft, counter-graft]`,
 //! compiles via `hoonc`, boots through `vesl-test`, and exercises
 //! increment/reset/set/saturation paths.
 //!
 //! No hostile-input case: counter-graft has no `cue payload` site.
-//! The C1 mule-wrap regression-guard pattern lands with queue-graft
-//! (P2.3).
+//! The C1 mule-wrap regression-guard pattern lands with queue-graft.
 
 mod fixtures;
 

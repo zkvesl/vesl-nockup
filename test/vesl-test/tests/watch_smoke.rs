@@ -1,4 +1,4 @@
-//! Smoke test for `vesl-test watch` (RM4 §6 acceptance #6).
+//! Smoke test for `vesl-test watch`.
 //!
 //! Boots a kernel composed from `settle-graft`, drives the watch
 //! module's `drive()` loop with three settle-register pokes piped

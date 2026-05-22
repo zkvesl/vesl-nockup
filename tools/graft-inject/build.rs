@@ -2,8 +2,8 @@
 //! at build time. The runtime uses this to detect when the installed
 //! binary has fallen behind source — see `warn_if_stale` in `main.rs`.
 //!
-//! RH1 step 3 (HARD-FRICTION-1): the previous metric was `git log -1
-//! --format=%H -- src` (latest commit touching src/). In a working
+//! An earlier metric was `git log -1 --format=%H -- src` (latest
+//! commit touching src/). In a working
 //! checkout where source has advanced past the binary's git context,
 //! that fired the warning on every invocation. A content-hash compares
 //! actual bytes, so the warning fires when (and only when) the source
@@ -16,7 +16,7 @@
 //!
 //! In any of those cases the embedded hash is `unknown` and the runtime
 //! check no-ops. The check only fires for installs that happened from
-//! a normal source checkout, which is the dogfood scenario.
+//! a normal source checkout.
 
 use sha2::{Digest, Sha256};
 use std::fs;

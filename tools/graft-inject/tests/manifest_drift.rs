@@ -1,16 +1,16 @@
-//! R5/A2 — manifest-drift detection in graft-inject's idempotence layer.
+//! Manifest-drift detection in graft-inject's idempotence layer.
 //!
-//! Pre-A2, graft-inject treated banner-pair presence as the skip signal:
+//! An earlier graft-inject treated banner-pair presence as the skip signal:
 //! re-running `--apply` after editing a manifest's TOML (e.g. swapping
 //! `[graft.gates] gate = "sig-verify-schnorr"` to `"sig-verify-ed25519"`)
-//! left the old composed body in place. The corrected behavior — landed
-//! 2026-05-04 in `00_R5_RESOLUTION.md` §A2 — embeds the manifest sha256
+//! left the old composed body in place. The corrected behavior embeds
+//! the manifest sha256
 //! in each begin banner and strips/reinjects the pair when the embedded
 //! prefix doesn't match the current manifest digest.
 //!
 //! These tests run graft-inject directly (no hoonc compile) against a
 //! tmpdir scratch tree built from the repo's canonical `hoon/lib`,
-//! `templates/app.hoon`, etc. They focus on what A2 changes: banner
+//! `templates/app.hoon`, etc. They focus on the change: banner
 //! emission and the strip-and-reinject path. Compile-time correctness
 //! of the produced kernels is exercised by the `*_lifecycle.rs` tests.
 
@@ -56,7 +56,7 @@ fn run_graft_inject(scratch: &std::path::Path, grafts: &str) -> Result<std::proc
 }
 
 /// Extract the `sha256:<hex>` token from a begin banner line. Returns
-/// `None` for legacy (pre-A2) banners that don't carry one.
+/// `None` for legacy banners that don't carry one.
 fn banner_sha(line: &str) -> Option<String> {
     line.split(" sha256:").nth(1).map(|tail| {
         tail.split_whitespace()
@@ -95,11 +95,11 @@ fn manifest_drift_triggers_reinjection() -> Result<()> {
     let initial_banner = first_settle_imports_banner(&initial_app)
         .expect("first inject must emit a settle-graft imports banner");
     let initial_sha = banner_sha(&initial_banner)
-        .expect("R5/A2: first inject must emit a banner with ` sha256:<hex>` suffix");
+        .expect("first inject must emit a banner with ` sha256:<hex>` suffix");
     assert_eq!(
         initial_sha.len(),
         12,
-        "R5/A2: short sha256 prefix is exactly 12 hex chars"
+        "short sha256 prefix is exactly 12 hex chars"
     );
 
     // Drift the manifest by appending a comment. graft-inject's sha256
@@ -107,7 +107,7 @@ fn manifest_drift_triggers_reinjection() -> Result<()> {
     let original_manifest = fs::read_to_string(&manifest)?;
     fs::write(
         &manifest,
-        format!("{original_manifest}\n# R5/A2 drift-test cookie\n"),
+        format!("{original_manifest}\n# drift-test cookie\n"),
     )?;
 
     let drift = run_graft_inject(&scratch, "settle-graft")?;
@@ -165,9 +165,9 @@ fn unchanged_manifest_skips_silently() -> Result<()> {
     Ok(())
 }
 
-/// Legacy banner format (pre-A2, no `sha256:` suffix) must trigger a
-/// one-time force-reinject so the new format gets stamped. Simulates
-/// upgrading a project that was last composed with pre-A2 graft-inject.
+/// Legacy banner format (no `sha256:` suffix) must trigger a one-time
+/// force-reinject so the new format gets stamped. Simulates upgrading
+/// a project that was last composed with an older graft-inject.
 #[test]
 fn legacy_banner_force_reinjects_once() -> Result<()> {
     let scratch = setup_scratch("manifest_drift_legacy_banner")?;
@@ -177,7 +177,7 @@ fn legacy_banner_force_reinjects_once() -> Result<()> {
     let modern = fs::read_to_string(&app_hoon)?;
 
     // Strip every ` sha256:<hex>` suffix from begin banners to simulate
-    // a project last composed with pre-A2 graft-inject.
+    // a project last composed with an older graft-inject.
     let mut legacy: String = modern
         .lines()
         .map(|l| match l.split_once(":begin sha256:") {
@@ -213,12 +213,11 @@ fn legacy_banner_force_reinjects_once() -> Result<()> {
     Ok(())
 }
 
-/// RH2 HARD-BUG-3 binary-level regression guard: drop a graft from the
+/// Binary-level drop+readd regression guard: drop a graft from the
 /// active set and re-add it on the next run; the third run's
-/// `app.hoon` must be byte-identical to the first. Mirrors the
-/// post-mortem's HARD-REV-IDEMPOTENCE-CHAIN scenario at the CLI seam
-/// — the unit test of the same shape exercises `inject()` directly,
-/// this one hits the spawned binary against real graft manifests.
+/// `app.hoon` must be byte-identical to the first. The unit test of
+/// the same shape exercises `inject()` directly; this one hits the
+/// spawned binary against real graft manifests.
 #[test]
 fn drop_readd_round_trip_byte_identity() -> Result<()> {
     let scratch = setup_scratch("rh2_drop_readd_byte_identity")?;
@@ -246,7 +245,7 @@ fn drop_readd_round_trip_byte_identity() -> Result<()> {
     assert_eq!(
         baseline, final_state,
         "drop+readd round trip must leave app.hoon byte-identical \
-         (RH2 HARD-BUG-3 invariant)"
+         (byte-identity invariant)"
     );
     Ok(())
 }

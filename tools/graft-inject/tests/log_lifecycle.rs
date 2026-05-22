@@ -1,9 +1,9 @@
-//! Log-graft lifecycle integration test (Phase 03 P3a.2).
+//! Log-graft lifecycle integration test.
 //!
 //! Composes a kernel from `[settle-graft, log-graft]`, compiles via
 //! `hoonc`, boots through `vesl-test`, and exercises the append-only
 //! audit trail plus the C1 hostile-input regression guard. log-graft
-//! is Phase 03's first cue site, so this test is the C1 regression
+//! is the first cue site here, so this test is the C1 regression
 //! analog of `queue_lifecycle.rs` for the behavior-graft band.
 //!
 //! What this test pins:

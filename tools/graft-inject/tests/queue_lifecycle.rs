@@ -1,15 +1,15 @@
-//! Queue-graft lifecycle integration test (Phase 02 P2.3).
+//! Queue-graft lifecycle integration test.
 //!
 //! Composes a kernel from
 //! `[settle-graft, kv-graft, counter-graft, queue-graft]`, compiles
 //! via `hoonc`, boots through `vesl-test`, and exercises
 //! push/pop/clear plus the C1 hostile-input regression guard.
 //!
-//! This is the first lifecycle test in Phase 02 with a hostile-input
+//! This is the first lifecycle test with a hostile-input
 //! case (queue-graft is the first state-graft to cue caller-supplied
 //! bytes inside its poke body). The pattern set here — send raw
 //! malformed jam, assert the kernel emits a typed error or accepts
-//! it, never panics — repeats in P2.5 (registry-graft).
+//! it, never panics — repeats for registry-graft.
 
 mod fixtures;
 

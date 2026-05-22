@@ -1,7 +1,7 @@
 //! Shared test helpers + scaffold constants for the crate's
 //! `#[cfg(test)]` modules.
 //!
-//! The audit §3.2 split scattered tests across `cli.rs`, `codegen.rs`,
+//! The per-module test blocks are scattered across `cli.rs`, `codegen.rs`,
 //! `gates.rs`, `inject.rs`, `lint.rs`, and `manifest.rs`. The helpers
 //! and Hoon scaffolds those tests rely on used to live in
 //! `lib.rs::mod tests`; this module consolidates them so each
@@ -134,7 +134,7 @@ pub(crate) const SCAFFOLD_NARROW_BINDING: &str = "\
 ";
 
 /// Scaffold with a `nockup:load-defaults` marker followed by the
-/// legacy `old-state` placeholder. Phase 04 load-defaults marker tests:
+/// legacy `old-state` placeholder. Load-defaults marker tests:
 /// codegen replaces it with a `=/  defaults  ^*(versioned-state)` +
 /// `%_  defaults  ...  ==` overlay block.
 pub(crate) const SCAFFOLD_WITH_LOAD_DEFAULTS_MARKER: &str = "\

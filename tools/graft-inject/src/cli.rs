@@ -2,7 +2,7 @@
 //! dispatch, and per-subcommand drivers (`run_inject`, `run_rename_kernel`,
 //! the lint / codegen pass-throughs).
 //!
-//! Audit §3.2 extraction. The shared `Cli` flag-set carries the
+//! The shared `Cli` flag-set carries the
 //! legacy-bare-invocation path; the `Command::*` variants are the
 //! modern subcommand surface. `dispatch` reifies each subcommand into
 //! the legacy shape and feeds it to `run_inject`, keeping the inject
@@ -99,13 +99,13 @@ pub(crate) struct Cli {
     json: bool,
 
     /// Deprecated alias of the default preview-only behavior. Kept for
-    /// script compatibility through the AUDIT 2026-04-19 H-10 transition.
+    /// script compatibility.
     /// Prints a one-line deprecation note to stderr and otherwise does
     /// nothing beyond the default.
     #[arg(long)]
     dry_run: bool,
 
-    /// Write the composed output to PATH. AUDIT 2026-04-19 H-10: the
+    /// Write the composed output to PATH. The
     /// default is preview-only — stdout gets the composed Hoon, stderr
     /// gets the per-manifest sha256 summary, disk is untouched. This
     /// flag is the explicit "yes, compose these manifests into kernel
@@ -267,9 +267,9 @@ pub(crate) enum CodegenTarget {
     /// composed cause $%. Pairs with the `assert_kernel_cause_tag!`
     /// macro the same file emits, so driver-side
     /// `b"<tag>"` literals are checked at compile time against the
-    /// kernel's accepted tags. Closes RM1 HARD-BUG-3 (kernel rename
-    /// invisible to driver) and HARD-FRICTION-4 (driver tag with no
-    /// kernel arm).
+    /// kernel's accepted tags. Catches a kernel rename that leaves the
+    /// driver pointing at a dead tag, and a driver tag with no kernel
+    /// arm.
     KernelCauseTags {
         /// Target Hoon source file (app.hoon with the grafts already
         /// composed, or the canonical scaffold for codegen-only flows).
@@ -295,8 +295,8 @@ pub(crate) enum CodegenTarget {
     },
 }
 
-/// Schema item for `--list --json`. Stable across the v3 plan's lifespan;
-/// version bumps append fields, never reshape existing ones. Documented
+/// Schema item for `--list --json`. Stable: version bumps append
+/// fields, never reshape existing ones. Documented
 /// in vesl/docs/graft-manifest.md (`--list --json schema`).
 #[derive(Debug, Serialize)]
 pub(crate) struct GraftSummary<'a> {
@@ -306,9 +306,8 @@ pub(crate) struct GraftSummary<'a> {
     pub(crate) blocks: Vec<&'static str>,
     pub(crate) applicable: usize,
     pub(crate) deferred: bool,
-    /// Hex sha256 of the manifest's raw TOML bytes. AUDIT 2026-04-19
-    /// H-10: lets supply-chain reviewers pin expected digests without
-    /// re-reading the file.
+    /// Hex sha256 of the manifest's raw TOML bytes. Lets supply-chain
+    /// reviewers pin expected digests without re-reading the file.
     pub(crate) sha256: &'a str,
     /// Per-graft `[graft.types]` table contents, surfaced for tooling
     /// that wants to know which grafts contribute to the typed effect
@@ -659,7 +658,7 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
     let path = cli.path.as_ref().ok_or_else(|| {
         anyhow!("missing target path (or use --list to enumerate discovered grafts)")
     })?;
-    // AUDIT 2026-04-19 L-19: require the target to be a Hoon source
+    // Require the target to be a Hoon source
     // file. A mistyped argument (e.g. `graft-inject README.md`) would
     // otherwise inject Hoon into whatever happened to contain a marker
     // pattern — useful only for shooting feet.
@@ -698,7 +697,7 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
         );
     }
 
-    // AUDIT 2026-04-19 H-10: preview by default, `--apply` to write. The
+    // Preview by default, `--apply` to write. The
     // preview prints composed Hoon to stdout and a sha256 summary to
     // stderr so reviewers can see both the exact output and which
     // manifests produced it before any bytes hit disk.
@@ -803,7 +802,7 @@ pub(crate) fn emit_list(grafts: &[Graft], json: bool) {
 /// Print the per-graft injection report to stderr. stderr (not stdout)
 /// so preview users can pipe the rendered file out cleanly. Includes the
 /// per-manifest sha256 so supply-chain reviewers can confirm what's
-/// about to be composed (AUDIT 2026-04-19 H-10).
+/// about to be composed.
 pub(crate) fn print_report(path: &Path, report: &InjectReport, grafts: &[Graft], applied: bool) {
     eprintln!("graft-inject: {}", path.display());
     let sha_by_name: HashMap<&str, &str> = grafts
@@ -840,7 +839,7 @@ pub(crate) fn print_report(path: &Path, report: &InjectReport, grafts: &[Graft],
             summary.push_str(&format!("; skipped {}", skipped_labels.join(", ")));
         }
         if !g.pruned.is_empty() {
-            // RH1 step 1: a graft can both be in the active set AND have
+            // A graft can both be in the active set AND have
             // had stale orphan markers (from a partial prior run). Surface
             // both states on the same line.
             let pruned_labels: Vec<&str> = g.pruned.iter().map(|m| m.label()).collect();
@@ -848,7 +847,7 @@ pub(crate) fn print_report(path: &Path, report: &InjectReport, grafts: &[Graft],
         }
         eprintln!("{summary}");
     }
-    // RH1 step 1: orphan grafts (banner pairs present in source but graft
+    // Orphan grafts (banner pairs present in source but graft
     // dropped from --grafts) carry no manifest, so they live on a separate
     // carrier. Surface them so the user sees the drop confirmed.
     for g in &report.pruned_grafts {
@@ -1043,7 +1042,7 @@ mod tests {
 
     #[test]
     fn default_does_not_write() {
-        // AUDIT 2026-04-19 H-10: the default is preview-only. Without
+        // The default is preview-only. Without
         // --apply, the file on disk must be unchanged regardless of what
         // `graft-inject` composed into stdout.
         let dir = tempdir_with_two_manifests("default_preview");
@@ -1063,7 +1062,7 @@ mod tests {
 
     #[test]
     fn apply_writes() {
-        // --apply is the explicit write-enabler post-AUDIT 2026-04-19 H-10.
+        // --apply is the explicit write-enabler.
         let dir = tempdir_with_two_manifests("apply_writes");
         let target = dir.join("app.hoon");
         fs::write(&target, BARE_SCAFFOLD).unwrap();
@@ -1105,7 +1104,7 @@ mod tests {
         // Schema (documented in vesl/docs/graft-manifest.md):
         //   [{ name, version, priority, blocks: [...], applicable, deferred, sha256 }]
         //
-        // `sha256` was added per AUDIT 2026-04-19 H-10 — additive per the
+        // `sha256` is additive per the
         // "append never reshape" contract this schema keeps.
         let grafts = settle_only_grafts();
         let summaries: Vec<GraftSummary> =

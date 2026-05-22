@@ -1,8 +1,7 @@
 //! Manifest schema, TOML loader, and non-gate validators.
 //!
-//! Audit §3.2 extraction: items moved verbatim from the pre-split
-//! lib.rs (formerly main.rs). Gate-specific validators stay in the
-//! crate root until step 5 promotes them into `gates.rs`.
+//! Items moved verbatim from the pre-split lib.rs (formerly main.rs).
+//! Gate-specific validators live in `gates.rs`.
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
@@ -53,8 +52,8 @@ pub(crate) struct Graft {
     pub(crate) schema_version: Option<u32>,
     /// Hex sha256 of the raw TOML bytes. Populated by `load_manifest` at
     /// discovery time so the composer can surface per-manifest digests
-    /// in the preview report and `--list --json` output (AUDIT 2026-04-19
-    /// H-10 supply-chain surface).
+    /// in the preview report and `--list --json` output, a supply-chain
+    /// review surface.
     #[serde(skip, default)]
     pub(crate) sha256: String,
 }
@@ -178,7 +177,7 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 /// silently. `after` hints are soft: a hint to a graft that isn't in the
 /// discovered set is logged on stderr and ignored (priority-based ordering
 /// still applies); see `cli.md` §"Priority lattice" for the contract.
-/// Rejects duplicate graft names (AUDIT 2026-04-19 H-11), and rejects
+/// Rejects duplicate graft names, and rejects
 /// graft names that don't match the kebab-case shape the schema documents.
 /// Also validates `[graft.gates]` (C2) and applies any gate selection to
 /// the manifest's poke + imports blocks.
@@ -367,7 +366,7 @@ pub(crate) fn build_chain_block(chain: &[String]) -> String {
 
 /// Atomic write: tempfile in the target's directory, fsync, rename.
 ///
-/// AUDIT 2026-04-19 M-24: the prior direct `fs::write` left `app.hoon`
+/// A prior direct `fs::write` left `app.hoon`
 /// zero-length or partial if the process died mid-write (SIGKILL, power
 /// loss, disk full). Tempfile + rename on the same filesystem gives
 /// us atomic replacement; an fsync between write and rename ensures
@@ -432,7 +431,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    // ---------- AUDIT 2026-04-19 H-11..H-14 regressions ----------
+    // ---------- duplicate-name and invalid-name guards ----------
 
     /// H-11: two manifests claiming the same `name` must hard-error at
     /// discovery time, naming both source paths. The pre-audit loader let

@@ -1,9 +1,8 @@
 //! `watch` — REPL-style live-trace tool. Boots a kernel from `out.jam`,
 //! runs `app.run()` in the background, subscribes to its
 //! `effect_broadcast`, and prints one structured row per kernel event
-//! while reading poke/peek commands from stdin. Closes the
-//! EFFECT-OBSERVATION friction class flagged in
-//! `vesl-nockup/.dev/debug/log-meta/RM4/round.md` §"Tool gap analysis".
+//! while reading poke/peek commands from stdin — a live view of
+//! kernel effects that a plain test run doesn't surface.
 //!
 //! Wired into the `vesl-test` bin as the `Watch` subcommand
 //! (`vesl-test watch <out.jam>`); see `src/bin/vesl_test.rs::run_watch`.
@@ -39,8 +38,8 @@ use crate::{SlogWarning, clear_capture, drain_capture, init_capture_tracing};
 // =============================================================================
 
 /// Per-event drain window (ms). After a poke acks, drain the broadcast
-/// for at most this many ms before rendering. RM4 §6 acceptance #2
-/// bounds the visible-event latency at 100 ms.
+/// for at most this many ms before rendering — bounding the
+/// visible-event latency at 100 ms.
 pub const DEFAULT_EFFECT_WINDOW_MS: u64 = 100;
 
 /// Watch configuration. Fields are public so the bin (clap-driven)

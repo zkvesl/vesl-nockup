@@ -7,7 +7,7 @@
 //!
 //! See `--help` for full CLI surface.
 //!
-//! Module map (audit §3.2 split, 2026-05-12):
+//! Module map:
 //!
 //! - [`manifest`] — `Graft` / `Block` schema, `load_manifest`,
 //!   `discover_grafts`, name + type validators.

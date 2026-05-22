@@ -9,7 +9,7 @@
 //! The catalog's transitive after-chain (settle ← mint ← guard ← forge
 //! ← kv ← counter ← queue ← rbac ← registry) makes the hard-error
 //! variant unusable for any cp'd subset that omits an early link;
-//! eight of nine R2 dogfood rounds hit it before the demotion.
+//! nearly every cp'd subset hit it before the demotion.
 //!
 //! Test runs `graft-inject --list --json` against a scratch lib/ with
 //! two synthetic manifests:

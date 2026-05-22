@@ -1,4 +1,4 @@
-//! Phase 02 audit checkpoint integration test.
+//! Full-catalog composition integration test.
 //!
 //! Composes commitment grafts (settle / mint / guard) alongside all
 //! five state grafts (kv / counter / queue / rbac / registry) into a

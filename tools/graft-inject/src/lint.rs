@@ -1,7 +1,7 @@
 //! Pre/post-inject lint suite: weld-friction, bare-tilde ambiguity,
 //! collision check, transitive imports, internal dupes.
 //!
-//! Audit §3.2 extraction. The lints are advisory passes — they read
+//! The lints are advisory passes — they read
 //! kernel source (line vec) and graft manifests, return finding lists,
 //! and surface them via stderr or a `LintReport` JSON shape. Codegen
 //! consumes a couple of helpers here (`CauseUnionMember`,
@@ -24,7 +24,7 @@ use crate::marker::Marker;
 
 /// Weld-friction lint.
 ///
-/// R5 dogfood (Profile G HULL_KEYED_KV) confirmed that the typed effect
+/// A real composition confirmed that the typed effect
 /// union does NOT auto-fix the cross-graft `weld` friction when the
 /// developer's domain arm binds narrowly:
 ///
@@ -40,7 +40,7 @@ use crate::marker::Marker;
 /// pointing at the zkvesl-docs §"Composing two graft arms in one
 /// domain cause" so the developer has a searchable handle.
 ///
-/// Findings are advisory — Pattern A (R4 backtick casts at the weld
+/// Findings are advisory — Pattern A (backtick casts at the weld
 /// site) still works as an escape hatch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct WeldLintFinding {
@@ -83,7 +83,7 @@ pub(crate) fn lint_weld_friction(lines: &[String], variants: &[String]) -> WeldL
         // (`graft-inject:effect-union:...`) are also skipped — those
         // bodies are synthesized, not user-written.
         if trimmed.starts_with("::") && trimmed.contains("graft-inject:") {
-            // Begin banners may carry a ` sha256:<hex>` suffix (R5/A2);
+            // Begin banners may carry a ` sha256:<hex>` suffix;
             // match on the `:begin` token regardless of suffix. End
             // banners are still suffix-free.
             if trimmed.contains(":begin ") || trimmed.ends_with(":begin") {
@@ -133,8 +133,8 @@ pub(crate) struct BareTildeLint {
 
 /// Pre-apply lint: bare-`~` ambiguity inside domain `?-` switch arms.
 ///
-/// RM1 HARD-BUG-2 (`.dev/debug/log-meta/RM1/B_to_C.md` §HARD-BUG-2)
-/// surfaced this: `find_last_bare_tilde` walks from the `nockup:peek`
+/// The bug this guards against: `find_last_bare_tilde` walks from
+/// the `nockup:peek`
 /// marker until the next `==` capturing the last `~`-only line as
 /// the peek-chain terminator. The next `==` is typically the
 /// `?-  -.u.act` close in the poke arm, so any bare-`~` line inside a
@@ -142,7 +142,7 @@ pub(crate) struct BareTildeLint {
 /// becomes the new "terminator" and graft-inject inserts the peek
 /// chain into the poke body — corrupting the file.
 ///
-/// RH2 step 2's canonical re-emit fix landed for the placement bugs
+/// The canonical re-emit fixed the placement bugs
 /// it targeted, but `emit_peek_chain` still anchors against
 /// `find_last_bare_tilde`. Until that anchor changes, the safest
 /// surface is a pre-apply lint that warns when the user's domain
@@ -159,8 +159,8 @@ pub(crate) fn lint_bare_tilde_ambiguity(lines: &[String]) -> BareTildeLint {
     // Anchor on the `?-  -.u.act` switch header. graft-inject's
     // `find_last_bare_tilde` would scan the same range from the
     // peek marker forward, so any domain arm body inside this
-    // switch that ends with bare `~` is the friction shape from
-    // RM1 HARD-BUG-2. The `nockup:poke` marker by itself isn't
+    // switch that ends with bare `~` is the friction shape this lint
+    // targets. The `nockup:poke` marker by itself isn't
     // enough — domain arms live BEFORE the marker (between the
     // switch open and the marker), so a forward-only scan from
     // the marker would miss them.
@@ -266,9 +266,7 @@ pub(crate) struct CollisionLint {
 
 /// Pre-apply lint: cross-graft and graft-vs-domain name collisions.
 ///
-/// RM1 META-COLLISION-1 (`.dev/debug/log-meta/RM1/E_to_F.md`),
-/// META-COLLISION-2 (`G_to_H.md`), and META-COLLISION-3 (`H_to_I.md`)
-/// surfaced two kinds of collision in cumulative-domain mode:
+/// Two kinds of collision can arise in cumulative-domain mode:
 /// - Cause-tag collisions: two grafts (or a graft and the domain)
 ///   declare the same `%<tag>` poke arm. The composed `?-` switch
 ///   has duplicate `%<tag>` arms; hoonc's exhaustiveness check
@@ -553,13 +551,12 @@ pub(crate) struct TransitiveImportLint {
 /// `.hoon` under `<hoon-root>/common/`. Report unsatisfied edges as
 /// HARD-LINT findings.
 ///
-/// Reproduces the empirical seed-A friction (`hoon/common/nock-prover.hoon
-/// → /# softed-constraints` after slim-cp): even though Profile A's
-/// app.hoon doesn't reach nock-prover transitively, hoonc parses
-/// hoon/common/ eagerly and silent-fails on the missing `/dat/` target.
-/// This lint surfaces the same edge before hoonc runs so the developer
-/// sees a clear "missing file at PATH" rather than hoonc's "no panic!"
-/// lie. See `vesl-nockup/.dev/debug/log-meta/RM2/seed-A.md` §DOC-GAP-1.
+/// Reproduces a real friction (`hoon/common/nock-prover.hoon → /#
+/// softed-constraints` after a slimmed copy): even though an app.hoon
+/// doesn't reach nock-prover transitively, hoonc parses hoon/common/
+/// eagerly and silent-fails on the missing `/dat/` target. This lint
+/// surfaces the same edge before hoonc runs so the developer sees a
+/// clear "missing file at PATH" rather than hoonc's "no panic!" lie.
 ///
 /// Resolution rules:
 /// - `/+ <name>`         → `<lib-dir>/<name>.hoon`
@@ -1014,12 +1011,12 @@ pub(crate) fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
         CollisionLint::default()
     };
 
-    // Transitive import walk (RM2 §1.1). Runs unconditionally — the
-    // seed-A friction fires when hoonc eager-parses hoon/common/, and
+    // Transitive import walk. Runs unconditionally — the silent-fail
+    // fires when hoonc eager-parses hoon/common/, and
     // the lint needs to mirror that scope to be useful.
     let transitive_imports = lint_transitive_imports(path, lib_dir);
 
-    // Internal-dupe lint (RM2 §1.2): literal duplicate cause-tag heads
+    // Internal-dupe lint: literal duplicate cause-tag heads
     // or state-field names inside the composed unions. Catches both
     // hand-written domain dupes and post-injection graft dupes that
     // collision_check (manifest-side) misses.
@@ -1059,12 +1056,9 @@ pub(crate) fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
             eprintln!(
                 "    graft-inject's chain-rebuilder may mistake this for the peek-chain"
             );
-            eprintln!("    terminator (RM1 HARD-BUG-2). Refactor to one of:");
+            eprintln!("    terminator. Refactor to one of:");
             eprintln!("      `(list effect)`~");
             eprintln!("      ^- (list effect) ~");
-            eprintln!(
-                "    see vesl-nockup/.dev/debug/log-meta/RM1/B_to_C.md §HARD-BUG-2"
-            );
         }
         if !collision.findings.is_empty() {
             eprintln!("  collision:");
@@ -1087,9 +1081,6 @@ pub(crate) fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
                 "    Disambiguate via manifest rename, profile-letter suffix, or"
             );
             eprintln!("    domain shadowing.");
-            eprintln!(
-                "    see vesl-nockup/.dev/debug/log-meta/RM1/E_to_F.md §META-COLLISION-1"
-            );
         }
         if !transitive_imports.findings.is_empty() {
             eprintln!("  transitive-imports:");
@@ -1116,9 +1107,6 @@ pub(crate) fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
             );
             eprintln!(
                 "    target file or strip the offending file from hoon/common/."
-            );
-            eprintln!(
-                "    see vesl-nockup/.dev/debug/log-meta/RM2/seed-A.md §DOC-GAP-1"
             );
         }
         if !internal_dupes.findings.is_empty() {
@@ -1147,9 +1135,6 @@ pub(crate) fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
             );
             eprintln!(
                 "    Rename, merge into a tagged sum, or distinguish by argument shape."
-            );
-            eprintln!(
-                "    see vesl-nockup/.dev/debug/log-meta/RM2/round.md §META-COLLISION"
             );
         }
     }
@@ -1193,7 +1178,7 @@ mod tests {
 
     // ---------- bare-tilde lint ----------
 
-    /// RM1 HARD-BUG-2 reproduction: a domain `%ping` arm whose body
+    /// A domain `%ping` arm whose body
     /// is `^- (list effect)` then a bare `~` line should trip the
     /// lint. The `find_last_bare_tilde` scan would otherwise pick
     /// this `~` up as the peek-chain terminator.
@@ -1314,7 +1299,7 @@ mod tests {
         }
     }
 
-    /// RM1 META-COLLISION-1: queue-graft and pipeline-graft both
+    /// queue-graft and pipeline-graft both
     /// declare `%enqueue-job`. Cross-graft cause-tag collision should
     /// fire one finding naming both grafts as owners.
     #[test]
@@ -1341,7 +1326,7 @@ mod tests {
         );
     }
 
-    /// RM1 META-COLLISION-2: domain declares `entries` field and a
+    /// Domain declares `entries` field and a
     /// graft also exposes `entries`. The lint should fire one finding
     /// with one owner being `(domain)`.
     #[test]

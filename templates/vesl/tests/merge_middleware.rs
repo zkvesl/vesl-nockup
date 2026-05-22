@@ -1,4 +1,4 @@
-//! R6 §1 regression — `Router::merge` silently bypassed vesl-hull's
+//! Regression — `Router::merge` silently bypassed vesl-hull's
 //! middleware stack (auth, body-limit, rate-limit) on merged-in routes.
 //! These tests pin the fix: `router_with_extra` / `serve_with_extra_routes`
 //! apply layers to the **final** merged Router, so custom routes inherit
@@ -103,7 +103,7 @@ async fn auth_layer_covers_custom_route() {
     assert_eq!(
         resp.status(),
         StatusCode::UNAUTHORIZED,
-        "custom route must require Authorization header (R6 §1)"
+        "custom route must require Authorization header"
     );
 }
 
@@ -133,7 +133,7 @@ async fn body_limit_layer_covers_custom_route() {
     assert_eq!(
         resp.status(),
         StatusCode::PAYLOAD_TOO_LARGE,
-        "custom route must reject bodies above the 4 MiB hull limit (R6 §1)"
+        "custom route must reject bodies above the 4 MiB hull limit"
     );
 }
 

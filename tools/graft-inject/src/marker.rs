@@ -7,9 +7,7 @@
 //! means inject/codegen/lint/cli all import this one module rather than
 //! re-deriving the banner shape per module.
 //!
-//! Audit §3.2 extraction: items moved verbatim from the pre-split
-//! lib.rs (formerly main.rs) at the line ranges noted in the maintenance
-//! plan.
+//! Items moved verbatim from the pre-split lib.rs (formerly main.rs).
 
 use anyhow::Result;
 
@@ -40,7 +38,7 @@ pub(crate) enum Marker {
     /// `[graft.types].effect` plus `domain-effect` if DomainEffect is
     /// present.
     EffectUnion,
-    /// RM4 §1 HARD-BUG-2 v0.2: REPLACE-IF-PRESENT codegen target inside
+    /// REPLACE-IF-PRESENT codegen target inside
     /// the marker template's `++load` arm. graft-inject populates this
     /// marker with a `%=  old-state ... ==` overlay block — one line per
     /// composed graft, mapping each graft's state field to its
@@ -113,7 +111,7 @@ pub(crate) fn codegen_end_banner(marker: Marker) -> String {
 /// scanning the source for existing injections. Banners emitted into the
 /// composed file always carry a ` sha256:<short>` suffix (see
 /// `begin_banner_with_sha`); this prefix matches both the new and the
-/// pre-A2 legacy format and lets the idempotence check distinguish them.
+/// legacy format and lets the idempotence check distinguish them.
 pub(crate) fn begin_banner(name: &str, marker: Marker) -> String {
     format!("::  graft-inject:{}:{}:begin", name, marker.label())
 }
@@ -123,7 +121,7 @@ pub(crate) fn begin_banner(name: &str, marker: Marker) -> String {
 /// `<graft>.toml` (e.g. swaps a `[graft.gates]` selection or bumps a
 /// version), the sha256 changes, the embedded prefix doesn't match, and
 /// the inject pass strips the stale banner pair and re-emits with the
-/// new one. Pre-A2 banners (no sha256 suffix) are detected by the same
+/// new one. Legacy banners (no sha256 suffix) are detected by the same
 /// scan and force-reinjected once on first run after the upgrade.
 pub(crate) fn begin_banner_with_sha(name: &str, marker: Marker, sha256_short: &str) -> String {
     format!(
@@ -192,7 +190,7 @@ pub(crate) fn find_banner_pair(
 }
 
 /// Extract the `sha256:<hex>` token from a begin-banner line. `None` for
-/// a legacy (pre-A2) banner that carries no suffix.
+/// a legacy banner that carries no suffix.
 pub(crate) fn banner_sha256(line: &str) -> Option<&str> {
     line.split(" sha256:")
         .nth(1)

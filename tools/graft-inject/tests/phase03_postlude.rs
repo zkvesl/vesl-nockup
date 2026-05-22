@@ -1,4 +1,4 @@
-//! Phase 03b: poke-postlude marker integration tests.
+//! Poke-postlude marker integration tests.
 //!
 //! Validates the new `[graft.blocks.poke-postlude]` capability that
 //! graft-inject ships ahead of any consumer (index-graft lands in 03d
@@ -52,7 +52,7 @@ const TAP_HOON: &str = "\
 --
 ";
 
-const TAP_TOML: &str = r#"# tap-graft — Phase 03b postlude integration test fixture.
+const TAP_TOML: &str = r#"# tap-graft — postlude integration test fixture.
 #
 # Synthetic graft for the new [graft.blocks.poke-postlude] marker.
 # Adds a %tap-poke cause whose arm emits %tap-poked, and a postlude

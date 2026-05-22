@@ -9,7 +9,7 @@
 //!     (`build_keyless_peek_path`, `build_hull_peek_path`,
 //!     `build_keyed_peek_path`) — Hoon-literal path parsing is
 //!     deliberately out of scope for the v1 cut.
-//!   * `verify-jam` (RM2 §2.1) — sentinel-based out.jam-staleness
+//!   * `verify-jam` — sentinel-based out.jam-staleness
 //!     check. Reads `.out-jam-source-fingerprint` (a `sha256sum`
 //!     sidecar listing app.hoon + manifests), recomputes current
 //!     hashes, exits 0 (fresh) / 1 (stale) / 2 (no fingerprint).
@@ -82,7 +82,7 @@ enum Cmd {
         json: bool,
         /// Per-event drain window (ms) for the broadcast tap. After a
         /// poke acks, drain effects for this many ms before rendering.
-        /// Default 100 ms (RM4 §6 acceptance #2 latency bound).
+        /// Default 100 ms.
         #[arg(long, default_value_t = DEFAULT_EFFECT_WINDOW_MS)]
         effect_window_ms: u64,
     },
@@ -389,7 +389,7 @@ fn print_human_value(v: &Value, indent: usize) {
 }
 
 // =============================================================================
-// verify-jam (RM2 §2.1) — sentinel-based out.jam-staleness check
+// verify-jam — sentinel-based out.jam-staleness check
 // =============================================================================
 
 /// Read `[project].kernel_name` from `<project>/nockapp.toml`. Returns
