@@ -360,11 +360,11 @@ If you already have a working nockapp, the three-command flow above doesn't dire
    - `::  nockup:domain-effect` — anchor for your `+$ domain-effect $%(...)` declaration
    - `::  nockup:effect-union` — codegen target for the typed `+$ effect` union
 
-   Two-space law: `::` followed by exactly two spaces, then `nockup:<name>`.
+   Spacing: `::` followed by one or more spaces, then `nockup:<name>` — the templates use two.
 4. `nockup graft inject --apply hoon/app/app.hoon` — composes graft bodies. Idempotent; safe to run against a populated kernel.
 5. Recompile (`hoonc hoon/app/app.hoon hoon/`) and rebuild (`cargo +nightly build`). Call `vesl_core::build_settle_register_poke`, `build_settle_note_poke`, `build_settle_verify_poke` from your existing `main.rs` alongside your domain pokes.
 
-If `nockup graft inject` reports `warning — markers not found: ...`, you missed a marker or a two-space law violation. The tool is pure text — it does what the regex says.
+If `nockup graft inject` reports `warning — markers not found: ...`, you missed a marker or mistyped one. The tool is pure text — it does what the regex says.
 
 ## Updating an existing project
 
@@ -451,7 +451,7 @@ snapshots/before-mint-graft/
                  vesl_checkpoint_version)
 ```
 
-**Same-composition resume** (the new kernel has the same set of grafts as the snapshot) roundtrips cleanly — both pre- and post-resume pokes emit effects. State is reset to per-graft defaults on every resume because v0.2 takes the simpler defaults-overlay migration path; operators who need data preservation re-poke after resume to restore the desired state.
+**Same-composition resume** (the new kernel has the same set of grafts as the snapshot) roundtrips cleanly — the snapshot's state is preserved, and both pre- and post-resume pokes emit effects. There are no new graft axes, so the defaults overlay is a no-op and nothing is reset.
 
 **Schema-extension resume** (the new kernel adds grafts that weren't in the snapshot) works in v0.2 via `nockup graft inject` codegen at the `nockup:load-defaults` marker. The marker template ships an identity `++load` placeholder; `nockup graft inject` replaces it with a `=/  defaults  ^*(versioned-state)` + `%_  defaults  <field>  ^*(<field>-state)  ...  ==` overlay so resumed snapshots with a smaller noun shape get type defaults at the new graft axes instead of panicking inside the wrapper's mule guard. Pre-v0.2 (no marker, identity load) silently dropped effects on every graft past the first added priority band; the fix landed under RM4 §1 v0.2.
 
@@ -903,7 +903,7 @@ watch: subscribed to out.jam (filter: none)
 ## Troubleshooting
 
 **`nockup graft inject` reports `warning — markers not found: imports, state, ...`**
-You edited `app.hoon` without the marker comments, or your spacing is off. Two-space law: `::` followed by exactly two spaces, then `nockup:<name>`.
+You edited `app.hoon` without the marker comments, or a marker is mistyped. A marker comment is `::` followed by one or more spaces, then `nockup:<name>`.
 
 **`nockup graft inject` errors with `unknown graft: <name>`**
 `--grafts <csv>` names a graft whose `.toml` isn't in `--lib-dir`. Check `nockup graft list` to see what's installed. Auto-discovery (bare invocation) won't produce this error — it just picks what's there.
