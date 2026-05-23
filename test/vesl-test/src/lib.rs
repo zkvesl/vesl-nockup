@@ -12,6 +12,13 @@
 
 pub mod watch;
 
+/// Typed `GraftTestHarness` methods + per-graft outcome enums generated
+/// from `hoon/lib/harness-bindings.toml`. Regenerate via
+/// `nockup-graft codegen harness-methods` (see CI verification at
+/// `tools/graft-inject/tests/harness_codegen.rs`).
+pub mod generated_harness;
+pub use generated_harness::*;
+
 use std::fs;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
