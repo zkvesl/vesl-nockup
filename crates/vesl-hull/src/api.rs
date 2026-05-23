@@ -23,8 +23,9 @@ use tokio::sync::Mutex;
 use tower_http::limit::RequestBodyLimitLayer;
 
 use vesl_core::{
-    decode_settle_error, effect_head_tag, fetch_receipt, format_tip5, ChainClient, MerkleTree,
-    NounSlab, SettlementMode, TxReceipt, VerifyTxError,
+    classify_effects, decode_settle_error, effect_head_tag, fetch_receipt, format_tip5,
+    ChainClient, MerkleTree, NounSlab, PokeCrashError, PokeOutcome, RejectionReason,
+    SettlementMode, TxReceipt, VerifyTxError,
 };
 
 use crate::config::SettlementConfig;
@@ -338,14 +339,21 @@ fn stock_routes() -> Router<SharedState> {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Poke the kernel with a 30s timeout, mapping the two failure modes to
-/// HTTP error tuples. `log_prefix` names the poke for stderr logging
-/// (e.g., "register", "settle"). Returns the effects list on success.
+/// Poke the kernel with a 30s timeout, classifying the result into a
+/// typed [`PokeOutcome`]. `log_prefix` names the poke for stderr logging
+/// (e.g. "register", "settle") on the crash paths.
+///
+/// Callers match the returned outcome to dispatch on success / rejection /
+/// crash without scraping stderr or string-matching effect tags blindly.
+/// `classify_effects` (in `vesl-core`) routes a non-empty effect list by
+/// the head tag of its first effect; the wrapper here adds the
+/// timeout, `NockAppError`, and empty-list cases that the classifier
+/// cannot see from `effects` alone.
 async fn poke_kernel_with_timeout(
     app: &mut NockApp,
     poke: NounSlab,
     log_prefix: &str,
-) -> Result<Vec<NounSlab>, (StatusCode, Json<ErrorBody>)> {
+) -> PokeOutcome {
     match tokio::time::timeout(
         std::time::Duration::from_secs(30),
         app.poke(SystemWire.to_wire(), poke),
@@ -354,23 +362,69 @@ async fn poke_kernel_with_timeout(
     {
         Err(_) => {
             eprintln!("kernel {log_prefix} poke timed out");
-            Err((
-                StatusCode::GATEWAY_TIMEOUT,
-                Json(ErrorBody {
-                    error: "kernel operation timed out".into(),
-                }),
-            ))
+            PokeOutcome::Crashed {
+                error: PokeCrashError::Timeout,
+            }
         }
         Ok(Err(e)) => {
             eprintln!("kernel {log_prefix} poke failed: {e}");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorBody {
-                    error: "internal error".into(),
-                }),
-            ))
+            PokeOutcome::Crashed {
+                error: PokeCrashError::KernelPoke(e),
+            }
         }
-        Ok(Ok(effects)) => Ok(effects),
+        Ok(Ok(effects)) => classify_effects(effects),
+    }
+}
+
+/// Temporary adapter — flatten a [`PokeOutcome`] back to the
+/// `Result<Vec<NounSlab>, (StatusCode, Json<ErrorBody>)>` shape the
+/// handlers consume today. The shape is preserved so existing handler
+/// bodies stay untouched while the typed-outcome surface lands; the
+/// adapter is removed once each handler migrates to direct `PokeOutcome`
+/// matching.
+fn collapse_to_legacy_result(
+    outcome: PokeOutcome,
+) -> Result<Vec<NounSlab>, (StatusCode, Json<ErrorBody>)> {
+    match outcome {
+        PokeOutcome::Accepted { effects } => Ok(effects),
+        PokeOutcome::Rejected {
+            reason: RejectionReason::Unknown,
+        } => Ok(Vec::new()),
+        PokeOutcome::Rejected {
+            reason: RejectionReason::KernelError { raw_effects, .. },
+        }
+        | PokeOutcome::Rejected {
+            reason: RejectionReason::KernelRejected { raw_effects, .. },
+        }
+        | PokeOutcome::Rejected {
+            reason: RejectionReason::GateDenied { raw_effects, .. },
+        } => Ok(raw_effects),
+        PokeOutcome::Rejected {
+            reason: RejectionReason::RbacDenied { .. },
+        } => {
+            // classify_effects never produces RbacDenied; the hull-side
+            // RBAC pre-check that constructs it lands in a follow-up commit.
+            unreachable!("classify_effects does not produce RbacDenied")
+        }
+        PokeOutcome::Crashed {
+            error: PokeCrashError::Timeout,
+        } => Err((
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(ErrorBody {
+                error: "kernel operation timed out".into(),
+            }),
+        )),
+        PokeOutcome::Crashed {
+            error: PokeCrashError::KernelPoke(_),
+        } => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                error: "internal error".into(),
+            }),
+        )),
+        PokeOutcome::Crashed {
+            error: PokeCrashError::UnexpectedTag { raw_effects, .. },
+        } => Ok(raw_effects),
     }
 }
 
@@ -490,7 +544,9 @@ async fn commit_handler(
     // Register root with kernel
     let mut st = state.lock().await;
     let register_poke = vesl_core::build_settle_register_poke(st.hull_id, &root);
-    let effects = poke_kernel_with_timeout(&mut st.app, register_poke, "settle-register").await?;
+    let effects = collapse_to_legacy_result(
+        poke_kernel_with_timeout(&mut st.app, register_poke, "settle-register").await,
+    )?;
 
     // Belt-and-suspenders: an empty effects list is not produced by the
     // current %settle-register branch (post-L-09 it emits the typed
@@ -643,7 +699,9 @@ async fn settle_handler(
         (poke, root_hex)
     };
 
-    let effects = poke_kernel_with_timeout(&mut st.app, settle_poke, "settle-note").await?;
+    let effects = collapse_to_legacy_result(
+        poke_kernel_with_timeout(&mut st.app, settle_poke, "settle-note").await,
+    )?;
 
     // Audit §2.C-01: gate counter advancement and HTTP success on the
     // kernel actually accepting the poke. Empty effects covers every
