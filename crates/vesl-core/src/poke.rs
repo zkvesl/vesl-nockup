@@ -24,7 +24,7 @@
 use nockapp::NockAppError;
 use nockapp::noun::slab::NounSlab;
 
-use crate::peek::{decode_effect_cord, effect_head_tag};
+use crate::peek::{decode_effect_cord, effect_head_tag, effect_head_tags};
 
 /// Outcome of a `NockApp::poke` from the hull/test/SDK perspective.
 ///
@@ -51,6 +51,46 @@ pub enum PokeOutcome {
     /// violation (kernel emitted an effect head tag the caller cannot
     /// interpret).
     Crashed { error: PokeCrashError },
+}
+
+impl PokeOutcome {
+    /// Effect head tags from whichever effects this outcome carries.
+    ///
+    /// Mirrors the pre-typed-outcome convention where a poke returned
+    /// `Vec<String>`. Returns:
+    /// - the tags from `Accepted::effects`
+    /// - the tags from `Rejected`'s `raw_effects` (for `KernelError`,
+    ///   `KernelRejected`, `GateDenied`)
+    /// - an empty vec for `Rejected::Unknown` / `Rejected::RbacDenied`
+    ///   (no kernel effects produced)
+    /// - an empty vec for `Crashed::Timeout` / `Crashed::KernelPoke`
+    /// - the protocol-violating effects from `Crashed::UnexpectedTag`
+    ///
+    /// Tests that only check whether a specific success/error tag fired
+    /// can call this instead of unpacking the variant.
+    pub fn effect_head_tags(&self) -> Vec<String> {
+        match self {
+            PokeOutcome::Accepted { effects } => effect_head_tags(effects),
+            PokeOutcome::Rejected {
+                reason: RejectionReason::KernelError { raw_effects, .. },
+            }
+            | PokeOutcome::Rejected {
+                reason: RejectionReason::KernelRejected { raw_effects, .. },
+            }
+            | PokeOutcome::Rejected {
+                reason: RejectionReason::GateDenied { raw_effects, .. },
+            } => effect_head_tags(raw_effects),
+            PokeOutcome::Rejected {
+                reason: RejectionReason::Unknown | RejectionReason::RbacDenied { .. },
+            } => Vec::new(),
+            PokeOutcome::Crashed {
+                error: PokeCrashError::UnexpectedTag { raw_effects, .. },
+            } => effect_head_tags(raw_effects),
+            PokeOutcome::Crashed {
+                error: PokeCrashError::Timeout | PokeCrashError::KernelPoke(_),
+            } => Vec::new(),
+        }
+    }
 }
 
 /// Sub-classification of [`PokeOutcome::Rejected`].
@@ -348,5 +388,49 @@ mod tests {
                 error: PokeCrashError::Timeout
             }
         ));
+    }
+
+    #[test]
+    fn effect_head_tags_returns_tags_for_each_carrying_variant() {
+        // Accepted
+        let outcome = classify_effects(vec![build_effect("settle-noted", None)]);
+        assert_eq!(outcome.effect_head_tags(), vec!["settle-noted".to_string()]);
+
+        // Rejected::KernelError
+        let outcome = classify_effects(vec![build_effect("settle-error", Some(b"x"))]);
+        assert_eq!(outcome.effect_head_tags(), vec!["settle-error".to_string()]);
+
+        // Rejected::KernelRejected
+        let outcome = classify_effects(vec![build_effect("settle-register-rejected", None)]);
+        assert_eq!(
+            outcome.effect_head_tags(),
+            vec!["settle-register-rejected".to_string()]
+        );
+
+        // Rejected::GateDenied
+        let outcome = classify_effects(vec![build_effect("settle-denied", Some(b"x"))]);
+        assert_eq!(outcome.effect_head_tags(), vec!["settle-denied".to_string()]);
+    }
+
+    #[test]
+    fn effect_head_tags_returns_empty_for_no_kernel_effects() {
+        // Rejected::Unknown (empty effect list)
+        let outcome = classify_effects(Vec::new());
+        assert!(outcome.effect_head_tags().is_empty());
+
+        // Rejected::RbacDenied (hand-constructed, never reached the kernel)
+        let outcome = PokeOutcome::Rejected {
+            reason: RejectionReason::RbacDenied {
+                pubkey: "0xabc".into(),
+                perm: "x".into(),
+            },
+        };
+        assert!(outcome.effect_head_tags().is_empty());
+
+        // Crashed::Timeout
+        let outcome = PokeOutcome::Crashed {
+            error: PokeCrashError::Timeout,
+        };
+        assert!(outcome.effect_head_tags().is_empty());
     }
 }
