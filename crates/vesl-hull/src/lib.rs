@@ -30,8 +30,8 @@ pub use settle_builder::{
     SettleBuilderError, SettleContext, SettlePayloadBuilder,
 };
 pub use config::{
-    HullConfig, SettlementCliOverrides, SettlementConfig, SettlementMode, SettlementToml,
-    load_config, resolve_with_demo_key_checked,
+    HullConfig, HullRbacToml, RbacConfig, SettlementCliOverrides, SettlementConfig,
+    SettlementMode, SettlementToml, load_config, resolve_with_demo_key_checked,
 };
 pub use signing::{demo_signing_key, is_demo_key, DEMO_KEY_PKH_BASE58};
 pub use verify::{FieldVerifier, FieldWithProof, field_to_leaf_bytes};

@@ -152,6 +152,7 @@ fn build_app_state(app: NockApp) -> Result<vesl_hull::SharedState, Box<dyn Error
         output_dir,
         manifest,
         settle_builder,
+        rbac: vesl_hull::RbacConfig::default(),
     })))
 }
 

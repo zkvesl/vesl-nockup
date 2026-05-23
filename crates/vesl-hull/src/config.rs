@@ -35,6 +35,37 @@ pub struct HullConfig {
     /// (seed_phrase, coin_type, account), `[wallet.intent]` and
     /// `[wallet.payment]` for per-role role/index overrides.
     pub wallet: Option<HullWalletToml>,
+    /// Optional RBAC configuration. Set `[rbac] enabled = true` to gate
+    /// `/commit` and `/settle` behind an `[%rbac-has-perm pubkey perm ~]`
+    /// peek against the composed rbac-graft. Default: disabled.
+    pub rbac: Option<HullRbacToml>,
+}
+
+/// `[rbac]` TOML block. Today only an enable flag; future entries (custom
+/// perm names per endpoint, default-allow override) can land here without
+/// reshaping the schema.
+#[derive(Debug, Default, Deserialize)]
+pub struct HullRbacToml {
+    pub enabled: Option<bool>,
+}
+
+/// Resolved RBAC configuration consumed by the hull's request path. Built
+/// from [`HullRbacToml`] at boot; defaults to disabled when no `[rbac]`
+/// block is present (preserving existing test + downstream-consumer
+/// behaviour).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RbacConfig {
+    pub enabled: bool,
+}
+
+impl RbacConfig {
+    /// Resolve from the TOML block. Absent block → disabled; present block
+    /// with no `enabled` field → disabled (explicit opt-in only).
+    pub fn from_toml(toml: Option<&HullRbacToml>) -> Self {
+        Self {
+            enabled: toml.and_then(|t| t.enabled).unwrap_or(false),
+        }
+    }
 }
 
 /// Hull-side mirror of `vesl_core::config::WalletToml`. Held separately

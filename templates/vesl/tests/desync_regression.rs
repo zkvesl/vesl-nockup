@@ -33,7 +33,7 @@ use tokio::sync::Mutex;
 use tower::ServiceExt;
 use vesl_hull::{
     check_auth_config_with_bind, resolve_with_demo_key_checked, router, AppState,
-    DefaultHashPayloadBuilder, HullConfig, ManifestSummary, SettlementCliOverrides,
+    DefaultHashPayloadBuilder, HullConfig, ManifestSummary, RbacConfig, SettlementCliOverrides,
 };
 
 async fn boot_state() -> Arc<Mutex<AppState>> {
@@ -65,6 +65,7 @@ async fn boot_state() -> Arc<Mutex<AppState>> {
         output_dir: PathBuf::from("."),
         manifest: ManifestSummary::empty(),
         settle_builder: Arc::new(DefaultHashPayloadBuilder),
+        rbac: RbacConfig::default(),
     }))
 }
 
