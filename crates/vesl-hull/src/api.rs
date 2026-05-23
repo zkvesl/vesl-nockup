@@ -23,9 +23,9 @@ use tokio::sync::Mutex;
 use tower_http::limit::RequestBodyLimitLayer;
 
 use vesl_core::{
-    classify_effects, decode_settle_error, effect_head_tag, fetch_receipt, format_tip5,
-    ChainClient, MerkleTree, NounSlab, PokeCrashError, PokeOutcome, RejectionReason,
-    SettlementMode, TxReceipt, VerifyTxError,
+    classify_effects, effect_head_tag, fetch_receipt, format_tip5, ChainClient, MerkleTree,
+    NounSlab, PokeCrashError, PokeOutcome, RejectionReason, SettlementMode, TxReceipt,
+    VerifyTxError,
 };
 
 use crate::config::SettlementConfig;
@@ -403,58 +403,6 @@ fn crash_to_error(err: PokeCrashError) -> (StatusCode, Json<ErrorBody>) {
     }
 }
 
-/// Temporary adapter — flatten a [`PokeOutcome`] back to the
-/// `Result<Vec<NounSlab>, (StatusCode, Json<ErrorBody>)>` shape the
-/// handlers consume today. The shape is preserved so existing handler
-/// bodies stay untouched while the typed-outcome surface lands; the
-/// adapter is removed once each handler migrates to direct `PokeOutcome`
-/// matching.
-fn collapse_to_legacy_result(
-    outcome: PokeOutcome,
-) -> Result<Vec<NounSlab>, (StatusCode, Json<ErrorBody>)> {
-    match outcome {
-        PokeOutcome::Accepted { effects } => Ok(effects),
-        PokeOutcome::Rejected {
-            reason: RejectionReason::Unknown,
-        } => Ok(Vec::new()),
-        PokeOutcome::Rejected {
-            reason: RejectionReason::KernelError { raw_effects, .. },
-        }
-        | PokeOutcome::Rejected {
-            reason: RejectionReason::KernelRejected { raw_effects, .. },
-        }
-        | PokeOutcome::Rejected {
-            reason: RejectionReason::GateDenied { raw_effects, .. },
-        } => Ok(raw_effects),
-        PokeOutcome::Rejected {
-            reason: RejectionReason::RbacDenied { .. },
-        } => {
-            // classify_effects never produces RbacDenied; the hull-side
-            // RBAC pre-check that constructs it lands in a follow-up commit.
-            unreachable!("classify_effects does not produce RbacDenied")
-        }
-        PokeOutcome::Crashed {
-            error: PokeCrashError::Timeout,
-        } => Err((
-            StatusCode::GATEWAY_TIMEOUT,
-            Json(ErrorBody {
-                error: "kernel operation timed out".into(),
-            }),
-        )),
-        PokeOutcome::Crashed {
-            error: PokeCrashError::KernelPoke(_),
-        } => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorBody {
-                error: "internal error".into(),
-            }),
-        )),
-        PokeOutcome::Crashed {
-            error: PokeCrashError::UnexpectedTag { raw_effects, .. },
-        } => Ok(raw_effects),
-    }
-}
-
 /// Decode the `existing-root` atom from a `[%settle-register-rejected
 /// hull=@ existing-root=@]` effect (audit L-09). Returns lowercase hex of
 /// the atom's LE bytes — the same byte representation `tip5_to_atom_le_bytes`
@@ -769,31 +717,24 @@ async fn settle_handler(
         (poke, root_hex)
     };
 
-    let effects = collapse_to_legacy_result(
-        poke_kernel_with_timeout(&mut st.app, settle_poke, "settle-note").await,
-    )?;
-
     // Audit §2.C-01: gate counter advancement and HTTP success on the
-    // kernel actually accepting the poke. Empty effects covers every
-    // settle-graft rejection path (replay on note_id, unregistered
-    // hull, gate deny, root mismatch); the kernel's slog distinguishes
-    // them at priority 1.
-    if effects.is_empty() {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(ErrorBody {
-                error: "kernel returned no effects for %settle-note (see kernel slog)".into(),
-            }),
-        ));
-    }
-    match effect_head_tag(&effects[0]).as_deref() {
-        Some("settle-noted") => {}
-        Some("settle-error") => {
+    // kernel actually accepting the poke. The classifier splits the
+    // settle-graft rejection paths between typed variants:
+    //   - %settle-error cords (replay, root mismatch, unregistered hull,
+    //     malformed payload, gate crash, capacity) land in KernelError
+    //   - typed gate-clean-deny (%settle-denied) lands in GateDenied
+    //     once settle-graft emits it
+    //   - empty effects (pre-typed-denial gate clean-deny) land in
+    //     Unknown
+    let effects = match poke_kernel_with_timeout(&mut st.app, settle_poke, "settle-note").await {
+        PokeOutcome::Accepted { effects } => effects,
+        PokeOutcome::Rejected {
+            reason: RejectionReason::KernelError { cord, .. },
+        } => {
             // Audit §2.C-01 §3.3: route the kernel's typed cord to a
             // matching HTTP status. The seven cords below cover every
             // %settle-error emitted by the %settle-note arm in
             // settle-graft.hoon:170-228.
-            let cord = decode_settle_error(&effects[0]).unwrap_or_default();
             let (status, hint) = match cord.as_str() {
                 "settle-graft: malformed payload" => (StatusCode::BAD_REQUEST, cord.clone()),
                 "settle-graft: root not registered"
@@ -811,7 +752,60 @@ async fn settle_handler(
             };
             return Err((status, Json(ErrorBody { error: hint })));
         }
+        PokeOutcome::Rejected {
+            reason: RejectionReason::GateDenied { reason, .. },
+        } => {
+            // Typed gate-clean-deny — surface the reason cord in the body.
+            // Parity with today's empty-effects 409 until callers update.
+            return Err((
+                StatusCode::CONFLICT,
+                Json(ErrorBody {
+                    error: format!("kernel denied %settle-note: {reason}"),
+                }),
+            ));
+        }
+        PokeOutcome::Rejected {
+            reason: RejectionReason::Unknown,
+        } => {
+            // Pre-typed-denial gate clean-deny — slog has the mule trace.
+            return Err((
+                StatusCode::CONFLICT,
+                Json(ErrorBody {
+                    error: "kernel returned no effects for %settle-note (see kernel slog)".into(),
+                }),
+            ));
+        }
+        PokeOutcome::Rejected {
+            reason: RejectionReason::KernelRejected { tag, .. },
+        } => {
+            // %settle-note emits no `*-rejected` effects today; reaching
+            // here is kernel protocol drift.
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody {
+                    error: format!(
+                        "unexpected kernel rejection tag from %settle-note poke: {tag}"
+                    ),
+                }),
+            ));
+        }
+        PokeOutcome::Rejected {
+            reason: RejectionReason::RbacDenied { .. },
+        } => {
+            // classify_effects never constructs RbacDenied; the hull's
+            // RBAC pre-check, when wired, produces the variant before
+            // poke_kernel_with_timeout is reached.
+            unreachable!("RbacDenied not constructed at this site")
+        }
+        PokeOutcome::Crashed { error } => return Err(crash_to_error(error)),
+    };
+
+    match effect_head_tag(&effects[0]).as_deref() {
+        Some("settle-noted") => {}
         _ => {
+            // classify_effects routes %settle-error / %settle-denied
+            // through Rejected; reaching Accepted with a non-success tag
+            // is protocol drift.
             return Err((
                 StatusCode::BAD_GATEWAY,
                 Json(ErrorBody {
