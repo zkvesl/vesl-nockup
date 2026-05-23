@@ -376,6 +376,33 @@ async fn poke_kernel_with_timeout(
     }
 }
 
+/// Map a [`PokeCrashError`] to the handler's HTTP error tuple. Shared by
+/// the handlers because the crash mapping is identical across pokes —
+/// timeout → 504, `NockAppError` → 500, protocol violation (kernel emitted
+/// an unparsable effect) → 502.
+fn crash_to_error(err: PokeCrashError) -> (StatusCode, Json<ErrorBody>) {
+    match err {
+        PokeCrashError::Timeout => (
+            StatusCode::GATEWAY_TIMEOUT,
+            Json(ErrorBody {
+                error: "kernel operation timed out".into(),
+            }),
+        ),
+        PokeCrashError::KernelPoke(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorBody {
+                error: "internal error".into(),
+            }),
+        ),
+        PokeCrashError::UnexpectedTag { tag, .. } => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorBody {
+                error: format!("kernel emitted unparsable effect (head tag: {tag:?})"),
+            }),
+        ),
+    }
+}
+
 /// Temporary adapter — flatten a [`PokeOutcome`] back to the
 /// `Result<Vec<NounSlab>, (StatusCode, Json<ErrorBody>)>` shape the
 /// handlers consume today. The shape is preserved so existing handler
@@ -541,34 +568,18 @@ async fn commit_handler(
     let root_hex = format_tip5(&root);
     let field_count = req.fields.len();
 
-    // Register root with kernel
+    // Register root with kernel.
     let mut st = state.lock().await;
     let register_poke = vesl_core::build_settle_register_poke(st.hull_id, &root);
-    let effects = collapse_to_legacy_result(
-        poke_kernel_with_timeout(&mut st.app, register_poke, "settle-register").await,
-    )?;
-
-    // Belt-and-suspenders: an empty effects list is not produced by the
-    // current %settle-register branch (post-L-09 it emits the typed
-    // %settle-register-rejected effect; pre-L-09 it emitted %settle-error).
-    // Kept for one revision cycle in case a downstream kernel revision
-    // drops the typed effect; remove once all callers track this rev.
-    if effects.is_empty() {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(ErrorBody {
-                error: "kernel returned empty effects for %settle-register; \
-                        likely an outdated kernel revision".into(),
-            }),
-        ));
-    }
-    match effect_head_tag(&effects[0]).as_deref() {
-        Some("settle-registered") => {}
-        Some("settle-register-rejected") => {
+    let effects = match poke_kernel_with_timeout(&mut st.app, register_poke, "settle-register").await {
+        PokeOutcome::Accepted { effects } => effects,
+        PokeOutcome::Rejected {
+            reason: RejectionReason::KernelRejected { tag, raw_effects },
+        } if tag == "settle-register-rejected" => {
             // L-09: typed duplicate-register. Surface the existing root from
             // the kernel effect so callers can verify what's actually
             // registered without re-reading the slog.
-            let body_text = match decode_register_rejected_existing_root(&effects[0]) {
+            let body_text = match decode_register_rejected_existing_root(&raw_effects[0]) {
                 Some(hex) => format!(
                     "hull already registered with root 0x{hex}; \
                      this hull is single-shot per process"
@@ -577,12 +588,13 @@ async fn commit_handler(
                          from kernel effect)"
                     .into(),
             };
-            return Err((
-                StatusCode::CONFLICT,
-                Json(ErrorBody { error: body_text }),
-            ));
+            return Err((StatusCode::CONFLICT, Json(ErrorBody { error: body_text })));
         }
-        Some("settle-error") => {
+        PokeOutcome::Rejected {
+            reason: RejectionReason::KernelError { .. },
+        } => {
+            // Today %settle-register only emits %settle-error when the
+            // registered-map hits the capacity cap (M-01 path).
             return Err((
                 StatusCode::CONFLICT,
                 Json(ErrorBody {
@@ -592,7 +604,65 @@ async fn commit_handler(
                 }),
             ));
         }
+        PokeOutcome::Rejected {
+            reason: RejectionReason::Unknown,
+        } => {
+            // Belt-and-suspenders: %settle-register has emitted typed
+            // effects (registered / register-rejected / settle-error) for
+            // several revisions. Reaching Unknown means an outdated kernel
+            // dropped the typed effect — kept until downstream callers all
+            // track the typed-effect revision.
+            return Err((
+                StatusCode::CONFLICT,
+                Json(ErrorBody {
+                    error: "kernel returned empty effects for %settle-register; \
+                            likely an outdated kernel revision"
+                        .into(),
+                }),
+            ));
+        }
+        PokeOutcome::Rejected {
+            reason: RejectionReason::KernelRejected { tag, .. },
+        } => {
+            // A `*-rejected` tag other than %settle-register-rejected — kernel
+            // protocol drift for this endpoint.
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody {
+                    error: format!(
+                        "unexpected kernel rejection tag from %settle-register poke: {tag}"
+                    ),
+                }),
+            ));
+        }
+        PokeOutcome::Rejected {
+            reason: RejectionReason::GateDenied { .. },
+        } => {
+            // %settle-register has no verify-gate; a `*-denied` here is
+            // kernel protocol drift.
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorBody {
+                    error: "unexpected %settle-denied from %settle-register poke".into(),
+                }),
+            ));
+        }
+        PokeOutcome::Rejected {
+            reason: RejectionReason::RbacDenied { .. },
+        } => {
+            // classify_effects never constructs RbacDenied; the hull's RBAC
+            // pre-check (when wired) doesn't gate %settle-register either.
+            unreachable!("RbacDenied not constructed for %settle-register at this site")
+        }
+        PokeOutcome::Crashed { error } => return Err(crash_to_error(error)),
+    };
+
+    match effect_head_tag(&effects[0]).as_deref() {
+        Some("settle-registered") => {}
         _ => {
+            // classify_effects routes %settle-error / %settle-register-rejected
+            // through Rejected; reaching Accepted with a non-success tag is
+            // protocol drift.
             return Err((
                 StatusCode::BAD_GATEWAY,
                 Json(ErrorBody {
