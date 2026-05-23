@@ -87,7 +87,13 @@ pub fn compose_and_compile(scratch_subdir: &str, grafts: &[&str]) -> Result<Path
     copy_dir_contents(&repo_root.join("hoon/jams"), &hoon_jams)?;
 
     let graft_inject = graft_inject_bin()?;
+    // --accept-untrusted-libs: scratch dirs under target/ have no
+    // ancestor `nockapp.toml`, so the trust-posture guard added in
+    // 94fae22 rejects the inject by default. The fixture is fully
+    // synthesized from in-tree templates and known-good manifests, so
+    // the trust gate is safe to bypass.
     let status = Command::new(&graft_inject)
+        .arg("--accept-untrusted-libs")
         .arg("--lib-dir")
         .arg(&hoon_lib)
         .arg("--grafts")
@@ -100,8 +106,12 @@ pub fn compose_and_compile(scratch_subdir: &str, grafts: &[&str]) -> Result<Path
         bail!("graft-inject exited with status {status}");
     }
 
+    // --ephemeral, not --new: --new boots hoonc against the shared
+    // ~/.nockapp/hoonc data dir and refuses a non-empty one, so
+    // parallel tests collide. Mirror graft-inject's own fixture pattern
+    // (997fa2c).
     let hoonc_status = Command::new("hoonc")
-        .arg("--new")
+        .arg("--ephemeral")
         .arg("hoon/app/app.hoon")
         .arg("hoon/")
         .current_dir(&scratch)
