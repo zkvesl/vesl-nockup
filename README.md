@@ -776,18 +776,16 @@ let slab = build_settle_note_poke_with_data(note_id, hull, &root, |slab| {
 
 ### Operator triage: distinguishing denial paths
 
-A write that doesn't land emits `Ok(vec![])` from `app.poke().await?` — and that surface is shared across four distinct denial paths. Picking the right remediation requires reading more than the effect list.
+A write that doesn't land surfaces as a typed [`vesl_core::PokeOutcome`](crates/vesl-core/src/poke.rs) — match on the variant to identify the denial path without scraping stderr.
 
-| Denial path | Where it fires | Effect list | Stderr | Recovery |
+| Denial path | Where it fires | `PokeOutcome` variant | Effect list | Recovery |
 |---|---|---|---|---|
-| Gate clean-deny | Hoon `?>` deterministic Exit (e.g. `set-membership-verify` returns `%.n`, `sig-verify-schnorr` finds an invalid signature) | `vec![]` | `mule`-trace dump (~30 lines) starting at `<gate-graft>.hoon::[…]` | The cause was rejected by policy; user must re-submit with valid input. |
-| Gate crash | Gate panicked inside `mule`; settle-graft wraps the crash | `[%settle-error msg='settle-graft: verify gate crashed']` | (no extra) | The gate has a bug; investigate the gate body or the data shape. |
-| Pre-gate failure | Replay (note-id reused) or root mismatch | `[%settle-error msg='<reason>']` | (silent) | The poke was rejected before reaching the gate; check note-id uniqueness or registered-root match. |
-| Rbac denial | Orchestrator-side: `[%rbac-has-perm pubkey perm ~]` peek returned `false`; the poke was never sent | `vec![]` (hull-side) | (silent) | The acting pubkey lacks the required perm; grant first or reject the request. |
+| Gate clean-deny | Verify-gate returns `%.n` (e.g. `set-membership-verify` rejects, `sig-verify-schnorr` finds an invalid signature). settle-graft catches the `%.n` and emits a typed `%settle-denied` effect. | `Rejected { reason: GateDenied { reason, raw_effects } }` | `[%settle-denied reason=@t]` | The cause was rejected by policy; user must re-submit with valid input. The `reason` cord identifies which gate denied. |
+| Gate crash | Gate panicked inside `mule`; settle-graft wraps the crash. | `Rejected { reason: KernelError { cord, raw_effects } }` (cord = `'settle-graft: verify gate crashed'`) | `[%settle-error msg='settle-graft: verify gate crashed']` | The gate has a bug; investigate the gate body or the data shape. |
+| Pre-gate failure | Replay (note-id reused), root mismatch, unregistered hull, malformed payload, capacity. | `Rejected { reason: KernelError { cord, raw_effects } }` | `[%settle-error msg='<reason>']` | Pre-gate guard rejected the poke; check note-id uniqueness, registered-root match, or payload shape per the cord. |
+| Rbac denial | Hull-side: `[%rbac-has-perm pubkey perm ~]` peek returned `%.n`; the poke is never sent to the kernel. Enabled when `[rbac] enabled = true` is set in the hull's TOML config. | `Rejected { reason: RbacDenied { pubkey, perm } }` | (none — never reaches the kernel) | The acting pubkey lacks the required perm; grant first or reject the request. HTTP 403 from `/commit` and `/settle`. |
 
-**Hull-side discipline:** log every rbac decision before the poke split so post-hoc audit shows which layer denied. Stderr alone distinguishes gate-deny from rbac-deny; only the hull knows whether the poke was sent at all.
-
-**Multi-graft caveat (Profile J observation).** In kernels with ≥10 grafts, the `mule`-trace dump on gate clean-deny can be large enough to terminate the hull process after the poke returns. Treat gate clean-deny as TERMINAL for the kernel session in multi-graft deployments — restart the kernel rather than continuing.
+**Multi-graft caveat.** In kernels with ≥10 grafts, a Hoon `?>` crash (e.g. from a custom graft that still uses the pre-typed-denial pattern) emits a `mule`-trace large enough to terminate the hull process. The typed `%settle-denied` path does not crash and is safe to continue against; treat any remaining `?>`-based deny as terminal for the kernel session and restart.
 
 ## Testing with `vesl-test`
 
