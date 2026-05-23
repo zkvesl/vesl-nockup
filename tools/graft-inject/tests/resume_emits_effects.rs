@@ -15,7 +15,7 @@ use anyhow::Result;
 use nockapp::noun::slab::NounSlab;
 use nockapp::wire::{SystemWire, Wire};
 use nockapp::NockApp;
-use vesl_checkpoint::{resume, snapshot};
+use vesl_checkpoint::{resume_with_data_dir, snapshot};
 use vesl_core::{
     build_guard_register_poke, build_log_append_poke, build_mint_commit_poke,
     build_rbac_grant_poke, build_registry_put_poke,
@@ -68,8 +68,22 @@ async fn resume_preserves_effect_emission_across_priority_bands() -> Result<()> 
 
     // Resume from the same kernel jam (no schema change — this isolates
     // the post-resume effect-emission path from any state-shape
-    // migration concerns).
-    let mut resumed = resume(&jam_path, &snap, "rm4-hard-bug-2-test").await?;
+    // migration concerns). Use an explicit tempdir for the resumed
+    // kernel's data dir; the default cwd-rooted `./.data.<name>/` would
+    // be left populated by a successful run and trip `--new`'s empty-
+    // data-dir requirement on the next invocation.
+    let resumed_data_dir = tempfile::Builder::new()
+        .prefix("rm4-hard-bug-2-test-")
+        .tempdir()?;
+    let mut resumed = resume_with_data_dir(
+        &jam_path,
+        &snap,
+        "rm4-hard-bug-2-test",
+        Some(resumed_data_dir.path().to_path_buf()),
+        None,
+        false,
+    )
+    .await?;
 
     // Post-resume, each priority band must STILL emit.
     let tags = poke_via_app(&mut resumed, build_rbac_grant_poke(1, &["write"])).await?.effect_head_tags();
@@ -158,7 +172,19 @@ async fn resume_into_larger_kernel_emits_effects_for_added_grafts() -> Result<()
 
     // Resume from A's snapshot into B's jam — kernel-B's `++load`
     // receives kernel-A's state shape and must produce a B-shaped state.
-    let mut resumed = resume(&kernel_b, &snap, "rm4-hard-bug-2-schema-change").await?;
+    // Explicit tempdir for the same reason as the test above.
+    let resumed_data_dir = tempfile::Builder::new()
+        .prefix("rm4-hard-bug-2-schema-change-")
+        .tempdir()?;
+    let mut resumed = resume_with_data_dir(
+        &kernel_b,
+        &snap,
+        "rm4-hard-bug-2-schema-change",
+        Some(resumed_data_dir.path().to_path_buf()),
+        None,
+        false,
+    )
+    .await?;
 
     // The new grafts must accept pokes and emit effects. Each poke
     // touches a brand-new state field (rbac.state, registry.state,
@@ -273,7 +299,20 @@ async fn resume_3_to_6_grafts_emits_for_old_and_new_grafts() -> Result<()> {
 
     // Resume into kernel B — A's snapshot has 3 graft fields, B's
     // versioned-state has 6, so `++load`'s overlay is exercised.
-    let mut resumed = resume(&kernel_b, &snap, "rm4-load-defaults-3-to-6").await?;
+    // Explicit tempdir for the same reason as the other tests in this
+    // binary.
+    let resumed_data_dir = tempfile::Builder::new()
+        .prefix("rm4-load-defaults-3-to-6-")
+        .tempdir()?;
+    let mut resumed = resume_with_data_dir(
+        &kernel_b,
+        &snap,
+        "rm4-load-defaults-3-to-6",
+        Some(resumed_data_dir.path().to_path_buf()),
+        None,
+        false,
+    )
+    .await?;
 
     // Each post-resume poke must emit its effect tag. The original
     // grafts (settle/mint/guard) hit fields whose axes happen to align
