@@ -165,13 +165,29 @@ fn sign_with_intent_then_payment_keys_under_their_separators() {
     let (i_chal, i_sig) = schnorr_sign(&intent_key, &intent_msg).unwrap();
     let (p_chal, p_sig) = schnorr_sign(&payment_key, &payment_msg).unwrap();
 
-    schnorr_verify(&intent_key.public_key().unwrap(), &intent_msg, &i_chal, &i_sig).unwrap();
-    schnorr_verify(&payment_key.public_key().unwrap(), &payment_msg, &p_chal, &p_sig).unwrap();
+    schnorr_verify(
+        &intent_key.public_key().unwrap(),
+        &intent_msg,
+        &i_chal,
+        &i_sig,
+    )
+    .unwrap();
+    schnorr_verify(
+        &payment_key.public_key().unwrap(),
+        &payment_msg,
+        &p_chal,
+        &p_sig,
+    )
+    .unwrap();
 
     // Cross-check: intent pubkey does not verify the payment signature.
-    assert!(
-        schnorr_verify(&intent_key.public_key().unwrap(), &payment_msg, &p_chal, &p_sig).is_err()
-    );
+    assert!(schnorr_verify(
+        &intent_key.public_key().unwrap(),
+        &payment_msg,
+        &p_chal,
+        &p_sig
+    )
+    .is_err());
 }
 
 #[test]

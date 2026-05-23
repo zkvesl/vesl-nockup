@@ -57,8 +57,8 @@ fn main() -> anyhow::Result<()> {
         expected_uri: "https://trust.example.org/admin/rotate-key",
         expected_version: "1",
     };
-    let identity = verify(&header, &ctx, &cache, now)
-        .map_err(|e| anyhow::anyhow!("siwn verify: {e}"))?;
+    let identity =
+        verify(&header, &ctx, &cache, now).map_err(|e| anyhow::anyhow!("siwn verify: {e}"))?;
 
     assert_eq!(identity.address, address);
     assert_eq!(identity.nonce, "operator-sess-2026-04-29-001");
