@@ -40,7 +40,7 @@ async fn batch_init_add_flush_paths() -> Result<()> {
     assert_eq!(thr, 0, "threshold must initialize to 0");
 
     // Set threshold = 3.
-    let tags = harness.poke_slab(build_batch_init_poke(3)).await?;
+    let tags = harness.poke_slab(build_batch_init_poke(3)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "batch-initialized"),
         "expected %batch-initialized; got {tags:?}",
@@ -50,7 +50,7 @@ async fn batch_init_add_flush_paths() -> Result<()> {
 
     // Add 2 intents — below threshold, no auto-flush.
     for _ in 0..2 {
-        let tags = harness.poke_slab(build_batch_add_poke(JAM_OF_ZERO)).await?;
+        let tags = harness.poke_slab(build_batch_add_poke(JAM_OF_ZERO)).await?.effect_head_tags();
         assert!(
             tags.iter().any(|t| t == "batch-added"),
             "expected %batch-added; got {tags:?}",
@@ -64,7 +64,7 @@ async fn batch_init_add_flush_paths() -> Result<()> {
     assert_eq!(len, 2, "pending-len after 2 adds");
 
     // Add the 3rd intent — at threshold, must auto-flush.
-    let tags = harness.poke_slab(build_batch_add_poke(JAM_OF_ZERO)).await?;
+    let tags = harness.poke_slab(build_batch_add_poke(JAM_OF_ZERO)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "batch-added"),
         "expected %batch-added on the trigger add; got {tags:?}",
@@ -79,7 +79,7 @@ async fn batch_init_add_flush_paths() -> Result<()> {
     // Manual flush on empty — must still emit %batch-flushed (the
     // boundary signal lets downstream listeners observe the empty
     // window deterministically).
-    let tags = harness.poke_slab(build_batch_flush_poke()).await?;
+    let tags = harness.poke_slab(build_batch_flush_poke()).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "batch-flushed"),
         "manual flush on empty must emit %batch-flushed; got {tags:?}",
@@ -87,7 +87,7 @@ async fn batch_init_add_flush_paths() -> Result<()> {
 
     // Add 1 intent then manual flush — bundle should carry that one.
     harness.poke_slab(build_batch_add_poke(JAM_OF_ZERO)).await?;
-    let tags = harness.poke_slab(build_batch_flush_poke()).await?;
+    let tags = harness.poke_slab(build_batch_flush_poke()).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "batch-flushed"),
         "expected %batch-flushed on manual drain; got {tags:?}",
@@ -107,7 +107,7 @@ async fn batch_init_add_flush_paths() -> Result<()> {
         b"\xfe\xfe\xfe\xfe\xfe", // long-ones / unaligned
     ];
     for input in hostile {
-        let tags = harness.poke_slab(build_batch_add_poke(input)).await?;
+        let tags = harness.poke_slab(build_batch_add_poke(input)).await?.effect_head_tags();
         let added = tags.iter().any(|t| t == "batch-added");
         let errored = tags.iter().any(|t| t == "batch-error");
         assert!(

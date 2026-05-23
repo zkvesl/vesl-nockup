@@ -48,7 +48,7 @@ async fn validate_install_reject_clear_paths() -> Result<()> {
     // Pre-install: %cause poke runs through the normal arm. The
     // scaffold's %cause arm emits nothing visible; what matters is
     // that NO %validate-rejected effect surfaces.
-    let tags = harness.poke_slab(build_bare_cause_poke()).await?;
+    let tags = harness.poke_slab(build_bare_cause_poke()).await?.effect_head_tags();
     assert!(
         !tags.iter().any(|t| t == "validate-rejected"),
         "no rules installed; %cause must not be rejected. got {tags:?}",
@@ -59,14 +59,14 @@ async fn validate_install_reject_clear_paths() -> Result<()> {
     // on every subsequent %cause poke.
     let tags = harness
         .poke_slab(build_validate_init_poke("cause", &[ValidateRule::NonEmpty]))
-        .await?;
+        .await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "validate-rules-installed"),
         "expected %validate-rules-installed effect; got {tags:?}",
     );
 
     // Now %cause must short-circuit to %validate-rejected.
-    let tags = harness.poke_slab(build_bare_cause_poke()).await?;
+    let tags = harness.poke_slab(build_bare_cause_poke()).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "validate-rejected"),
         "rule installed; %cause must short-circuit. got {tags:?}",
@@ -76,12 +76,12 @@ async fn validate_install_reject_clear_paths() -> Result<()> {
     // fall through again — no %validate-rejected.
     let tags = harness
         .poke_slab(build_validate_clear_poke("cause"))
-        .await?;
+        .await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "validate-rules-cleared"),
         "expected %validate-rules-cleared; got {tags:?}",
     );
-    let tags = harness.poke_slab(build_bare_cause_poke()).await?;
+    let tags = harness.poke_slab(build_bare_cause_poke()).await?.effect_head_tags();
     assert!(
         !tags.iter().any(|t| t == "validate-rejected"),
         "rules cleared; %cause must not be rejected. got {tags:?}",

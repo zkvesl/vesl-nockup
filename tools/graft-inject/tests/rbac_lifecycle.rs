@@ -45,7 +45,7 @@ async fn rbac_grant_revoke_auto_clear_paths() -> Result<()> {
     // Grant {read, write} to pubkey 1.
     let tags = harness
         .poke_slab(build_rbac_grant_poke(1, &["read", "write"]))
-        .await?;
+        .await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "rbac-granted"),
         "expected %rbac-granted on initial grant; got {tags:?}",
@@ -59,7 +59,7 @@ async fn rbac_grant_revoke_auto_clear_paths() -> Result<()> {
     // Re-grant {write, audit}: union → {read, write, audit}, count 3.
     let tags = harness
         .poke_slab(build_rbac_grant_poke(1, &["write", "audit"]))
-        .await?;
+        .await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "rbac-granted"),
         "expected %rbac-granted on union; got {tags:?}",
@@ -70,7 +70,7 @@ async fn rbac_grant_revoke_auto_clear_paths() -> Result<()> {
     // Revoke {write}: count drops to 2. Time the poke — before the fix this
     // was the int:in livelock site (asked ∩ held non-empty).
     let revoke_start = Instant::now();
-    let tags = harness.poke_slab(build_rbac_revoke_poke(1, &["write"])).await?;
+    let tags = harness.poke_slab(build_rbac_revoke_poke(1, &["write"])).await?.effect_head_tags();
     let revoke_elapsed = revoke_start.elapsed();
     assert!(
         revoke_elapsed < REVOKE_BUDGET,
@@ -85,7 +85,7 @@ async fn rbac_grant_revoke_auto_clear_paths() -> Result<()> {
 
     // Revoke an unheld perm — must noop, not error.
     let revoke_start = Instant::now();
-    let tags = harness.poke_slab(build_rbac_revoke_poke(1, &["never-held"])).await?;
+    let tags = harness.poke_slab(build_rbac_revoke_poke(1, &["never-held"])).await?.effect_head_tags();
     let revoke_elapsed = revoke_start.elapsed();
     assert!(
         revoke_elapsed < REVOKE_BUDGET,
@@ -123,7 +123,7 @@ async fn rbac_grant_revoke_auto_clear_paths() -> Result<()> {
     assert_eq!(perm_count(&mut harness, 1).await?, 1);
 
     // Empty perms list grant — noop, no error.
-    let tags = harness.poke_slab(build_rbac_grant_poke(2, &[])).await?;
+    let tags = harness.poke_slab(build_rbac_grant_poke(2, &[])).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "rbac-granted"),
         "empty-perms grant must emit %rbac-granted (noop), got {tags:?}",

@@ -31,19 +31,19 @@ async fn guard_register_check_happy_and_error_paths() -> Result<()> {
 
     // Mint first — gives us a committed root under hull 1. Guard then
     // mirrors that registration for its own lookup.
-    let tags = harness.poke_slab(build_mint_commit_poke(1, &root)).await?;
+    let tags = harness.poke_slab(build_mint_commit_poke(1, &root)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "mint-committed"),
         "mint-commit: expected %mint-committed; got {tags:?}",
     );
 
-    let tags = harness.poke_slab(build_guard_register_poke(1, &root)).await?;
+    let tags = harness.poke_slab(build_guard_register_poke(1, &root)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "guard-registered"),
         "guard-register: expected %guard-registered; got {tags:?}",
     );
 
-    let tags = harness.poke_slab(build_guard_check_poke(1, LEAF)).await?;
+    let tags = harness.poke_slab(build_guard_check_poke(1, LEAF)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "guard-checked"),
         "guard-check valid leaf: expected %guard-checked; got {tags:?}",
@@ -51,14 +51,14 @@ async fn guard_register_check_happy_and_error_paths() -> Result<()> {
 
     // Tampered data — still %guard-checked (soft ok=%.n). Guard's
     // design is crash-on-bad-leaf is settle-graft's job, not guard's.
-    let tags = harness.poke_slab(build_guard_check_poke(1, b"tampered")).await?;
+    let tags = harness.poke_slab(build_guard_check_poke(1, b"tampered")).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "guard-checked"),
         "guard-check tampered: expected %guard-checked (soft mismatch); got {tags:?}",
     );
 
     // Unregistered hull → %guard-error, not a silent %guard-checked.
-    let tags = harness.poke_slab(build_guard_check_poke(99, LEAF)).await?;
+    let tags = harness.poke_slab(build_guard_check_poke(99, LEAF)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "guard-error"),
         "guard-check hull 99: expected %guard-error; got {tags:?}",

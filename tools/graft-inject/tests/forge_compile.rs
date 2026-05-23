@@ -40,7 +40,7 @@ async fn four_graft_compose_boots_and_accepts_forge_shape() -> Result<()> {
         let mut mint = Mint::new();
         mint.commit(&[b"forge_compile fixture".as_ref()])
     };
-    let tags = harness.poke_slab(build_mint_commit_poke(1, &root)).await?;
+    let tags = harness.poke_slab(build_mint_commit_poke(1, &root)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "mint-committed"),
         "mint-commit regression on four-graft kernel; got {tags:?}",

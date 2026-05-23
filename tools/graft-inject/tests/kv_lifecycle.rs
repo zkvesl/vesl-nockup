@@ -28,12 +28,12 @@ async fn kv_set_overwrite_delete_paths() -> Result<()> {
     let mut harness = GraftTestHarness::boot(&jam_path).await?;
 
     // %kv-set on two distinct keys.
-    let tags = harness.poke_slab(build_kv_set_poke("greeting", b"hello")).await?;
+    let tags = harness.poke_slab(build_kv_set_poke("greeting", b"hello")).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "kv-stored"),
         "expected %kv-stored on first set; got {tags:?}",
     );
-    let tags = harness.poke_slab(build_kv_set_poke("count", b"\x2a")).await?;
+    let tags = harness.poke_slab(build_kv_set_poke("count", b"\x2a")).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "kv-stored"),
         "expected %kv-stored on second set; got {tags:?}",
@@ -45,7 +45,7 @@ async fn kv_set_overwrite_delete_paths() -> Result<()> {
     assert_eq!(got.as_deref(), Some(&b"\x2a"[..]), "peek count after set");
 
     // Overwrite of an existing key MUST succeed (loose-store semantics).
-    let tags = harness.poke_slab(build_kv_set_poke("greeting", b"goodbye")).await?;
+    let tags = harness.poke_slab(build_kv_set_poke("greeting", b"goodbye")).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "kv-stored"),
         "expected %kv-stored on overwrite; got {tags:?}",
@@ -58,7 +58,7 @@ async fn kv_set_overwrite_delete_paths() -> Result<()> {
     );
 
     // %kv-delete on an existing key.
-    let tags = harness.poke_slab(build_kv_delete_poke("greeting")).await?;
+    let tags = harness.poke_slab(build_kv_delete_poke("greeting")).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "kv-deleted"),
         "expected %kv-deleted on existing key; got {tags:?}",
@@ -67,7 +67,7 @@ async fn kv_set_overwrite_delete_paths() -> Result<()> {
     assert!(got.is_none(), "peek greeting after delete should be ~; got {got:?}");
 
     // %kv-delete on a missing key MUST be idempotent (noop-success).
-    let tags = harness.poke_slab(build_kv_delete_poke("never-set")).await?;
+    let tags = harness.poke_slab(build_kv_delete_poke("never-set")).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "kv-deleted"),
         "delete-missing must emit %kv-deleted, not %kv-error; got {tags:?}",

@@ -59,13 +59,10 @@ async fn invalid_cause_slogs_into_poke_report() -> Result<()> {
         "decode_cause_tag should recover the rejected tag from {invalid_noun:?}",
     );
 
+    let tags = report.outcome.effect_head_tags();
     assert!(
-        report
-            .effect_tags
-            .iter()
-            .all(|t| !t.starts_with("settle-")),
-        "wrapper should short-circuit before any settle-* effect; got {:?}",
-        report.effect_tags,
+        tags.iter().all(|t| !t.starts_with("settle-")),
+        "wrapper should short-circuit before any settle-* effect; got {tags:?}",
     );
 
     Ok(())

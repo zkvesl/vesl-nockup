@@ -44,7 +44,7 @@ async fn settle_register_state_survives_snapshot_resume() -> Result<()> {
     let mut harness = GraftTestHarness::boot(&jam_path).await?;
     let mut mint = Mint::new();
     let root = mint.commit(&[b"checkpoint-test-payload".as_ref()]);
-    let tags = harness.register(1, &root).await?;
+    let tags = harness.register(1, &root).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "settle-registered"),
         "register hull 1 must succeed, got effects {tags:?}",

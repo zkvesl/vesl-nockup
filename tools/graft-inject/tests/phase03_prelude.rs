@@ -112,7 +112,7 @@ async fn prelude_short_circuits_on_declared_cause() -> Result<()> {
     // Poke %guard-trip. Prelude must short-circuit and emit
     // %guard-rejected with the prelude's reason string. The arm-body
     // sentinel ('PRELUDE NOT FIRED') must NOT appear.
-    let tags = harness.poke_slab(build_guard_trip_poke()).await?;
+    let tags = harness.poke_slab(build_guard_trip_poke()).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "guard-rejected"),
         "expected %guard-rejected from prelude short-circuit; got {tags:?}",

@@ -24,7 +24,7 @@ async fn counter_increment_reset_set_paths() -> Result<()> {
     let mut harness = GraftTestHarness::boot(&jam_path).await?;
 
     // %counter-increment on an unset name initializes to 1.
-    let tags = harness.poke_slab(build_counter_increment_poke("requests")).await?;
+    let tags = harness.poke_slab(build_counter_increment_poke("requests")).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "counter-incremented"),
         "expected %counter-incremented on first touch; got {tags:?}",
@@ -38,7 +38,7 @@ async fn counter_increment_reset_set_paths() -> Result<()> {
     assert_eq!(got, Some(2u64), "counter must increment to 2");
 
     // %counter-set overwrites.
-    let tags = harness.poke_slab(build_counter_set_poke("requests", 100)).await?;
+    let tags = harness.poke_slab(build_counter_set_poke("requests", 100)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "counter-set"),
         "expected %counter-set on overwrite; got {tags:?}",
@@ -47,7 +47,7 @@ async fn counter_increment_reset_set_paths() -> Result<()> {
     assert_eq!(got, Some(100u64), "counter-set must overwrite to 100");
 
     // %counter-reset zeros the counter.
-    let tags = harness.poke_slab(build_counter_reset_poke("requests")).await?;
+    let tags = harness.poke_slab(build_counter_reset_poke("requests")).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "counter-reset"),
         "expected %counter-reset; got {tags:?}",
@@ -63,7 +63,7 @@ async fn counter_increment_reset_set_paths() -> Result<()> {
     // Saturation: set to u64::MAX, then increment must error and
     // leave the counter unchanged.
     let _ = harness.poke_slab(build_counter_set_poke("ceiling", u64::MAX)).await?;
-    let tags = harness.poke_slab(build_counter_increment_poke("ceiling")).await?;
+    let tags = harness.poke_slab(build_counter_increment_poke("ceiling")).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "counter-error"),
         "increment past u64::MAX must emit %counter-error; got {tags:?}",

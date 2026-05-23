@@ -112,7 +112,7 @@ async fn postlude_transforms_switch_result() -> Result<()> {
     // Poke %tap-poke. The arm emits %tap-poked. The postlude prepends
     // %tap-observed on top of out.efx. Both must appear; the
     // postlude's effect must be FIRST (the prepend semantics).
-    let tags = harness.poke_slab(build_tap_poke()).await?;
+    let tags = harness.poke_slab(build_tap_poke()).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "tap-poked"),
         "expected %tap-poked from arm body; got {tags:?}",

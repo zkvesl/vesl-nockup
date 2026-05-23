@@ -38,7 +38,7 @@ async fn queue_push_pop_clear_paths() -> Result<()> {
 
     // Push three valid bodies.
     for _ in 0..3 {
-        let tags = harness.poke_slab(build_queue_push_poke(JAM_OF_ZERO)).await?;
+        let tags = harness.poke_slab(build_queue_push_poke(JAM_OF_ZERO)).await?.effect_head_tags();
         assert!(
             tags.iter().any(|t| t == "queue-pushed"),
             "expected %queue-pushed on valid push; got {tags:?}",
@@ -50,7 +50,7 @@ async fn queue_push_pop_clear_paths() -> Result<()> {
 
     // Pop three. Each emits %queue-popped.
     for i in 0..3 {
-        let tags = harness.poke_slab(build_queue_pop_poke()).await?;
+        let tags = harness.poke_slab(build_queue_pop_poke()).await?.effect_head_tags();
         assert!(
             tags.iter().any(|t| t == "queue-popped"),
             "expected %queue-popped on pop {i}; got {tags:?}",
@@ -61,7 +61,7 @@ async fn queue_push_pop_clear_paths() -> Result<()> {
     assert_eq!(len, 0, "queue-len after draining all 3");
 
     // Pop on empty MUST emit %queue-popped (with job=~) — not error.
-    let tags = harness.poke_slab(build_queue_pop_poke()).await?;
+    let tags = harness.poke_slab(build_queue_pop_poke()).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "queue-popped"),
         "empty-pop must emit %queue-popped (not %queue-error); got {tags:?}",
@@ -74,7 +74,7 @@ async fn queue_push_pop_clear_paths() -> Result<()> {
     // Push then clear: len → 0.
     harness.poke_slab(build_queue_push_poke(JAM_OF_ZERO)).await?;
     harness.poke_slab(build_queue_push_poke(JAM_OF_ZERO)).await?;
-    let tags = harness.poke_slab(build_queue_clear_poke()).await?;
+    let tags = harness.poke_slab(build_queue_clear_poke()).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "queue-cleared"),
         "expected %queue-cleared; got {tags:?}",
@@ -93,7 +93,7 @@ async fn queue_push_pop_clear_paths() -> Result<()> {
         b"\xfe\xfe\xfe\xfe\xfe", // long-ones / unaligned
     ];
     for input in hostile {
-        let tags = harness.poke_slab(build_queue_push_poke(input)).await?;
+        let tags = harness.poke_slab(build_queue_push_poke(input)).await?.effect_head_tags();
         let pushed = tags.iter().any(|t| t == "queue-pushed");
         let errored = tags.iter().any(|t| t == "queue-error");
         assert!(

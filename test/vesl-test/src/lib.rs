@@ -22,8 +22,8 @@ use nockapp::kernel::boot;
 use nockapp::noun::slab::NounSlab;
 use nockapp::wire::{SystemWire, Wire};
 use vesl_core::{
-    Tip5Hash, build_graft_single_leaf_payload_jammed, build_settle_poke_jammed,
-    build_settle_register_poke, effect_head_tags,
+    classify_effects, build_graft_single_leaf_payload_jammed, build_settle_poke_jammed,
+    build_settle_register_poke, PokeCrashError, PokeOutcome, Tip5Hash,
 };
 
 // -- public test vectors ----------------------------------------------------
@@ -79,20 +79,21 @@ impl GraftTestHarness {
         })
     }
 
-    /// Send `[%settle-register hull root]`. Returns the effect tag list.
-    pub async fn register(&mut self, hull: u64, root: &Tip5Hash) -> Result<Vec<String>> {
+    /// Send `[%settle-register hull root]`. Returns the typed
+    /// [`PokeOutcome`]; call `.effect_head_tags()` for the tag list.
+    pub async fn register(&mut self, hull: u64, root: &Tip5Hash) -> Result<PokeOutcome> {
         let slab = build_settle_register_poke(hull, root);
         self.poke_slab(slab).await
     }
 
     /// Send `[%settle-verify payload]` where payload is pre-jammed graft bytes.
-    pub async fn verify(&mut self, payload: &[u8]) -> Result<Vec<String>> {
+    pub async fn verify(&mut self, payload: &[u8]) -> Result<PokeOutcome> {
         let slab = build_settle_poke_jammed("settle-verify", payload);
         self.poke_slab(slab).await
     }
 
     /// Send `[%settle-note payload]` where payload is pre-jammed graft bytes.
-    pub async fn note(&mut self, payload: &[u8]) -> Result<Vec<String>> {
+    pub async fn note(&mut self, payload: &[u8]) -> Result<PokeOutcome> {
         let slab = build_settle_poke_jammed("settle-note", payload);
         self.poke_slab(slab).await
     }
@@ -100,24 +101,30 @@ impl GraftTestHarness {
     /// Deprecated alias for [`GraftTestHarness::note`]. The `%vesl-settle`
     /// cause tag became `%settle-note`.
     #[deprecated(since = "0.2.0", note = "renamed; use note()")]
-    pub async fn settle(&mut self, payload: &[u8]) -> Result<Vec<String>> {
+    pub async fn settle(&mut self, payload: &[u8]) -> Result<PokeOutcome> {
         self.note(payload).await
     }
 
     /// Raw escape hatch — send an arbitrary NounSlab as a system poke.
-    pub async fn poke_slab(&mut self, slab: NounSlab) -> Result<Vec<String>> {
-        let effects = self
-            .app
-            .poke(SystemWire.to_wire(), slab)
-            .await
-            .map_err(|e| anyhow::anyhow!("poke failed: {e}"))?;
-        Ok(effect_head_tags(&effects))
+    /// Returns a typed [`PokeOutcome`] classifying the kernel's reply.
+    /// A `NockAppError` from `app.poke` becomes
+    /// [`PokeCrashError::KernelPoke`] under [`PokeOutcome::Crashed`] —
+    /// tests can match on it instead of catching the error at the
+    /// `Result` layer.
+    pub async fn poke_slab(&mut self, slab: NounSlab) -> Result<PokeOutcome> {
+        let outcome = match self.app.poke(SystemWire.to_wire(), slab).await {
+            Ok(effects) => classify_effects(effects),
+            Err(e) => PokeOutcome::Crashed {
+                error: PokeCrashError::KernelPoke(e),
+            },
+        };
+        Ok(outcome)
     }
 
     /// Like [`poke_slab`] but also returns any slog warnings emitted
     /// during the call (e.g. `invalid cause` from the wrapper's
     /// `(soft cause)` short-circuit). Use when a test needs to assert
-    /// on the kernel's diagnostics, not just on the effect tags.
+    /// on the kernel's diagnostics, not just on the typed outcome.
     ///
     /// Capture is process-global: the kernel emits slogs from whichever
     /// tokio worker thread runs the poke, so a thread-local buffer
@@ -129,13 +136,9 @@ impl GraftTestHarness {
     /// fall back to `poke_slab` and parse stderr themselves.
     pub async fn poke_slab_report(&mut self, slab: NounSlab) -> Result<PokeReport> {
         clear_capture();
-        let effects = self
-            .app
-            .poke(SystemWire.to_wire(), slab)
-            .await
-            .map_err(|e| anyhow::anyhow!("poke failed: {e}"))?;
+        let outcome = self.poke_slab(slab).await?;
         Ok(PokeReport {
-            effect_tags: effect_head_tags(&effects),
+            outcome,
             slog_warnings: drain_capture(),
         })
     }
@@ -254,14 +257,15 @@ impl SuiteReport {
     fn record(
         &mut self,
         name: &str,
-        result: Result<Vec<String>>,
+        result: Result<PokeOutcome>,
         expected_contains: &[&str],
     ) {
         match result {
             Err(e) => {
                 self.failed.push((name.to_string(), format!("poke error: {e:#}")));
             }
-            Ok(tags) => {
+            Ok(outcome) => {
+                let tags = outcome.effect_head_tags();
                 let mut hit = false;
                 for needle in expected_contains {
                     if tags.iter().any(|t| t == *needle) {
@@ -296,13 +300,14 @@ impl SuiteReport {
 
 // -- poke report ------------------------------------------------------------
 
-/// Outcome of a single poke. `effect_tags` is the same `Vec<String>`
-/// that [`GraftTestHarness::poke_slab`] returns; `slog_warnings`
-/// captures any `target: "slogger"` tracing events emitted by the
-/// kernel during the call.
-#[derive(Debug, Clone, Default)]
+/// Outcome of a single poke alongside any slog warnings emitted during
+/// the call. `outcome` is the typed [`PokeOutcome`] that
+/// [`GraftTestHarness::poke_slab`] returns; `slog_warnings` captures
+/// `target: "slogger"` tracing events from the kernel. For tests that
+/// only need the effect tag list, call `report.outcome.effect_head_tags()`.
+#[derive(Debug)]
 pub struct PokeReport {
-    pub effect_tags: Vec<String>,
+    pub outcome: PokeOutcome,
     pub slog_warnings: Vec<SlogWarning>,
 }
 

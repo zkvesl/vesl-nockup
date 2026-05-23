@@ -47,7 +47,7 @@ async fn eight_graft_namespace_audit() -> Result<()> {
     // the five state grafts living in the same kernel.
     let mut mint = Mint::new();
     let root = mint.commit(&[b"phase02-audit-fixture"]);
-    let tags = harness.poke_slab(build_mint_commit_poke(7, &root)).await?;
+    let tags = harness.poke_slab(build_mint_commit_poke(7, &root)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "mint-committed"),
         "mint-committed must fire under 8-graft compose; got {tags:?}",
@@ -55,7 +55,7 @@ async fn eight_graft_namespace_audit() -> Result<()> {
 
     // Guard registers the same hull — proves commitment-graft state
     // slots stay isolated from each other under the wider compose.
-    let tags = harness.poke_slab(build_guard_register_poke(7, &root)).await?;
+    let tags = harness.poke_slab(build_guard_register_poke(7, &root)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "guard-registered"),
         "guard-registered must fire; got {tags:?}",
@@ -64,23 +64,23 @@ async fn eight_graft_namespace_audit() -> Result<()> {
     // KV set + counter increment + queue clear + rbac grant +
     // registry put. Each emits its own typed effect; none of the
     // tags collide with another graft's surface.
-    let tags = harness.poke_slab(build_kv_set_poke("audit", b"ok")).await?;
+    let tags = harness.poke_slab(build_kv_set_poke("audit", b"ok")).await?.effect_head_tags();
     assert!(tags.iter().any(|t| t == "kv-stored"));
 
-    let tags = harness.poke_slab(build_counter_increment_poke("audit")).await?;
+    let tags = harness.poke_slab(build_counter_increment_poke("audit")).await?.effect_head_tags();
     assert!(tags.iter().any(|t| t == "counter-incremented"));
 
-    let tags = harness.poke_slab(build_queue_clear_poke()).await?;
+    let tags = harness.poke_slab(build_queue_clear_poke()).await?.effect_head_tags();
     assert!(tags.iter().any(|t| t == "queue-cleared"));
 
     let tags = harness
         .poke_slab(build_rbac_grant_poke(123, &["audit"]))
-        .await?;
+        .await?.effect_head_tags();
     assert!(tags.iter().any(|t| t == "rbac-granted"));
 
     let tags = harness
         .poke_slab(build_registry_put_poke(456, &[0x02])) // jam(0)
-        .await?;
+        .await?.effect_head_tags();
     assert!(tags.iter().any(|t| t == "registry-stored"));
 
     // Effect-tag determinism: each poke's tag set MUST NOT include

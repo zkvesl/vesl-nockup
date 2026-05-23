@@ -26,20 +26,20 @@ async fn mint_commit_two_hulls_then_peek() -> Result<()> {
     let root1 = commit_root(b"mint-graft fixture payload A");
     let root2 = commit_root(b"mint-graft fixture payload B");
 
-    let tags = harness.poke_slab(build_mint_commit_poke(1, &root1)).await?;
+    let tags = harness.poke_slab(build_mint_commit_poke(1, &root1)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "mint-committed"),
         "expected %mint-committed for hull 1; got {tags:?}",
     );
 
-    let tags = harness.poke_slab(build_mint_commit_poke(2, &root2)).await?;
+    let tags = harness.poke_slab(build_mint_commit_poke(2, &root2)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "mint-committed"),
         "expected %mint-committed for hull 2; got {tags:?}",
     );
 
     // Re-committing hull 1 must report %mint-error (append-only trellis).
-    let tags = harness.poke_slab(build_mint_commit_poke(1, &root1)).await?;
+    let tags = harness.poke_slab(build_mint_commit_poke(1, &root1)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "mint-error"),
         "expected %mint-error on re-commit of hull 1; got {tags:?}",

@@ -45,7 +45,7 @@ async fn manifest_gate_register_then_note_happy_path() -> Result<()> {
 
     let tags = harness
         .poke_slab(build_settle_register_poke(HULL, &root))
-        .await?;
+        .await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "settle-registered"),
         "settle-register: expected %settle-registered; got {tags:?}",
@@ -65,7 +65,7 @@ async fn manifest_gate_register_then_note_happy_path() -> Result<()> {
         .poke_slab(build_settle_note_manifest_poke(
             NOTE_ID, HULL, &root, &fields, &proofs,
         ))
-        .await?;
+        .await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "settle-noted"),
         "settle-note (manifest-verify, valid proofs): expected %settle-noted; got {tags:?}",

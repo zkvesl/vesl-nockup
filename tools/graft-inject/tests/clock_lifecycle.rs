@@ -33,7 +33,7 @@ async fn clock_tick_monotonic_paths() -> Result<()> {
     assert_eq!(now, 0, "clock-now must initialize to 0 (event-count source)");
 
     // First tick: now → 1.
-    let tags = harness.poke_slab(build_clock_tick_poke()).await?;
+    let tags = harness.poke_slab(build_clock_tick_poke()).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "clock-ticked"),
         "expected %clock-ticked on first tick; got {tags:?}",
@@ -43,7 +43,7 @@ async fn clock_tick_monotonic_paths() -> Result<()> {
 
     // Many ticks: monotonic, no skip.
     for expected in 2u64..=20 {
-        let tags = harness.poke_slab(build_clock_tick_poke()).await?;
+        let tags = harness.poke_slab(build_clock_tick_poke()).await?.effect_head_tags();
         assert!(
             tags.iter().any(|t| t == "clock-ticked"),
             "expected %clock-ticked at tick {expected}; got {tags:?}",

@@ -54,7 +54,7 @@ async fn schnorr_gate_register_then_note_happy_path() -> Result<()> {
 
     let tags = harness
         .poke_slab(build_settle_register_poke(HULL, &leaf_root))
-        .await?;
+        .await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "settle-registered"),
         "settle-register: expected %settle-registered; got {tags:?}",
@@ -70,7 +70,7 @@ async fn schnorr_gate_register_then_note_happy_path() -> Result<()> {
         &sig,
         &pubkey,
     );
-    let tags = harness.poke_slab(slab).await?;
+    let tags = harness.poke_slab(slab).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "settle-noted"),
         "settle-note (valid 32-byte schnorr): expected %settle-noted; got {tags:?}",
@@ -92,7 +92,7 @@ async fn schnorr_gate_register_then_note_happy_path() -> Result<()> {
         &tampered,
         &pubkey,
     );
-    let tags = harness.poke_slab(bad_slab).await?;
+    let tags = harness.poke_slab(bad_slab).await?.effect_head_tags();
     assert!(
         !tags.iter().any(|t| t == "settle-noted"),
         "settle-note (tampered sig): %settle-noted must NOT appear; got {tags:?}",

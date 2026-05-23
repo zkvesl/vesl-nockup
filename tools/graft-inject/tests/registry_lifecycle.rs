@@ -41,7 +41,7 @@ async fn registry_strict_paths_and_hostile_input() -> Result<()> {
     let record_7 = jam_atom(7);
 
     // %registry-put on a fresh key.
-    let tags = harness.poke_slab(build_registry_put_poke(1, &record_42)).await?;
+    let tags = harness.poke_slab(build_registry_put_poke(1, &record_42)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "registry-stored"),
         "expected %registry-stored on put; got {tags:?}",
@@ -50,7 +50,7 @@ async fn registry_strict_paths_and_hostile_input() -> Result<()> {
     assert_eq!(got, Some(vec![42]), "peek returns the put record");
 
     // %registry-put on existing key MUST error (strict create-only).
-    let tags = harness.poke_slab(build_registry_put_poke(1, &record_99)).await?;
+    let tags = harness.poke_slab(build_registry_put_poke(1, &record_99)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "registry-error"),
         "put on existing key must emit %registry-error; got {tags:?}",
@@ -59,7 +59,7 @@ async fn registry_strict_paths_and_hostile_input() -> Result<()> {
     assert_eq!(got, Some(vec![42]), "failed put must NOT mutate state");
 
     // %registry-update on existing key — overwrite + surface old/new.
-    let tags = harness.poke_slab(build_registry_update_poke(1, &record_99)).await?;
+    let tags = harness.poke_slab(build_registry_update_poke(1, &record_99)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "registry-updated"),
         "expected %registry-updated; got {tags:?}",
@@ -68,7 +68,7 @@ async fn registry_strict_paths_and_hostile_input() -> Result<()> {
     assert_eq!(got, Some(vec![99]), "update must overwrite");
 
     // %registry-update on missing key MUST error.
-    let tags = harness.poke_slab(build_registry_update_poke(2, &record_7)).await?;
+    let tags = harness.poke_slab(build_registry_update_poke(2, &record_7)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "registry-error"),
         "update on missing key must emit %registry-error; got {tags:?}",
@@ -79,7 +79,7 @@ async fn registry_strict_paths_and_hostile_input() -> Result<()> {
     );
 
     // %registry-del on existing key.
-    let tags = harness.poke_slab(build_registry_del_poke(1)).await?;
+    let tags = harness.poke_slab(build_registry_del_poke(1)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "registry-deleted"),
         "expected %registry-deleted; got {tags:?}",
@@ -87,7 +87,7 @@ async fn registry_strict_paths_and_hostile_input() -> Result<()> {
     assert!(peek_entry(&mut harness, 1).await?.is_none());
 
     // %registry-del on missing key MUST error (strict delete).
-    let tags = harness.poke_slab(build_registry_del_poke(1)).await?;
+    let tags = harness.poke_slab(build_registry_del_poke(1)).await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "registry-error"),
         "del on missing key must emit %registry-error; got {tags:?}",
@@ -102,7 +102,7 @@ async fn registry_strict_paths_and_hostile_input() -> Result<()> {
         b"\xfe\xfe\xfe\xfe\xfe",
     ];
     for input in hostile {
-        let tags = harness.poke_slab(build_registry_put_poke(50, input)).await?;
+        let tags = harness.poke_slab(build_registry_put_poke(50, input)).await?.effect_head_tags();
         let stored = tags.iter().any(|t| t == "registry-stored");
         let errored = tags.iter().any(|t| t == "registry-error");
         assert!(
@@ -120,7 +120,7 @@ async fn registry_strict_paths_and_hostile_input() -> Result<()> {
     // update with malformed jam. State must remain at the original.
     let _ = harness.poke_slab(build_registry_put_poke(60, &record_42)).await?;
     for input in hostile {
-        let tags = harness.poke_slab(build_registry_update_poke(60, input)).await?;
+        let tags = harness.poke_slab(build_registry_update_poke(60, input)).await?.effect_head_tags();
         let updated = tags.iter().any(|t| t == "registry-updated");
         let errored = tags.iter().any(|t| t == "registry-error");
         assert!(

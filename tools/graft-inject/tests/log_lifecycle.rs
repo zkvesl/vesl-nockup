@@ -35,7 +35,7 @@ async fn log_append_paths() -> Result<()> {
 
     // Append three valid entries with different tags.
     for tag in &["settle", "registry-put", "kv-set"] {
-        let tags = harness.poke_slab(build_log_append_poke(tag, JAM_OF_ZERO)).await?;
+        let tags = harness.poke_slab(build_log_append_poke(tag, JAM_OF_ZERO)).await?.effect_head_tags();
         assert!(
             tags.iter().any(|t| t == "log-appended"),
             "expected %log-appended on valid append (tag={tag}); got {tags:?}",
@@ -60,7 +60,7 @@ async fn log_append_paths() -> Result<()> {
     for input in hostile {
         let tags = harness
             .poke_slab(build_log_append_poke("hostile", input))
-            .await?;
+            .await?.effect_head_tags();
         let appended = tags.iter().any(|t| t == "log-appended");
         let errored = tags.iter().any(|t| t == "log-error");
         assert!(

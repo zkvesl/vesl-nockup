@@ -73,7 +73,7 @@ async fn four_graft_end_to_end() -> Result<()> {
     let mint_root = commit_root(DOMAIN_LEAF);
     let tags = harness
         .poke_slab(build_mint_commit_poke(DOMAIN_HULL, &mint_root))
-        .await?;
+        .await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "mint-committed"),
         "mint-commit: expected %mint-committed; got {tags:?}",
@@ -94,7 +94,7 @@ async fn four_graft_end_to_end() -> Result<()> {
     // ---------------------------------------------------------------
     let tags = harness
         .poke_slab(build_guard_register_poke(DOMAIN_HULL, &mint_root))
-        .await?;
+        .await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "guard-registered"),
         "guard-register: expected %guard-registered; got {tags:?}",
@@ -102,7 +102,7 @@ async fn four_graft_end_to_end() -> Result<()> {
 
     let tags = harness
         .poke_slab(build_guard_check_poke(DOMAIN_HULL, DOMAIN_LEAF))
-        .await?;
+        .await?.effect_head_tags();
     assert!(
         tags.iter().any(|t| t == "guard-checked"),
         "guard-check valid leaf: expected %guard-checked; got {tags:?}",
@@ -151,7 +151,7 @@ async fn four_graft_end_to_end() -> Result<()> {
     // without crashing. If the graft-inject composer ever broke the
     // `?-` exhaustivity check on `-.u.act`, this poke would fail.
     // ---------------------------------------------------------------
-    let tags = harness.poke_slab(build_template_cause_poke()).await?;
+    let tags = harness.poke_slab(build_template_cause_poke()).await?.effect_head_tags();
     assert!(
         tags.is_empty(),
         "template %cause placeholder should emit no effects; got {tags:?}",
