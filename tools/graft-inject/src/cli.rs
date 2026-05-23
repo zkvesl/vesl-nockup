@@ -22,7 +22,9 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::codegen::{CodegenReport, CodegenStatus, run_codegen_kernel_cause_tags};
+use crate::codegen::{
+    CodegenReport, CodegenStatus, run_codegen_harness_methods, run_codegen_kernel_cause_tags,
+};
 use crate::doctor::run_doctor;
 use crate::inject::{
     InjectReport, MigrationReport, enforce_markers_placeable, inject, migrate_legacy_effect,
@@ -294,6 +296,28 @@ pub(crate) enum CodegenTarget {
         #[arg(long)]
         json: bool,
     },
+
+    /// Emit typed `GraftTestHarness` methods + per-graft outcome enums
+    /// from the `harness-bindings.toml` sidecar. The generated file
+    /// gets committed to `test/vesl-test/src/generated_harness.rs`;
+    /// re-run after every sidecar or per-graft poke-arm change.
+    /// Cross-checks every `(graft, tag)` against the matching
+    /// `*-graft.toml` poke body so a rename in either surface surfaces
+    /// at codegen time rather than as a runtime empty effect list.
+    HarnessMethods {
+        /// Path to the sidecar TOML (default: `hoon/lib/harness-bindings.toml`).
+        #[arg(long, default_value = "hoon/lib/harness-bindings.toml")]
+        bindings: PathBuf,
+
+        /// Manifest discovery root for the cross-check.
+        #[arg(long, default_value = DEFAULT_LIB_DIR)]
+        lib_dir: PathBuf,
+
+        /// Output Rust file path. Without `--out` the emitted source
+        /// goes to stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 /// Schema item for `--list --json`. Stable: version bumps append
@@ -422,6 +446,11 @@ pub(crate) fn dispatch(cli: Cli) -> Result<()> {
                 out,
                 json,
             } => run_codegen_kernel_cause_tags(&path, &lib_dir, out.as_deref(), json),
+            CodegenTarget::HarnessMethods {
+                bindings,
+                lib_dir,
+                out,
+            } => run_codegen_harness_methods(&bindings, &lib_dir, out.as_deref()),
         },
         Some(Command::RenameKernel {
             new_name,

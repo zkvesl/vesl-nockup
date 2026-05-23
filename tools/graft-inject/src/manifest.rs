@@ -156,8 +156,16 @@ pub(crate) fn load_manifest(path: &Path) -> Result<Option<Graft>> {
         .with_context(|| format!("reading manifest {}", path.display()))?;
     let value: toml::Value = toml::from_str(&raw)
         .with_context(|| format!("parsing manifest {}", path.display()))?;
-    if value.get("graft").is_none() {
-        return Ok(None);
+    match value.get("graft") {
+        None => return Ok(None),
+        // A graft manifest's `[graft]` is a single table. The
+        // `harness-bindings.toml` sidecar (which also lives under
+        // `hoon/lib/`) uses `[[graft]]` — an array of tables — and is
+        // not a graft manifest. Skip cleanly rather than letting the
+        // strict `ManifestFile` deserializer below bail with an
+        // "expected a string" toml error.
+        Some(v) if !v.is_table() => return Ok(None),
+        Some(_) => {}
     }
     let manifest: ManifestFile = toml::from_str(&raw)
         .with_context(|| format!("deserializing manifest {}", path.display()))?;

@@ -58,6 +58,7 @@ mod cli;
 mod codegen;
 mod doctor;
 mod gates;
+mod harness_bindings;
 mod inject;
 mod lint;
 mod manifest;
