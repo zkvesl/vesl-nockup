@@ -93,6 +93,18 @@ pub(crate) enum LintFinding {
         /// 1-indexed line numbers of every occurrence (sorted).
         lines: Vec<usize>,
     },
+    /// The kernel's `+$ cause $%(...)` cites a sub-cause-type
+    /// (e.g. `settle-cause`) that no graft's `[graft.types].cause`
+    /// declares in the active set. Today the cause-tag codegen
+    /// silently drops the contribution and hoonc surfaces the
+    /// failure as `find . <name>-cause`.
+    UnresolvedCauseReference {
+        /// 1-indexed line of the reference inside the kernel's
+        /// `+$ cause` union.
+        line: usize,
+        /// The cause-type name the union references.
+        name: String,
+    },
 }
 
 impl LintFinding {
@@ -106,6 +118,7 @@ impl LintFinding {
             LintFinding::Collision { .. } => "collision",
             LintFinding::TransitiveImport { .. } => "transitive-imports",
             LintFinding::InternalDupe { .. } => "internal-dupes",
+            LintFinding::UnresolvedCauseReference { .. } => "unresolved-cause-reference",
         }
     }
 
@@ -117,7 +130,8 @@ impl LintFinding {
     pub(crate) fn line(&self) -> Option<usize> {
         match self {
             LintFinding::WeldFriction { line, .. }
-            | LintFinding::BareTildeAmbiguity { line, .. } => Some(*line),
+            | LintFinding::BareTildeAmbiguity { line, .. }
+            | LintFinding::UnresolvedCauseReference { line, .. } => Some(*line),
             LintFinding::Collision { .. }
             | LintFinding::TransitiveImport { .. }
             | LintFinding::InternalDupe { .. } => None,
@@ -829,6 +843,47 @@ pub(crate) fn lint_internal_dupes(lines: &[String]) -> Vec<LintFinding> {
     findings
 }
 
+// ---------------------------------------------------------------
+// Unresolved cause-reference lint
+// ---------------------------------------------------------------
+
+/// Pre-apply lint: the kernel's `+$ cause $%(...)` cites a
+/// sub-cause-type (e.g. `settle-cause`) that no graft's
+/// `[graft.types].cause` declares in the active set.
+///
+/// `run_codegen_kernel_cause_tags` falls through silently when a
+/// reference doesn't resolve — its comment described this as
+/// "caught earlier" by `inject`, but `inject` operates on banner
+/// markers, not on the `+$ cause` body. Without this lint, the
+/// orphan reference reaches hoonc, which surfaces it as
+/// `find . <name>-cause` — a message that doesn't name the kernel
+/// source line or the graft set that should have declared the type.
+///
+/// The lint scans `extract_cause_union_members(lines)` for
+/// `CauseUnionMember::Reference` entries and cross-checks each
+/// against the set of declared `[graft.types].cause` names. The
+/// placeholder `[%cause ~]` literal (which the template ships) is
+/// already filtered out by the Reference / Literal split.
+pub(crate) fn lint_unresolved_cause_references(
+    grafts: &[Graft],
+    lines: &[String],
+) -> Vec<LintFinding> {
+    let declared: HashSet<&str> = grafts
+        .iter()
+        .filter_map(|g| g.types.as_ref().and_then(|t| t.cause.as_deref()))
+        .collect();
+    let mut findings: Vec<LintFinding> = Vec::new();
+    for member in extract_cause_union_members(lines) {
+        let CauseUnionMember::Reference { name, line } = member else {
+            continue;
+        };
+        if !declared.contains(name.as_str()) {
+            findings.push(LintFinding::UnresolvedCauseReference { line, name });
+        }
+    }
+    findings
+}
+
 /// Walk from `+$ cause $%(...)` open to its closing `==`, emitting
 /// `(tag, 1-indexed line)` for every `[%<tag> ...]` variant. Banner
 /// content IS included — internal-collision lint cares about literal
@@ -1045,6 +1100,12 @@ pub(crate) fn print_lint_finding(f: &LintFinding, path: &Path) {
                 line_list.join(", "),
             );
         }
+        LintFinding::UnresolvedCauseReference { line, name } => {
+            eprintln!(
+                "  {kind}: {}:{line} — `+$ cause` references `{name}`, but no graft's [graft.types].cause declares that type",
+                path.display(),
+            );
+        }
     }
 }
 
@@ -1080,6 +1141,7 @@ const KIND_ORDER: &[&str] = &[
     "collision",
     "transitive-imports",
     "internal-dupes",
+    "unresolved-cause-reference",
 ];
 
 /// Emit the per-lint remediation hint block after a group of findings
@@ -1142,6 +1204,23 @@ fn print_remediation_hint(kind: &str) {
                 "    Rename, merge into a tagged sum, or distinguish by argument shape."
             );
         }
+        "unresolved-cause-reference" => {
+            eprintln!(
+                "    the cause-tag codegen drops the contribution silently and"
+            );
+            eprintln!(
+                "    hoonc later surfaces it as `find . <name>-cause`. Either"
+            );
+            eprintln!(
+                "    add the missing manifest to --lib-dir (and ensure its"
+            );
+            eprintln!(
+                "    [graft.types].cause matches the referenced name), or remove"
+            );
+            eprintln!(
+                "    the reference from the kernel's `+$ cause` union."
+            );
+        }
         _ => {}
     }
 }
@@ -1179,17 +1258,26 @@ struct InternalDupeRecord<'a> {
     lines: &'a [usize],
 }
 
+#[derive(Serialize)]
+struct UnresolvedCauseReferenceRecord<'a> {
+    line: usize,
+    name: &'a str,
+}
+
 /// Per-kind JSON projection — keys + record shape match the historic
-/// `LintReport` schema (`bare_tilde_ambiguity`, `collision`,
-/// `transitive_imports`, `internal_dupes`). Weld-friction has its own
-/// stderr path inside the inject report and is not part of the
-/// `lint` subcommand JSON, matching pre-Phase-1 behavior.
+/// `LintReport` schema for the four pre-existing lints
+/// (`bare_tilde_ambiguity`, `collision`, `transitive_imports`,
+/// `internal_dupes`). New keys are additive only: a future caller
+/// pinned to the legacy schema sees its keys unchanged. Weld-friction
+/// is not part of the lint subcommand JSON (it ships through the
+/// inject report's stderr).
 #[derive(Serialize, Default)]
 struct LintReport<'a> {
     bare_tilde_ambiguity: Vec<BareTildeRecord<'a>>,
     collision: Vec<CollisionRecord<'a>>,
     transitive_imports: Vec<TransitiveImportRecord<'a>>,
     internal_dupes: Vec<InternalDupeRecord<'a>>,
+    unresolved_cause_references: Vec<UnresolvedCauseReferenceRecord<'a>>,
 }
 
 impl<'a> LintReport<'a> {
@@ -1236,6 +1324,14 @@ impl<'a> LintReport<'a> {
                         lines,
                     });
                 }
+                LintFinding::UnresolvedCauseReference { line, name } => {
+                    report
+                        .unresolved_cause_references
+                        .push(UnresolvedCauseReferenceRecord {
+                            line: *line,
+                            name,
+                        });
+                }
             }
         }
         report
@@ -1278,15 +1374,16 @@ pub(crate) fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
     let mut findings: Vec<LintFinding> = Vec::new();
     findings.extend(lint_bare_tilde_ambiguity(&lines));
 
-    // Collision check needs the discovered graft set so it can
-    // cross-reference cause tags and state fields. When --lib-dir
-    // doesn't exist we skip collision check rather than hard-error;
-    // the other lints stay useful on their own (e.g. on a kernel
-    // outside its project tree).
+    // Collision check + unresolved-cause-reference need the discovered
+    // graft set so they can cross-reference manifests. When --lib-dir
+    // doesn't exist we skip both rather than hard-error; the other
+    // lints stay useful on their own (e.g. on a kernel outside its
+    // project tree).
     if lib_dir.is_dir() {
         let grafts = discover_grafts(lib_dir)
             .with_context(|| format!("discovering grafts under {}", lib_dir.display()))?;
         findings.extend(lint_collision_check(&grafts, &lines));
+        findings.extend(lint_unresolved_cause_references(&grafts, &lines));
     }
 
     // Transitive import walk. Runs unconditionally — the silent-fail
@@ -1323,7 +1420,7 @@ pub(crate) fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{Block, GraftBlocks};
+    use crate::manifest::{Block, GraftBlocks, GraftTypes};
 
     /// Helper: assert exactly one finding and unwrap its
     /// `BareTildeAmbiguity` variant, panicking with full state on
@@ -1574,6 +1671,84 @@ mod tests {
                 && owners.contains(&"queue-graft".to_string())),
             "expected domain-vs-graft cause-tag finding, got {findings:#?}"
         );
+    }
+
+    // ---------- unresolved cause-reference lint ----------
+
+    /// Helper: build a graft with `[graft.types].cause = <name>` so the
+    /// lint can resolve a reference against it. The blocks are kept
+    /// minimal — only the type declaration matters for this lint.
+    fn synthetic_graft_with_cause_type(name: &str, cause_type: &str) -> Graft {
+        Graft {
+            name: name.to_string(),
+            version: "0.1.0".to_string(),
+            priority: 50,
+            after: vec![],
+            blocks: GraftBlocks {
+                imports: None,
+                state: None,
+                cause: None,
+                poke_prelude: None,
+                poke: None,
+                poke_postlude: None,
+                peek: None,
+            },
+            types: Some(GraftTypes {
+                effect: None,
+                cause: Some(cause_type.to_string()),
+            }),
+            gates: None,
+            schema_version: None,
+            sha256: "0".repeat(64),
+        }
+    }
+
+    /// `+$ cause` cites `settle-cause` and no discovered graft declares
+    /// `[graft.types].cause = "settle-cause"` — fire one finding naming
+    /// the unresolved type.
+    #[test]
+    fn unresolved_cause_reference_flags_missing_type() {
+        let domain: Vec<String> = "+$  cause\n  $%  [%cause ~]\n      settle-cause\n      ::  nockup:cause\n  =="
+            .lines()
+            .map(String::from)
+            .collect();
+        let findings = lint_unresolved_cause_references(&[], &domain);
+        assert_eq!(findings.len(), 1, "expected 1 finding, got {findings:#?}");
+        match &findings[0] {
+            LintFinding::UnresolvedCauseReference { name, .. } => {
+                assert_eq!(name, "settle-cause");
+            }
+            other => panic!("expected UnresolvedCauseReference, got {other:?}"),
+        }
+    }
+
+    /// When the active set declares the referenced type, no finding
+    /// fires. Sanity check that the lint isn't over-flagging.
+    #[test]
+    fn unresolved_cause_reference_clears_when_declared() {
+        let domain: Vec<String> = "+$  cause\n  $%  [%cause ~]\n      settle-cause\n      ::  nockup:cause\n  =="
+            .lines()
+            .map(String::from)
+            .collect();
+        let settle = synthetic_graft_with_cause_type("settle-graft", "settle-cause");
+        let findings = lint_unresolved_cause_references(&[settle], &domain);
+        assert!(
+            findings.is_empty(),
+            "declared cause-type must not trigger the lint, got {findings:#?}"
+        );
+    }
+
+    /// Inline `[%<tag> ...]` literals are not references — the lint
+    /// only flags bare type-name members of the union. Pure-literal
+    /// unions must produce zero findings.
+    #[test]
+    fn unresolved_cause_reference_ignores_literal_members() {
+        let domain: Vec<String> = "+$  cause\n  $%  [%cause ~]\n      [%submit-artifact id=@]\n      ::  nockup:cause\n  =="
+            .lines()
+            .map(String::from)
+            .collect();
+        let findings = lint_unresolved_cause_references(&[], &domain);
+        assert!(findings.is_empty());
     }
 
     // ---------- unified finding shape ----------

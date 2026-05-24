@@ -32,7 +32,7 @@ use crate::inject::{
 };
 use crate::lint::{
     LintFinding, lint_bare_tilde_ambiguity, lint_collision_check, lint_internal_dupes,
-    lint_transitive_imports, print_lint_findings, run_lint,
+    lint_transitive_imports, lint_unresolved_cause_references, print_lint_findings, run_lint,
 };
 use crate::manifest::{Graft, atomic_write, check_schema_compat, discover_grafts};
 use crate::marker::Marker;
@@ -730,6 +730,7 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
     pre_findings.extend(lint_bare_tilde_ambiguity(&pre_lines));
     pre_findings.extend(lint_collision_check(&grafts, &pre_lines));
     pre_findings.extend(lint_transitive_imports(path, &cli.lib_dir));
+    pre_findings.extend(lint_unresolved_cause_references(&grafts, &pre_lines));
     gate_inject_lint_findings(&pre_findings, path, cli.apply)?;
 
     let (output, report) = inject(&source, &grafts)
@@ -1205,6 +1206,52 @@ body = """
         assert!(
             err.to_string().contains("collision"),
             "error should name the collision kind, got: {err}"
+        );
+        assert_eq!(
+            fs::read_to_string(&kernel).unwrap(),
+            before,
+            "the file must be untouched after a refused --apply",
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `inject --apply` refuses to write when the kernel's `+$ cause`
+    /// union cites a sub-cause-type no manifest in the active set
+    /// declares. Today this kind of orphan reference reaches hoonc as
+    /// `find . <name>-cause`; the structural gate surfaces it with the
+    /// referenced type name + file path before composing.
+    #[test]
+    fn inject_apply_refuses_unresolved_cause_reference() {
+        let dir = tempdir_for_test("unresolved_cause_refuse");
+        // Synthetic manifest that doesn't declare `[graft.types].cause`.
+        let toml = r#"[graft]
+name     = "lone-graft"
+version  = "0.1.0"
+priority = 50
+
+[graft.blocks.poke]
+body = """
+::
+  %lone-do
+[~ state]"""
+"#;
+        fs::write(dir.join("lone-graft.toml"), toml).unwrap();
+
+        // Kernel cites `phantom-cause` from its `+$ cause` union — no
+        // graft declares `[graft.types].cause = "phantom-cause"`, so the
+        // reference is orphan.
+        let kernel = dir.join("app.hoon");
+        let source = "+$  cause\n  $%  [%cause ~]\n      phantom-cause\n      ::  nockup:cause\n  ==\n?-  -.u.act\n  ::  nockup:poke\n  [~ state]\n==\n";
+        fs::write(&kernel, source).unwrap();
+        let before = fs::read_to_string(&kernel).unwrap();
+
+        let mut cli = cli_with(dir.clone());
+        cli.path = Some(kernel.clone());
+        cli.apply = true;
+        let err = run_inject(cli).expect_err("unresolved cause-reference + --apply must refuse");
+        assert!(
+            err.to_string().contains("unresolved-cause-reference"),
+            "error should name the unresolved-cause-reference kind, got: {err}"
         );
         assert_eq!(
             fs::read_to_string(&kernel).unwrap(),
