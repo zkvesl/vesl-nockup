@@ -5,10 +5,12 @@ Add vesl to a nockup project in three commands.
 ```bash
 nockup project init                                  # fetches vesl template + zkvesl/vesl-graft
 nockup graft inject --apply hoon/app/app.hoon        # composes grafts into the kernel
-cargo +nightly run                                   # builds out.jam, runs the kernel
+cargo +nightly run --release                         # builds out.jam, runs the kernel
 ```
 
 The new-project flow uses the `vesl` template shipped from this repo via nockup's `template_git` extension hook. No Cargo.toml fixups, no `[patch.crates-io] ibig` block to remember by hand.
+
+> **Why `--release`?** The nockvm runtime ships `debug_assert!`s that check stack-frame invariants under debug-build assumptions and are compiled out in release. Booting a 14-graft kernel under debug panics on the first poke (`nockvm::mem::is_in_frame`). `--release` is the supported development mode for vesl-nockup; an upstream fix to loosen the assertion is tracked separately.
 
 ## Prerequisites
 
@@ -87,7 +89,7 @@ The template's `app.hoon` ships with ten `::  nockup:*` markers. `nockup graft i
 hoonc hoon/app/app.hoon hoon/ && [ -s out.jam ] || \
   (echo "hoonc: silent-failed — exit 0 but no out.jam" >&2; exit 1)
 
-cargo +nightly run
+cargo +nightly run --release
 ```
 
 The `[ -s out.jam ]` guard is load-bearing: hoonc can exit 0 with no jam written under structural type errors. First Cargo build fetches and compiles the full nockchain stack — expect 2–5 minutes.
@@ -146,7 +148,7 @@ Refinement variants — `_from_noun` for in-process payloads, `_with_data` closu
 The same scaffold ships an HTTP server backed by the `vesl-hull` crate. Run the binary with the `serve` subcommand to boot the kernel and mount `/commit`, `/settle`, `/verify`, `/tx/:tx_id`, `/status`, and `/health` on `http://127.0.0.1:3000`:
 
 ```bash
-cargo +nightly run -- serve --no-auth   # loopback, demo signing key
+cargo +nightly run --release -- serve --no-auth   # loopback, demo signing key
 ```
 
 `--no-auth` is only honored on loopback binds; the kernel-side endpoints stay behind `HULL_API_KEY` on any non-loopback `--bind-addr`. To add domain handlers, pass your routes to `vesl_hull::serve_with_extra_routes` (or `vesl_hull::router_with_extra`) — not `Router::merge(vesl_hull::router(state), ...)`, which attaches them outside the auth / 4 MiB body-limit / rate-limit layers and leaves them unauthenticated. See [`templates/vesl/README.md`](./templates/vesl/README.md#cli) for the full flag table and endpoint catalog.

@@ -7,7 +7,7 @@ A grafted NockApp scaffolded from the `vesl` template.
 ```bash
 nockup graft inject --apply hoon/app/app.hoon   # composes graft bodies into the kernel
 ./compile.sh                                    # verified Hoon compile (hoonc + the out.jam check)
-cargo +nightly run                              # boots the kernel and runs the Demo arm
+cargo +nightly run --release                    # boots the kernel and runs the Demo arm
 ```
 
 Expected stdout end:
@@ -24,8 +24,8 @@ boot the kernel from `out.jam` and pass the booted `NockApp` to the
 selected arm.
 
 ```bash
-cargo +nightly run                  # Demo arm (default): register a root, settle a note
-cargo +nightly run -- serve         # Serve arm: HTTP API on http://127.0.0.1:3000
+cargo +nightly run --release                # Demo arm (default): register a root, settle a note
+cargo +nightly run --release -- serve       # Serve arm: HTTP API on http://127.0.0.1:3000
 ```
 
 ### `serve` flags
