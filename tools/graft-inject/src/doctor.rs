@@ -113,6 +113,7 @@ pub(crate) fn run_doctor(
     lib_dir: &Path,
     json: bool,
     format: DoctorFormat,
+    lint_overrides: &[String],
 ) -> Result<()> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("hoon") => {}
@@ -142,6 +143,12 @@ pub(crate) fn run_doctor(
 
     let findings = collect_findings(path, &source, &grafts);
 
+    // Resolve the per-lint policy so the doctor surface can show what
+    // severity each lint actually runs at. `human` format only — the
+    // build-warnings + json paths stay focused on doctor findings.
+    let mut policy = crate::lint::LintPolicy::load_from_project(path)?;
+    policy.apply_cli_overrides(lint_overrides)?;
+
     match format {
         DoctorFormat::BuildWarnings => {
             emit_build_warnings(&findings);
@@ -152,12 +159,33 @@ pub(crate) fn run_doctor(
                 emit_json(&findings);
             } else {
                 emit_human(path, &findings);
+                emit_resolved_policy(&policy);
             }
             if findings.is_empty() {
                 Ok(())
             } else {
                 bail!("graft-inject doctor: {} finding(s) above", findings.len())
             }
+        }
+    }
+}
+
+/// Stderr block listing the effective severity per lint after the
+/// active [`crate::lint::LintPolicy`] is applied. Surfaces overrides
+/// the operator made through `nockapp.toml` or `--lint-override` so
+/// they can sanity-check the policy without running a compose.
+fn emit_resolved_policy(policy: &crate::lint::LintPolicy) {
+    eprintln!();
+    eprintln!("graft-inject doctor: resolved lint policy");
+    for (kind, (default, effective)) in crate::lint::resolved_policy_table(policy) {
+        if default == effective {
+            eprintln!("  {kind}: {} (default)", effective.word());
+        } else {
+            eprintln!(
+                "  {kind}: {} (default: {}; override active)",
+                effective.word(),
+                default.word(),
+            );
         }
     }
 }

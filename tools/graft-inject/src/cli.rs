@@ -31,7 +31,7 @@ use crate::inject::{
     print_migration_line,
 };
 use crate::lint::{
-    LintFinding, LintSeverity, lint_bare_tilde_ambiguity, lint_collision_check,
+    LintFinding, LintPolicy, LintSeverity, lint_bare_tilde_ambiguity, lint_collision_check,
     lint_internal_dupes, lint_transitive_imports, lint_unresolved_cause_references,
     print_lint_findings, run_lint, summarize_severity,
 };
@@ -128,6 +128,14 @@ pub(crate) struct Cli {
     /// `nockup:effect-union` marker.
     #[arg(long = "no-migrate")]
     no_migrate: bool,
+
+    /// Per-lint severity override in `NAME=SEVERITY` form
+    /// (e.g. `--lint-override weld-friction=error`). Repeatable.
+    /// CLI overrides win over the `[lint]` table in `nockapp.toml`,
+    /// which wins over the per-lint default. Unknown lint names or
+    /// invalid severities hard-error so a typo doesn't silently no-op.
+    #[arg(long = "lint-override")]
+    lint_override: Vec<String>,
 }
 
 /// Subcommands. Each variant carries its own argument set so
@@ -162,6 +170,11 @@ pub(crate) enum Command {
         /// shape. Default migrates transparently.
         #[arg(long = "no-migrate")]
         no_migrate: bool,
+
+        /// Per-lint severity override (`NAME=SEVERITY`). Repeatable;
+        /// CLI overrides win over the `[lint]` table in `nockapp.toml`.
+        #[arg(long = "lint-override")]
+        lint_override: Vec<String>,
     },
 
     /// List discovered grafts under --lib-dir.
@@ -192,6 +205,11 @@ pub(crate) enum Command {
         /// JSON output mode (machine-readable).
         #[arg(long)]
         json: bool,
+
+        /// Per-lint severity override (`NAME=SEVERITY`). Repeatable;
+        /// CLI overrides win over the `[lint]` table in `nockapp.toml`.
+        #[arg(long = "lint-override")]
+        lint_override: Vec<String>,
     },
 
     /// Project-health check: schema-version handshake, Cargo `[patch]`
@@ -217,6 +235,12 @@ pub(crate) enum Command {
         /// as `cargo:warning=`).
         #[arg(long, value_enum, default_value = "human")]
         format: crate::doctor::DoctorFormat,
+
+        /// Per-lint severity override (`NAME=SEVERITY`). Repeatable;
+        /// folded into the resolved per-lint policy line the doctor
+        /// surface emits.
+        #[arg(long = "lint-override")]
+        lint_override: Vec<String>,
     },
 
     /// Update the graft library and recompose the kernel: refresh
@@ -397,6 +421,7 @@ pub(crate) fn dispatch(cli: Cli) -> Result<()> {
             lib_dir,
             apply,
             no_migrate,
+            lint_override,
         }) => run_inject(Cli {
             command: None,
             path: Some(path),
@@ -409,6 +434,7 @@ pub(crate) fn dispatch(cli: Cli) -> Result<()> {
             dry_run: false,
             apply,
             no_migrate,
+            lint_override,
         }),
         Some(Command::List {
             lib_dir,
@@ -426,18 +452,21 @@ pub(crate) fn dispatch(cli: Cli) -> Result<()> {
             dry_run: false,
             apply: false,
             no_migrate: false,
+            lint_override: Vec::new(),
         }),
         Some(Command::Lint {
             path,
             lib_dir,
             json,
-        }) => run_lint(&path, &lib_dir, json),
+            lint_override,
+        }) => run_lint(&path, &lib_dir, json, &lint_override),
         Some(Command::Doctor {
             path,
             lib_dir,
             json,
             format,
-        }) => run_doctor(&path, &lib_dir, json, format),
+            lint_override,
+        }) => run_doctor(&path, &lib_dir, json, format, &lint_override),
         Some(Command::Update {
             path,
             lib_dir,
@@ -721,18 +750,27 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
     };
     print_migration_line(&migration);
 
+    // Resolve the per-lint policy once: walk up for nockapp.toml,
+    // apply its `[lint]` table, then apply `--lint-override` flags on
+    // top. CLI > config > per-variant default.
+    let mut policy = LintPolicy::load_from_project(path)?;
+    policy.apply_cli_overrides(&cli.lint_override)?;
+    for w in policy.warnings() {
+        eprintln!("graft-inject: {w}");
+    }
+
     // Pre-inject structural lints. Each pass is independent of compose;
     // gating up front lets the printer surface a unified report before
-    // any bytes change. `--apply` refuses the write on any finding —
-    // composing the file is the step that turns these silent-fail
-    // surfaces into corrupt output.
+    // any bytes change. `--apply` refuses the write on any
+    // error-tier finding — composing the file is the step that turns
+    // these silent-fail surfaces into corrupt output.
     let pre_lines: Vec<String> = source.lines().map(String::from).collect();
     let mut pre_findings: Vec<LintFinding> = Vec::new();
     pre_findings.extend(lint_bare_tilde_ambiguity(&pre_lines));
     pre_findings.extend(lint_collision_check(&grafts, &pre_lines));
     pre_findings.extend(lint_transitive_imports(path, &cli.lib_dir));
     pre_findings.extend(lint_unresolved_cause_references(&grafts, &pre_lines));
-    gate_inject_lint_findings(&pre_findings, path, cli.apply)?;
+    gate_inject_lint_findings(&pre_findings, path, cli.apply, &policy)?;
 
     let (output, report) = inject(&source, &grafts)
         .with_context(|| format!("injecting into {}", path.display()))?;
@@ -746,7 +784,7 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
     // settle into their final form after inject runs.
     let post_lines: Vec<String> = output.lines().map(String::from).collect();
     let post_findings: Vec<LintFinding> = lint_internal_dupes(&post_lines);
-    gate_inject_lint_findings(&post_findings, path, cli.apply)?;
+    gate_inject_lint_findings(&post_findings, path, cli.apply, &policy)?;
 
     if cli.dry_run {
         eprintln!(
@@ -778,7 +816,7 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
         print!("{output}");
     }
 
-    print_report(path, &report, &grafts, cli.apply);
+    print_report(path, &report, &grafts, cli.apply, &policy);
     if report.markers_in_source.is_empty() {
         bail!(
             "no nockup markers found in {}; nothing to wire",
@@ -799,22 +837,20 @@ fn gate_inject_lint_findings(
     findings: &[LintFinding],
     path: &Path,
     apply: bool,
+    policy: &crate::lint::LintPolicy,
 ) -> Result<()> {
     if findings.is_empty() {
         return Ok(());
     }
-    eprintln!(
-        "graft-inject: {}",
-        summarize_severity(findings)
-    );
-    print_lint_findings(findings, path);
+    eprintln!("graft-inject: {}", summarize_severity(findings, policy));
+    print_lint_findings(findings, path, policy);
     if !apply {
         return Ok(());
     }
     let error_kinds: Vec<&str> = {
         let mut k: Vec<&str> = findings
             .iter()
-            .filter(|f| f.severity() == LintSeverity::Error)
+            .filter(|f| policy.effective(f) == LintSeverity::Error)
             .map(LintFinding::kind_label)
             .collect();
         k.sort();
@@ -827,7 +863,7 @@ fn gate_inject_lint_findings(
     }
     let error_count = findings
         .iter()
-        .filter(|f| f.severity() == LintSeverity::Error)
+        .filter(|f| policy.effective(f) == LintSeverity::Error)
         .count();
     bail!(
         "refusing to write {}: resolve the {} error-level lint finding(s) above first ({})",
@@ -920,7 +956,13 @@ pub(crate) fn emit_list(grafts: &[Graft], json: bool) {
 /// so preview users can pipe the rendered file out cleanly. Includes the
 /// per-manifest sha256 so supply-chain reviewers can confirm what's
 /// about to be composed.
-pub(crate) fn print_report(path: &Path, report: &InjectReport, grafts: &[Graft], applied: bool) {
+pub(crate) fn print_report(
+    path: &Path,
+    report: &InjectReport,
+    grafts: &[Graft],
+    applied: bool,
+    policy: &crate::lint::LintPolicy,
+) {
     eprintln!("graft-inject: {}", path.display());
     let sha_by_name: HashMap<&str, &str> = grafts
         .iter()
@@ -1015,7 +1057,7 @@ pub(crate) fn print_report(path: &Path, report: &InjectReport, grafts: &[Graft],
         );
     }
     print_codegen_line(&report.codegen);
-    print_lint_findings(&report.weld_lint, path);
+    print_lint_findings(&report.weld_lint, path, policy);
     if !applied {
         eprintln!("  (preview only — pass --apply to write {})", path.display());
     }
@@ -1067,6 +1109,7 @@ mod tests {
             dry_run: false,
             apply: false,
             no_migrate: false,
+            lint_override: Vec::new(),
         }
     }
 
@@ -1275,6 +1318,52 @@ body = """
             before,
             "the file must be untouched after a refused --apply",
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A project with `[lint] transitive-imports = "warn"` in
+    /// `nockapp.toml` demotes the transitive-imports lint below the
+    /// `--apply` gate. The finding still surfaces (preview prints + the
+    /// summary line counts it as a warning), but the write proceeds.
+    #[test]
+    fn inject_apply_policy_demotes_to_warn() {
+        let dir = tempdir_for_test("policy_demote");
+        // Project markers: nockapp.toml at the root so the policy
+        // loader picks up the `[lint]` table.
+        fs::write(
+            dir.join("nockapp.toml"),
+            "[project]\nkernel_name = \"app\"\n\n[lint]\ntransitive-imports = \"warn\"\n",
+        )
+        .unwrap();
+        // Minimal kernel with an unsatisfied `/+ lib` import (no
+        // lib.hoon written) — would normally trip the structural gate.
+        // Add one nockup marker so `run_inject` doesn't bail on
+        // "no nockup markers found" before the gate fires.
+        let kernel = dir.join("app.hoon");
+        fs::write(&kernel, "/+  lib\n::  nockup:imports\n").unwrap();
+
+        // A synthetic graft so select_grafts doesn't bail on an empty
+        // lib_dir. The graft contributes no blocks the kernel marker
+        // would need to place.
+        fs::write(
+            dir.join("noop-graft.toml"),
+            r#"[graft]
+name     = "noop-graft"
+version  = "0.1.0"
+priority = 50
+
+[graft.blocks]
+"#,
+        )
+        .unwrap();
+
+        let mut cli = cli_with(dir.clone());
+        cli.path = Some(kernel.clone());
+        cli.grafts = vec!["noop-graft".to_string()];
+        cli.apply = true;
+        // `--apply` succeeds because the only finding is a warning
+        // under the demoting policy.
+        run_inject(cli).expect("warn-only finding must not gate --apply");
         let _ = fs::remove_dir_all(&dir);
     }
 

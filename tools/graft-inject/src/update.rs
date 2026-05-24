@@ -70,7 +70,11 @@ pub(crate) fn run_update(path: &Path, lib_dir: &Path, yes: bool) -> Result<()> {
     eprintln!();
     eprintln!("update: preview — `inject --apply` would compose:");
     print_migration_line(&migration);
-    print_report(path, &report, &grafts, false);
+    // The update orchestrator runs preview-only, so it doesn't accept
+    // `--lint-override` of its own. Load nockapp.toml's policy alone
+    // for the report's severity routing.
+    let policy = crate::lint::LintPolicy::load_from_project(path)?;
+    print_report(path, &report, &grafts, false, &policy);
     emit_human(path, &collect_findings(path, &source, &grafts));
 
     if output == source {

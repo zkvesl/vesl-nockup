@@ -16,7 +16,7 @@
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -186,6 +186,196 @@ impl LintSeverity {
             LintSeverity::Note => "note",
         }
     }
+
+    /// Parse a config-table or CLI value (`"error"`, `"warn"`, `"note"`).
+    /// Hard-errors on anything else so a typo (`"warning"`,
+    /// `"warnning"`) doesn't silently degrade to the default.
+    pub(crate) fn parse(s: &str) -> Result<Self> {
+        match s {
+            "error" => Ok(LintSeverity::Error),
+            "warn" => Ok(LintSeverity::Warn),
+            "note" => Ok(LintSeverity::Note),
+            other => bail!(
+                "unknown lint severity `{other}` — must be one of `error`, `warn`, `note`"
+            ),
+        }
+    }
+}
+
+/// Project-scoped policy that promotes / demotes per-lint severity.
+///
+/// Resolution order: CLI override (`--lint-override`) wins, then the
+/// `[lint]` table from the nearest `nockapp.toml`, then the per-variant
+/// default in [`LintFinding::severity`]. Unknown lint names at either
+/// surface hard-error so a typo (`transitive-importss`) doesn't
+/// silently no-op.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LintPolicy {
+    overrides: HashMap<&'static str, LintSeverity>,
+    /// Non-fatal config warnings to surface to the operator (missing
+    /// or malformed `[lint]` table that we recovered from). The
+    /// caller decides where to surface — `run_inject` prints them to
+    /// stderr after policy load.
+    warnings: Vec<String>,
+}
+
+impl LintPolicy {
+    /// Build a policy with no overrides — every lint runs at its
+    /// per-variant default severity. Used when no `nockapp.toml`
+    /// ancestor exists and no CLI overrides were passed.
+    pub(crate) fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Walk upward from `kernel_path`'s parent looking for a
+    /// `nockapp.toml`; when found, read its `[lint]` table and apply
+    /// each entry as an override. Missing file falls back to an empty
+    /// policy with no warnings. Malformed file (parse error,
+    /// non-table `[lint]`) falls back to defaults with a recorded
+    /// warning. Unknown lint names or invalid severities in a
+    /// well-formed `[lint]` table hard-error — that's the surface that
+    /// catches typos.
+    pub(crate) fn load_from_project(kernel_path: &Path) -> Result<Self> {
+        let start = kernel_path.parent().unwrap_or(kernel_path);
+        let Some(project_root) = walk_up_for_nockapp_toml(start) else {
+            return Ok(Self::empty());
+        };
+        let toml_path = project_root.join("nockapp.toml");
+        let raw = match fs::read_to_string(&toml_path) {
+            Ok(s) => s,
+            Err(_) => return Ok(Self::empty()),
+        };
+        let value: toml::Value = match toml::from_str(&raw) {
+            Ok(v) => v,
+            Err(err) => {
+                let mut policy = Self::empty();
+                policy.warnings.push(format!(
+                    "nockapp.toml at {} could not be parsed ({err}); falling back to lint defaults",
+                    toml_path.display(),
+                ));
+                return Ok(policy);
+            }
+        };
+        let Some(lint_section) = value.get("lint") else {
+            return Ok(Self::empty());
+        };
+        let Some(table) = lint_section.as_table() else {
+            let mut policy = Self::empty();
+            policy.warnings.push(format!(
+                "nockapp.toml at {}: [lint] is not a table; falling back to lint defaults",
+                toml_path.display(),
+            ));
+            return Ok(policy);
+        };
+
+        let mut overrides: HashMap<&'static str, LintSeverity> = HashMap::new();
+        for (key, val) in table {
+            let kind = canonical_kind(key).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "nockapp.toml at {}: unknown lint name `{key}` in [lint] table. \
+                     Valid names: {}",
+                    toml_path.display(),
+                    KIND_ORDER.join(", "),
+                )
+            })?;
+            let sev_str = val.as_str().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "nockapp.toml at {}: [lint] `{key}` must be a string (`error`/`warn`/`note`)",
+                    toml_path.display(),
+                )
+            })?;
+            let severity = LintSeverity::parse(sev_str).with_context(|| {
+                format!(
+                    "nockapp.toml at {}: [lint] `{key}` value",
+                    toml_path.display(),
+                )
+            })?;
+            overrides.insert(kind, severity);
+        }
+        Ok(Self {
+            overrides,
+            warnings: Vec::new(),
+        })
+    }
+
+    /// Apply CLI overrides — each entry parses as `NAME=SEVERITY`.
+    /// CLI overrides win over the config file's `[lint]` table.
+    /// Unknown names or invalid severities hard-error so a typo
+    /// doesn't silently no-op.
+    pub(crate) fn apply_cli_overrides<S: AsRef<str>>(
+        &mut self,
+        args: &[S],
+    ) -> Result<()> {
+        for arg in args {
+            let raw = arg.as_ref();
+            let Some((name, sev_str)) = raw.split_once('=') else {
+                bail!(
+                    "--lint-override `{raw}` must be `NAME=SEVERITY` \
+                     (e.g. `--lint-override weld-friction=error`)"
+                );
+            };
+            let kind = canonical_kind(name).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--lint-override `{raw}`: unknown lint name `{name}`. \
+                     Valid names: {}",
+                    KIND_ORDER.join(", "),
+                )
+            })?;
+            let severity = LintSeverity::parse(sev_str)
+                .with_context(|| format!("--lint-override `{raw}`"))?;
+            self.overrides.insert(kind, severity);
+        }
+        Ok(())
+    }
+
+    /// Resolve the effective severity for `finding`: the override
+    /// when one is set, otherwise the per-variant default.
+    pub(crate) fn effective(&self, finding: &LintFinding) -> LintSeverity {
+        self.overrides
+            .get(finding.kind_label())
+            .copied()
+            .unwrap_or_else(|| finding.severity())
+    }
+
+    /// Resolve the effective severity for `kind` against `default`.
+    /// Used by the doctor surface to list per-lint policy without a
+    /// concrete finding in hand.
+    pub(crate) fn effective_for_default(
+        &self,
+        kind: &str,
+        default: LintSeverity,
+    ) -> LintSeverity {
+        self.overrides.get(kind).copied().unwrap_or(default)
+    }
+
+    /// Borrow the recorded config-load warnings (malformed
+    /// nockapp.toml, [lint] not a table). Caller decides where to
+    /// surface — `run_inject` and `run_lint` print each to stderr
+    /// after policy load.
+    pub(crate) fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+}
+
+/// Match a key (from config or CLI) against the canonical kind labels.
+/// Returns the `&'static str` so the policy map can use it as a key.
+fn canonical_kind(name: &str) -> Option<&'static str> {
+    KIND_ORDER.iter().copied().find(|k| *k == name)
+}
+
+/// Walk upward from `start` for the nearest directory carrying a
+/// `nockapp.toml`. Returns that directory; `None` when the walk
+/// reaches the filesystem root without finding one.
+fn walk_up_for_nockapp_toml(start: &Path) -> Option<PathBuf> {
+    let canonical = start.canonicalize().ok();
+    let mut cur: Option<&Path> = canonical.as_deref().or(Some(start));
+    while let Some(dir) = cur {
+        if dir.join("nockapp.toml").is_file() {
+            return Some(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1093,10 +1283,12 @@ fn bracket_tag(s: &str) -> Option<String> {
 /// convention so terminal scrapers picking up `error:` / `warning:`
 /// markers route correctly; the kind prefix lets `grep '<kind>:'` count
 /// findings by kind without scraping the body. `path` provides context
-/// for findings that don't embed a source path of their own.
-pub(crate) fn print_lint_finding(f: &LintFinding, path: &Path) {
+/// for findings that don't embed a source path of their own; `policy`
+/// resolves per-lint overrides (CLI + nockapp.toml) over the variant
+/// default.
+pub(crate) fn print_lint_finding(f: &LintFinding, path: &Path, policy: &LintPolicy) {
     let kind = f.kind_label();
-    let sev = f.severity().word();
+    let sev = policy.effective(f).word();
     match f {
         LintFinding::WeldFriction { line, text, .. } => {
             eprintln!("  {sev}: {kind}: line {line}: {text}");
@@ -1168,7 +1360,11 @@ pub(crate) fn print_lint_finding(f: &LintFinding, path: &Path) {
 /// once per non-empty group. The hint strings have been tuned through
 /// the dogfood rounds and cross-link to zkvesl-docs — they are kept
 /// here verbatim.
-pub(crate) fn print_lint_findings(findings: &[LintFinding], path: &Path) {
+pub(crate) fn print_lint_findings(
+    findings: &[LintFinding],
+    path: &Path,
+    policy: &LintPolicy,
+) {
     if findings.is_empty() {
         return;
     }
@@ -1181,7 +1377,7 @@ pub(crate) fn print_lint_findings(findings: &[LintFinding], path: &Path) {
             continue;
         }
         for f in &group {
-            print_lint_finding(f, path);
+            print_lint_finding(f, path, policy);
         }
         print_remediation_hint(kind);
     }
@@ -1338,10 +1534,10 @@ struct LintReport<'a> {
 }
 
 impl<'a> LintReport<'a> {
-    fn from_findings(findings: &'a [LintFinding]) -> Self {
+    fn from_findings(findings: &'a [LintFinding], policy: &LintPolicy) -> Self {
         let mut report = Self::default();
         for f in findings {
-            let severity = f.severity();
+            let severity = policy.effective(f);
             match f {
                 // Weld-friction is not part of the lint subcommand JSON
                 // schema — it's reported through the inject path's
@@ -1417,7 +1613,12 @@ impl<'a> LintReport<'a> {
 /// exist the collision-check is skipped (the other lints stay useful
 /// on their own). Findings emit to stderr in the human-readable form,
 /// or to stdout as JSON when `--json` is set.
-pub(crate) fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
+pub(crate) fn run_lint(
+    path: &Path,
+    lib_dir: &Path,
+    json: bool,
+    lint_overrides: &[String],
+) -> Result<()> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("hoon") => {}
         Some(other) => bail!(
@@ -1433,6 +1634,12 @@ pub(crate) fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
     let source = fs::read_to_string(path)
         .with_context(|| format!("reading {}", path.display()))?;
     let lines: Vec<String> = source.lines().map(String::from).collect();
+
+    let mut policy = LintPolicy::load_from_project(path)?;
+    policy.apply_cli_overrides(lint_overrides)?;
+    for w in policy.warnings() {
+        eprintln!("graft-inject: {w}");
+    }
 
     let mut findings: Vec<LintFinding> = Vec::new();
     findings.extend(lint_bare_tilde_ambiguity(&lines));
@@ -1464,19 +1671,20 @@ pub(crate) fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
         // Stable schema: { "bare_tilde_ambiguity": [...], "collision": [...],
         // "transitive_imports": [...], "internal_dupes": [...] }. Future
         // lint families append top-level keys without reshaping
-        // existing ones; each record gains an additive "severity" field.
-        let report = LintReport::from_findings(&findings);
+        // existing ones; each record gains an additive "severity" field
+        // (resolved against the active policy).
+        let report = LintReport::from_findings(&findings, &policy);
         let s = serde_json::to_string_pretty(&report)
             .expect("LintReport always serializes");
         println!("{s}");
     } else {
-        eprintln!("graft-inject lint: {}", summarize_severity(&findings));
-        print_lint_findings(&findings, path);
+        eprintln!("graft-inject lint: {}", summarize_severity(&findings, &policy));
+        print_lint_findings(&findings, path, &policy);
     }
 
     let errors = findings
         .iter()
-        .filter(|f| f.severity() == LintSeverity::Error)
+        .filter(|f| policy.effective(f) == LintSeverity::Error)
         .count();
     if errors > 0 {
         bail!("graft-inject lint: {errors} error finding(s) above");
@@ -1484,15 +1692,47 @@ pub(crate) fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Build a stable per-kind table of (default, effective) severities for
+/// the doctor command's policy surface. The kinds appear in
+/// `KIND_ORDER`, defaults come from a freshly-constructed example
+/// finding per variant, and the effective column folds in `policy`.
+pub(crate) fn resolved_policy_table(
+    policy: &LintPolicy,
+) -> BTreeMap<&'static str, (LintSeverity, LintSeverity)> {
+    let defaults = default_severity_table();
+    let mut out: BTreeMap<&'static str, (LintSeverity, LintSeverity)> = BTreeMap::new();
+    for kind in KIND_ORDER {
+        let default = *defaults.get(kind).expect("KIND_ORDER covered");
+        let effective = policy.effective_for_default(kind, default);
+        out.insert(*kind, (default, effective));
+    }
+    out
+}
+
+/// Canonical (kind → default severity) table for the doctor surface
+/// and tests. Mirrors the per-variant [`LintFinding::severity`]
+/// defaults; kept in one place so a future tier change touches a
+/// single line.
+fn default_severity_table() -> HashMap<&'static str, LintSeverity> {
+    let mut t = HashMap::new();
+    t.insert("weld-friction", LintSeverity::Warn);
+    t.insert("bare-tilde-ambiguity", LintSeverity::Error);
+    t.insert("collision", LintSeverity::Error);
+    t.insert("transitive-imports", LintSeverity::Error);
+    t.insert("internal-dupes", LintSeverity::Error);
+    t.insert("unresolved-cause-reference", LintSeverity::Error);
+    t
+}
+
 /// One-line summary breaking findings out by severity, e.g.
 /// `3 error(s), 2 warning(s)`. Empty-severity buckets are dropped so
 /// the line stays terse when only one tier fires.
-pub(crate) fn summarize_severity(findings: &[LintFinding]) -> String {
+pub(crate) fn summarize_severity(findings: &[LintFinding], policy: &LintPolicy) -> String {
     let mut errors = 0usize;
     let mut warnings = 0usize;
     let mut notes = 0usize;
     for f in findings {
-        match f.severity() {
+        match policy.effective(f) {
             LintSeverity::Error => errors += 1,
             LintSeverity::Warn => warnings += 1,
             LintSeverity::Note => notes += 1,
@@ -1948,7 +2188,8 @@ mod tests {
     #[test]
     fn lint_report_json_schema_preserves_keys() {
         let findings: Vec<LintFinding> = vec![];
-        let report = LintReport::from_findings(&findings);
+        let policy = LintPolicy::empty();
+        let report = LintReport::from_findings(&findings, &policy);
         let s = serde_json::to_string(&report).unwrap();
         assert!(s.contains("\"bare_tilde_ambiguity\":[]"));
         assert!(s.contains("\"collision\":[]"));
@@ -1970,7 +2211,8 @@ mod tests {
             name: "enqueue-job".into(),
             owners: vec!["queue-graft".into(), "pipeline-graft".into()],
         }];
-        let report = LintReport::from_findings(&findings);
+        let policy = LintPolicy::empty();
+        let report = LintReport::from_findings(&findings, &policy);
         let s = serde_json::to_string(&report).unwrap();
         assert!(s.contains("\"kind\":\"cause_tag\""));
         assert!(s.contains("\"name\":\"enqueue-job\""));
@@ -2030,8 +2272,9 @@ mod tests {
     /// input is empty.
     #[test]
     fn summarize_severity_groups_by_tier() {
+        let policy = LintPolicy::empty();
         let empty: Vec<LintFinding> = vec![];
-        assert_eq!(summarize_severity(&empty), "0 finding(s)");
+        assert_eq!(summarize_severity(&empty, &policy), "0 finding(s)");
 
         let mixed = vec![
             LintFinding::BareTildeAmbiguity {
@@ -2050,7 +2293,7 @@ mod tests {
             },
         ];
         assert_eq!(
-            summarize_severity(&mixed),
+            summarize_severity(&mixed, &policy),
             "2 error(s), 1 warning(s)"
         );
 
@@ -2059,6 +2302,186 @@ mod tests {
             text: "".into(),
             narrow_type: "x".into(),
         }];
-        assert_eq!(summarize_severity(&warn_only), "1 warning(s)");
+        assert_eq!(summarize_severity(&warn_only, &policy), "1 warning(s)");
+    }
+
+    // ---------- LintPolicy ----------
+
+    /// Empty policy = per-variant defaults. Effective severity equals
+    /// the variant default for every finding.
+    #[test]
+    fn lint_policy_empty_falls_back_to_defaults() {
+        let policy = LintPolicy::empty();
+        let weld = LintFinding::WeldFriction {
+            line: 1,
+            text: "".into(),
+            narrow_type: "x".into(),
+        };
+        let coll = LintFinding::Collision {
+            kind: CollisionKind::CauseTag,
+            name: "x".into(),
+            owners: vec![],
+        };
+        assert_eq!(policy.effective(&weld), LintSeverity::Warn);
+        assert_eq!(policy.effective(&coll), LintSeverity::Error);
+    }
+
+    /// `--lint-override` parses `NAME=SEVERITY`, validates the name
+    /// against `KIND_ORDER`, and overrides the per-variant default.
+    #[test]
+    fn lint_policy_cli_overrides_apply() {
+        let mut policy = LintPolicy::empty();
+        policy
+            .apply_cli_overrides(&[
+                "weld-friction=error".to_string(),
+                "transitive-imports=warn".to_string(),
+            ])
+            .unwrap();
+        let weld = LintFinding::WeldFriction {
+            line: 1,
+            text: "".into(),
+            narrow_type: "x".into(),
+        };
+        let trans = LintFinding::TransitiveImport {
+            source: PathBuf::new(),
+            rune: "/+".into(),
+            name: "x".into(),
+            target: PathBuf::new(),
+            reachable_from: vec![],
+        };
+        assert_eq!(policy.effective(&weld), LintSeverity::Error);
+        assert_eq!(policy.effective(&trans), LintSeverity::Warn);
+    }
+
+    /// A typo'd lint name in `--lint-override` hard-errors so the
+    /// override doesn't silently no-op.
+    #[test]
+    fn lint_policy_cli_override_typo_errors() {
+        let mut policy = LintPolicy::empty();
+        let err = policy
+            .apply_cli_overrides(&["transitive-importss=warn".to_string()])
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("unknown lint name"),
+            "expected unknown-lint-name error, got: {err}"
+        );
+    }
+
+    /// An override with an invalid severity hard-errors with the
+    /// allowed set named.
+    #[test]
+    fn lint_policy_cli_override_bad_severity_errors() {
+        let mut policy = LintPolicy::empty();
+        let err = policy
+            .apply_cli_overrides(&["weld-friction=warning".to_string()])
+            .unwrap_err();
+        // The wrapper (`--lint-override ...`) is the top of the chain;
+        // the underlying "unknown lint severity" lives in the source.
+        // Use the alt format to walk the chain so both surfaces appear.
+        let full = format!("{err:#}");
+        assert!(
+            full.contains("unknown lint severity"),
+            "expected unknown-severity error in chain, got: {full}"
+        );
+    }
+
+    /// `load_from_project` walks up from the kernel path until it
+    /// finds a `nockapp.toml` and applies its `[lint]` table. Missing
+    /// nockapp.toml falls back to an empty policy with no warnings.
+    #[test]
+    fn lint_policy_loads_from_nockapp_toml() {
+        let dir = std::env::temp_dir().join(format!(
+            "graft-inject-test-lint-policy-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("nockapp.toml"),
+            "[lint]\nweld-friction = \"error\"\ntransitive-imports = \"warn\"\n",
+        )
+        .unwrap();
+        let app = dir.join("hoon").join("app").join("app.hoon");
+        fs::create_dir_all(app.parent().unwrap()).unwrap();
+        fs::write(&app, "").unwrap();
+
+        let policy = LintPolicy::load_from_project(&app).expect("load");
+        let weld = LintFinding::WeldFriction {
+            line: 1,
+            text: "".into(),
+            narrow_type: "x".into(),
+        };
+        let trans = LintFinding::TransitiveImport {
+            source: PathBuf::new(),
+            rune: "/+".into(),
+            name: "x".into(),
+            target: PathBuf::new(),
+            reachable_from: vec![],
+        };
+        assert_eq!(policy.effective(&weld), LintSeverity::Error);
+        assert_eq!(policy.effective(&trans), LintSeverity::Warn);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A typo in `nockapp.toml`'s `[lint]` table hard-errors at
+    /// policy load, naming the offending key and the valid set.
+    #[test]
+    fn lint_policy_load_typo_errors() {
+        let dir = std::env::temp_dir().join(format!(
+            "graft-inject-test-lint-policy-typo-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("nockapp.toml"),
+            "[lint]\ntransitive-importss = \"warn\"\n",
+        )
+        .unwrap();
+        let app = dir.join("app.hoon");
+        fs::write(&app, "").unwrap();
+
+        let err = LintPolicy::load_from_project(&app).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown lint name"),
+            "expected unknown-lint-name error, got: {err}"
+        );
+        assert!(
+            err.to_string().contains("transitive-importss"),
+            "error should name the typo, got: {err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// CLI override wins over the config-file override (CLI > config
+    /// > default).
+    #[test]
+    fn lint_policy_cli_wins_over_config() {
+        let dir = std::env::temp_dir().join(format!(
+            "graft-inject-test-lint-policy-prec-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("nockapp.toml"),
+            "[lint]\nweld-friction = \"error\"\n",
+        )
+        .unwrap();
+        let app = dir.join("app.hoon");
+        fs::write(&app, "").unwrap();
+
+        let mut policy = LintPolicy::load_from_project(&app).expect("load");
+        // Config says weld=error; CLI override demotes it to warn.
+        policy
+            .apply_cli_overrides(&["weld-friction=warn".to_string()])
+            .unwrap();
+        let weld = LintFinding::WeldFriction {
+            line: 1,
+            text: "".into(),
+            narrow_type: "x".into(),
+        };
+        assert_eq!(policy.effective(&weld), LintSeverity::Warn);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
