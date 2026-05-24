@@ -42,9 +42,20 @@ fn init_env() {
     });
 }
 
-async fn boot_state() -> SharedState {
+// Each call returns a fresh `SharedState` *and* the `TempDir` backing
+// its PMA datadir. Hold the TempDir for the lifetime of the test —
+// when it drops, the kernel's event log + snapshots are wiped, so the
+// next `boot_state()` boots cleanly. Without this, tests share a
+// single `./.data.vesl-merge-mw-test/` and the second-to-boot sees the
+// first's sqlite lock as "database is locked".
+async fn boot_state() -> (SharedState, tempfile::TempDir) {
     init_env();
-    let cli = boot::default_boot_cli(false);
+    let tmp = tempfile::Builder::new()
+        .prefix("vesl-merge-mw-test-")
+        .tempdir()
+        .expect("create tempdir for merge-mw test datadir");
+    let mut cli = boot::default_boot_cli(false);
+    cli.data_dir = Some(tmp.path().to_path_buf());
     let kernel = fs::read("out.jam")
         .expect("out.jam missing -- run `hoonc hoon/app/app.hoon hoon/` first");
     let app: NockApp = boot::setup(&kernel, cli, &[], "vesl-merge-mw-test", None)
@@ -57,7 +68,7 @@ async fn boot_state() -> SharedState {
     )
     .expect("default settlement resolves to Local mode");
 
-    Arc::new(Mutex::new(AppState {
+    let state = Arc::new(Mutex::new(AppState {
         app,
         fields: Vec::new(),
         tree: None,
@@ -68,7 +79,8 @@ async fn boot_state() -> SharedState {
         manifest: ManifestSummary::empty(),
         settle_builder: Arc::new(DefaultHashPayloadBuilder),
         rbac: RbacConfig::default(),
-    }))
+    }));
+    (state, tmp)
 }
 
 /// Trivial custom handler — middleware fires before the body runs, so
@@ -87,7 +99,7 @@ async fn read_body(resp: axum::response::Response) -> Vec<u8> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auth_layer_covers_custom_route() {
-    let state = boot_state().await;
+    let (state, _tmp) = boot_state().await;
     let app = router_with_extra(state, extra_routes());
 
     // No Authorization header — pre-fix this would have returned 200
@@ -111,7 +123,7 @@ async fn auth_layer_covers_custom_route() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn body_limit_layer_covers_custom_route() {
-    let state = boot_state().await;
+    let (state, _tmp) = boot_state().await;
     let app = router_with_extra(state, extra_routes());
 
     // 5 MiB > the hull's 4 MiB RequestBodyLimitLayer; axum's default
@@ -141,7 +153,7 @@ async fn body_limit_layer_covers_custom_route() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn health_remains_unauthenticated_after_merge() {
-    let state = boot_state().await;
+    let (state, _tmp) = boot_state().await;
     let app = router_with_extra(state, extra_routes());
 
     // /health's auth exemption is wired explicitly in check_api_key, not
@@ -176,7 +188,7 @@ async fn health_remains_unauthenticated_after_merge() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "tower Buffer+RateLimit composition buffers rather than 429s in-process; track G2/F2 follow-up"]
 async fn rate_limit_layer_covers_custom_route() {
-    let state = boot_state().await;
+    let (state, _tmp) = boot_state().await;
     // 1 request per 60s window — the second concurrent request must
     // either back-pressure into the buffer (still pending after a short
     // settle) or be mapped to 429 by the HandleErrorLayer. We assert at
@@ -222,7 +234,7 @@ async fn rate_limit_layer_covers_custom_route() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn custom_route_reachable_with_valid_auth() {
-    let state = boot_state().await;
+    let (state, _tmp) = boot_state().await;
     let app = router_with_extra(state, extra_routes());
 
     // Sanity: with auth and a small body, the custom route actually runs.
