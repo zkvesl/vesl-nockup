@@ -47,7 +47,10 @@ pub(crate) fn warn_if_stale() {
     let short = |s: &str| s.chars().take(12).collect::<String>();
     eprintln!(
         "graft-inject: warning — binary built from src/ hash {} but src/ \
-         is now at {}. Rebuild: cargo install --path tools/graft-inject --force",
+         is now at {}.\n  Rebuild from the published source:\n    \
+         cargo install --git https://github.com/zkvesl/vesl-nockup \
+         --bin nockup-graft --force\n  Or from a local checkout:\n    \
+         cargo install --path tools/graft-inject --bin nockup-graft --force",
         short(build_hash),
         short(&current_hash),
     );
