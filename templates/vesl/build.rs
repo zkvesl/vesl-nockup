@@ -32,16 +32,29 @@ fn run_doctor() {
     if !Path::new(app).exists() {
         return;
     }
-    // Resolve the binary from an explicit path (NOCKUP_GRAFT_BIN), never
-    // a bare PATH search — a malicious `nockup-graft` earlier on PATH
-    // would otherwise hijack `cargo build`. Unset → skip the pass.
-    let graft_bin = match env::var("NOCKUP_GRAFT_BIN") {
-        Ok(p) => p,
-        Err(_) => {
+    // Resolve the binary in two steps: explicit NOCKUP_GRAFT_BIN first,
+    // then a single well-known location at ~/.cargo/bin/nockup-graft.
+    // Never a bare PATH search — a malicious `nockup-graft` earlier on
+    // PATH would otherwise hijack `cargo build`. ~/.cargo/bin is
+    // user-owned and the canonical destination of `cargo install`, so
+    // it's the install location the published quickstart documents.
+    let graft_bin = env::var("NOCKUP_GRAFT_BIN").ok().or_else(|| {
+        env::var_os("HOME").and_then(|home| {
+            let candidate = Path::new(&home).join(".cargo/bin/nockup-graft");
+            candidate
+                .exists()
+                .then(|| candidate.to_string_lossy().into_owned())
+        })
+    });
+    let graft_bin = match graft_bin {
+        Some(p) => p,
+        None => {
             println!(
-                "cargo:warning=NOCKUP_GRAFT_BIN unset — skipping the \
-                 nockup-graft doctor project-health pass; set it to the \
-                 nockup-graft binary path to enable."
+                "cargo:warning=nockup-graft doctor skipped — install via \
+                 `cargo install --git https://github.com/zkvesl/vesl-nockup \
+                 --bin nockup-graft --force --locked` (lands at \
+                 ~/.cargo/bin/nockup-graft), or set NOCKUP_GRAFT_BIN to a \
+                 binary path."
             );
             return;
         }
