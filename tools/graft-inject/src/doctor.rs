@@ -1,8 +1,9 @@
-//! `doctor` — project-health checks, surfaced both explicitly
-//! (`nockup graft doctor`) and ambiently (the scaffold `build.rs` runs
-//! it on every `cargo build`).
+//! `doctor` — project-health checks plus the Hoon-side lint pass,
+//! surfaced both explicitly (`nockup graft doctor`) and ambiently
+//! (the scaffold `build.rs` runs it on every `cargo build`).
 //!
-//! Four checks, each a pure function returning `Vec<DoctorFinding>`:
+//! Four project-health checks, each a pure function returning
+//! `Vec<DoctorFinding>`:
 //!
 //!   1. schema-version handshake — a graft manifest authored for a
 //!      newer nockup-graft (`manifest::check_schema_compat`).
@@ -14,6 +15,11 @@
 //!      the banner sha still matches the manifest (so this is not
 //!      manifest drift, which `inject` already re-injects).
 //!   4. a missing `nockup:load-defaults` marker on a grafted kernel.
+//!
+//! Plus the full `lint.rs` pass (transitive-imports, collision,
+//! bare-tilde-ambiguity, internal-dupes, unresolved-cause-reference,
+//! weld-friction). Doctor runs both sets under the same resolved lint
+//! policy so the policy table it prints reflects what actually fired.
 //!
 //! Reuses the `lint.rs` shape: per-finding `Serialize` structs, a JSON
 //! report, a stderr printer, and a nonzero exit when findings fire.
@@ -87,9 +93,13 @@ pub(crate) struct DoctorFinding {
 /// JSON document for `doctor --json`. Stable schema — append top-level
 /// keys (or `DoctorCheck` variants), never reshape, mirroring the
 /// `--list --json` and `lint --json` contracts.
-#[derive(Debug, Serialize)]
+///
+/// `lint` carries the same per-kind shape `lint --json` emits, so a
+/// consumer that already parses lint reports reuses its decoder here.
+#[derive(Serialize)]
 struct DoctorReport<'a> {
     findings: &'a [DoctorFinding],
+    lint: crate::lint::LintReport<'a>,
 }
 
 /// `doctor`'s text output mode. `--json` (on `Human`) overrides to a
@@ -143,31 +153,91 @@ pub(crate) fn run_doctor(
 
     let findings = collect_findings(path, &source, &grafts);
 
-    // Resolve the per-lint policy so the doctor surface can show what
-    // severity each lint actually runs at. `human` format only — the
-    // build-warnings + json paths stay focused on doctor findings.
+    // Resolve the per-lint policy once. Both the lint pass below and
+    // the policy table printed at the bottom of the human surface read
+    // the same resolved policy, so the table reflects what fired.
     let mut policy = crate::lint::LintPolicy::load_from_project(path)?;
     policy.apply_cli_overrides(lint_overrides)?;
+    for w in policy.warnings() {
+        eprintln!("graft-inject: {w}");
+    }
+
+    // Run the Hoon-side lint pass under the same policy. Doctor's four
+    // project-health checks alone left transitive-imports / collision /
+    // bare-tilde / internal-dupes findings invisible in the doctor
+    // surface — even though the policy table named them as `error`. The
+    // resolved policy was promising what doctor did not deliver.
+    let lint_findings = crate::lint::collect_lint_findings(path, lib_dir)?;
+    let lint_errors = lint_findings
+        .iter()
+        .filter(|f| policy.effective(f) == crate::lint::LintSeverity::Error)
+        .count();
+    let total_failing = findings.len() + lint_errors;
 
     match format {
         DoctorFormat::BuildWarnings => {
             emit_build_warnings(&findings);
+            emit_build_warnings_lint(&lint_findings, &policy);
             Ok(())
         }
         DoctorFormat::Human => {
             if json {
-                emit_json(&findings);
+                emit_json(&findings, &lint_findings, &policy);
             } else {
                 emit_human(path, &findings);
+                emit_lint_section(&lint_findings, path, &policy);
                 emit_resolved_policy(&policy);
             }
-            if findings.is_empty() {
+            if total_failing == 0 {
                 Ok(())
             } else {
-                bail!("graft-inject doctor: {} finding(s) above", findings.len())
+                bail!(
+                    "graft-inject doctor: {total_failing} finding(s) above"
+                )
             }
         }
     }
+}
+
+/// Emit lint findings as `cargo:warning=`-style lines from the
+/// scaffold `build.rs`. Mirrors `emit_build_warnings` for doctor
+/// findings; one line per lint finding, severity-prefixed so the
+/// reader can sort error-vs-warn at a glance. The detailed
+/// per-finding output stays on the human surface — the build line
+/// is enough signal to know lint is unhappy and run `doctor` for
+/// detail.
+fn emit_build_warnings_lint(
+    findings: &[crate::lint::LintFinding],
+    policy: &crate::lint::LintPolicy,
+) {
+    for f in findings {
+        let sev = policy.effective(f).word();
+        let kind = f.kind_label();
+        let loc = f
+            .line()
+            .map(|l| format!(" [line {l}]"))
+            .unwrap_or_default();
+        println!("doctor: lint:{kind} ({sev}){loc}");
+    }
+}
+
+/// Print lint findings in doctor's human surface. Skips the section
+/// entirely when no findings fire so a clean project shows the same
+/// `0 finding(s)` header it always did.
+fn emit_lint_section(
+    findings: &[crate::lint::LintFinding],
+    path: &Path,
+    policy: &crate::lint::LintPolicy,
+) {
+    if findings.is_empty() {
+        return;
+    }
+    eprintln!();
+    eprintln!(
+        "graft-inject doctor: lint findings ({})",
+        crate::lint::summarize_severity(findings, policy),
+    );
+    crate::lint::print_lint_findings(findings, path, policy);
 }
 
 /// Stderr block listing the effective severity per lint after the
@@ -418,8 +488,18 @@ fn emit_build_warnings(findings: &[DoctorFinding]) {
 }
 
 /// `--json` surface: the stable `DoctorReport` document to stdout.
-fn emit_json(findings: &[DoctorFinding]) {
-    let report = DoctorReport { findings };
+/// Carries both project-health findings (`findings`) and the lint
+/// pass output (`lint`) under one document; the lint shape is the
+/// same one `lint --json` emits.
+fn emit_json(
+    findings: &[DoctorFinding],
+    lint_findings: &[crate::lint::LintFinding],
+    policy: &crate::lint::LintPolicy,
+) {
+    let report = DoctorReport {
+        findings,
+        lint: crate::lint::LintReport::from_findings(lint_findings, policy),
+    };
     let s = serde_json::to_string_pretty(&report).expect("DoctorReport always serializes");
     println!("{s}");
 }
@@ -433,7 +513,7 @@ pub(crate) fn emit_human(path: &Path, findings: &[DoctorFinding]) {
         findings.len(),
     );
     if findings.is_empty() {
-        eprintln!("  no findings — project looks healthy");
+        eprintln!("  no project-health findings");
         return;
     }
     for f in findings {

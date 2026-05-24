@@ -1564,7 +1564,7 @@ struct UnresolvedCauseReferenceRecord<'a> {
 /// is not part of the lint subcommand JSON (it ships through the
 /// inject report's stderr).
 #[derive(Serialize, Default)]
-struct LintReport<'a> {
+pub(crate) struct LintReport<'a> {
     bare_tilde_ambiguity: Vec<BareTildeRecord<'a>>,
     collision: Vec<CollisionRecord<'a>>,
     transitive_imports: Vec<TransitiveImportRecord<'a>>,
@@ -1573,7 +1573,7 @@ struct LintReport<'a> {
 }
 
 impl<'a> LintReport<'a> {
-    fn from_findings(findings: &'a [LintFinding], policy: &LintPolicy) -> Self {
+    pub(crate) fn from_findings(findings: &'a [LintFinding], policy: &LintPolicy) -> Self {
         let mut report = Self::default();
         for f in findings {
             let severity = policy.effective(f);
@@ -1658,6 +1658,51 @@ pub(crate) fn run_lint(
     json: bool,
     lint_overrides: &[String],
 ) -> Result<()> {
+    let mut policy = LintPolicy::load_from_project(path)?;
+    policy.apply_cli_overrides(lint_overrides)?;
+    for w in policy.warnings() {
+        eprintln!("graft-inject: {w}");
+    }
+
+    let findings = collect_lint_findings(path, lib_dir)?;
+
+    if json {
+        // Stable schema: { "bare_tilde_ambiguity": [...], "collision": [...],
+        // "transitive_imports": [...], "internal_dupes": [...] }. Future
+        // lint families append top-level keys without reshaping
+        // existing ones; each record gains an additive "severity" field
+        // (resolved against the active policy).
+        let report = LintReport::from_findings(&findings, &policy);
+        let s = serde_json::to_string_pretty(&report)
+            .expect("LintReport always serializes");
+        println!("{s}");
+    } else {
+        eprintln!("graft-inject lint: {}", summarize_severity(&findings, &policy));
+        print_lint_findings(&findings, path, &policy);
+    }
+
+    let errors = findings
+        .iter()
+        .filter(|f| policy.effective(f) == LintSeverity::Error)
+        .count();
+    if errors > 0 {
+        bail!("graft-inject lint: {errors} error finding(s) above");
+    }
+    Ok(())
+}
+
+/// Discover-and-collect entry point shared by `run_lint` and
+/// `doctor::run_doctor`. Validates the kernel path, reads source,
+/// runs every lint pass, and returns the raw findings — leaving
+/// policy resolution, printing, and exit-code mapping to the caller.
+///
+/// Pure in the policy sense: a downstream pass can apply its own
+/// per-lint severity table without re-collecting findings. The
+/// caller owns whether warnings exit nonzero.
+pub(crate) fn collect_lint_findings(
+    path: &Path,
+    lib_dir: &Path,
+) -> Result<Vec<LintFinding>> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("hoon") => {}
         Some(other) => bail!(
@@ -1673,12 +1718,6 @@ pub(crate) fn run_lint(
     let source = fs::read_to_string(path)
         .with_context(|| format!("reading {}", path.display()))?;
     let lines: Vec<String> = source.lines().map(String::from).collect();
-
-    let mut policy = LintPolicy::load_from_project(path)?;
-    policy.apply_cli_overrides(lint_overrides)?;
-    for w in policy.warnings() {
-        eprintln!("graft-inject: {w}");
-    }
 
     let mut findings: Vec<LintFinding> = Vec::new();
     findings.extend(lint_bare_tilde_ambiguity(&lines));
@@ -1706,29 +1745,7 @@ pub(crate) fn run_lint(
     // collision_check (manifest-side) misses.
     findings.extend(lint_internal_dupes(&lines));
 
-    if json {
-        // Stable schema: { "bare_tilde_ambiguity": [...], "collision": [...],
-        // "transitive_imports": [...], "internal_dupes": [...] }. Future
-        // lint families append top-level keys without reshaping
-        // existing ones; each record gains an additive "severity" field
-        // (resolved against the active policy).
-        let report = LintReport::from_findings(&findings, &policy);
-        let s = serde_json::to_string_pretty(&report)
-            .expect("LintReport always serializes");
-        println!("{s}");
-    } else {
-        eprintln!("graft-inject lint: {}", summarize_severity(&findings, &policy));
-        print_lint_findings(&findings, path, &policy);
-    }
-
-    let errors = findings
-        .iter()
-        .filter(|f| policy.effective(f) == LintSeverity::Error)
-        .count();
-    if errors > 0 {
-        bail!("graft-inject lint: {errors} error finding(s) above");
-    }
-    Ok(())
+    Ok(findings)
 }
 
 /// Build a stable per-kind table of (default, effective) severities for
