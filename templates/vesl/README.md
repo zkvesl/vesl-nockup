@@ -66,12 +66,15 @@ let my_routes = axum::Router::new()
 vesl_hull::serve_with_extra_routes(state, port, &bind_addr, my_routes).await?;
 ```
 
-Layers (API-key auth, 4 MiB body limit, 200 req / 60 s rate limit + 256
-buffer) wrap the merged Router, so they apply uniformly to your custom
-routes. Do **not** use `Router::merge(vesl_hull::router(state), ...)`
-directly — axum's flat merge attaches your routes outside the
-already-applied layer stack, leaving them unauthenticated and
-unrate-limited.
+Layers wrap the merged Router uniformly:
+
+- **API-key auth** — bearer-token check against `HULL_API_KEY`; `/health` is exempt.
+- **Body-size cap (two-stage, 4 MiB)** — an upfront `Body::size_hint` precheck (413s every known-length body, including wire requests with honest `Content-Length` and in-process `Body::from(Vec<u8>)`) plus tower-http's streaming `RequestBodyLimitLayer` for chunked or unknown-length bodies. A handler that ignores its body still gets the upfront 413 when the size is known.
+- **Rate limit** — 200 req / 60 s + 256 buffer; overflow yields 429.
+
+Do **not** use `Router::merge(vesl_hull::router(state), ...)` directly —
+axum's flat merge attaches your routes outside the already-applied
+layer stack, leaving them unauthenticated and unrate-limited.
 
 ## Layout
 
