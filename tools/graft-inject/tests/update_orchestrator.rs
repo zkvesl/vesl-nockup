@@ -42,6 +42,9 @@ fn setup(subdir: &str) -> Result<PathBuf> {
         repo_root.join("hoon/lib/settle-graft.toml"),
         hoon_lib.join("settle-graft.toml"),
     )?;
+    // The template kernel imports `/+ lib` — stub the target so the
+    // transitive-imports lint that gates `inject --apply` resolves.
+    fs::write(hoon_lib.join("lib.hoon"), "")?;
     copy_dir_contents(&repo_root.join("hoon/common"), &hoon_common)?;
     copy_dir_contents(&repo_root.join("hoon/dat"), &hoon_dat)?;
     Ok(scratch)
