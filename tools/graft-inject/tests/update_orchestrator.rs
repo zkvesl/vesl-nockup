@@ -14,10 +14,12 @@ use std::process::{Command, Output, Stdio};
 use anyhow::{Context, Result, bail};
 
 mod fixtures;
-use fixtures::{graft_inject_bin, repo_root};
+use fixtures::{copy_dir_contents, graft_inject_bin, repo_root};
 
 /// Build a minimal scratch project: templates/app.hoon as the kernel,
-/// settle-graft.toml as the only manifest.
+/// settle-graft.toml as the only manifest, and the hoon/common + hoon/dat
+/// trees so the transitive-imports lint that gates `--apply` resolves
+/// `/= * /common/wrapper` and its `/# softed-constraints` chain.
 fn setup(subdir: &str) -> Result<PathBuf> {
     let repo_root = repo_root();
     let scratch = repo_root.join("target").join(subdir);
@@ -26,8 +28,12 @@ fn setup(subdir: &str) -> Result<PathBuf> {
     }
     let hoon_app = scratch.join("hoon/app");
     let hoon_lib = scratch.join("hoon/lib");
+    let hoon_common = scratch.join("hoon/common");
+    let hoon_dat = scratch.join("hoon/dat");
     fs::create_dir_all(&hoon_app)?;
     fs::create_dir_all(&hoon_lib)?;
+    fs::create_dir_all(&hoon_common)?;
+    fs::create_dir_all(&hoon_dat)?;
     fs::copy(
         repo_root.join("templates/app.hoon"),
         hoon_app.join("app.hoon"),
@@ -36,6 +42,8 @@ fn setup(subdir: &str) -> Result<PathBuf> {
         repo_root.join("hoon/lib/settle-graft.toml"),
         hoon_lib.join("settle-graft.toml"),
     )?;
+    copy_dir_contents(&repo_root.join("hoon/common"), &hoon_common)?;
+    copy_dir_contents(&repo_root.join("hoon/dat"), &hoon_dat)?;
     Ok(scratch)
 }
 

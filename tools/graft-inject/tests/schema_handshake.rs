@@ -31,13 +31,22 @@ fn setup_scratch(scratch_subdir: &str) -> Result<PathBuf> {
     }
     let hoon_app = scratch.join("hoon/app");
     let hoon_lib = scratch.join("hoon/lib");
+    let hoon_common = scratch.join("hoon/common");
+    let hoon_dat = scratch.join("hoon/dat");
     fs::create_dir_all(&hoon_app)?;
     fs::create_dir_all(&hoon_lib)?;
+    fs::create_dir_all(&hoon_common)?;
+    fs::create_dir_all(&hoon_dat)?;
     fs::copy(
         repo_root.join("templates/app.hoon"),
         hoon_app.join("app.hoon"),
     )?;
     copy_dir_contents(&repo_root.join("hoon/lib"), &hoon_lib)?;
+    // hoon/common + hoon/dat satisfy the transitive-imports lint that
+    // gates `--apply`. The template imports `/= * /common/wrapper`,
+    // which in turn chains into `hoon/dat` via `/# softed-constraints`.
+    copy_dir_contents(&repo_root.join("hoon/common"), &hoon_common)?;
+    copy_dir_contents(&repo_root.join("hoon/dat"), &hoon_dat)?;
     Ok(scratch)
 }
 

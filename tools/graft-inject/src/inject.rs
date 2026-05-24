@@ -26,7 +26,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::codegen::{CodegenReport, LoadDefaultsReport, emit_effect_union, emit_load_defaults};
-use crate::lint::{WeldLint, lint_weld_friction};
+use crate::lint::{LintFinding, lint_weld_friction};
 use crate::manifest::Graft;
 use crate::marker::{
     Marker, begin_banner, begin_banner_with_sha, end_banner, find_marker, leading_whitespace,
@@ -50,8 +50,9 @@ pub(crate) struct InjectReport {
     pub(crate) pruned_grafts: Vec<GraftReport>,
     /// Outcome of the typed effect-union codegen pass.
     pub(crate) codegen: CodegenReport,
-    /// Weld-friction lint findings in domain code.
-    pub(crate) weld_lint: WeldLint,
+    /// Weld-friction lint findings in domain code. Advisory only;
+    /// every element is `LintFinding::WeldFriction`.
+    pub(crate) weld_lint: Vec<LintFinding>,
     /// Outcome of the `++load` defaults codegen pass.
     pub(crate) load_defaults: LoadDefaultsReport,
 }
@@ -1519,6 +1520,18 @@ mod tests {
              to position 1 even though a different graft was re-added."
         );
     }
+    /// Helper: collect every `WeldFriction` finding's `narrow_type`
+    /// for set-style assertions in the weld-lint tests.
+    fn weld_narrow_types(findings: &[LintFinding]) -> Vec<&str> {
+        findings
+            .iter()
+            .filter_map(|f| match f {
+                LintFinding::WeldFriction { narrow_type, .. } => Some(narrow_type.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Scaffold + a domain `%set` arm that binds narrowly. Used to
     /// exercise the weld-friction lint on developer code outside any
     /// graft-inject banner region.
@@ -1528,17 +1541,12 @@ mod tests {
         let kv = synthetic_graft_with_effect("kv", 50);
         let (_, report) = inject(SCAFFOLD_NARROW_BINDING, &[kv, counter]).unwrap();
         assert_eq!(
-            report.weld_lint.findings.len(),
+            report.weld_lint.len(),
             2,
             "two narrow bindings should be flagged: {:#?}",
-            report.weld_lint.findings,
+            report.weld_lint,
         );
-        let narrow_types: Vec<&str> = report
-            .weld_lint
-            .findings
-            .iter()
-            .map(|f| f.narrow_type.as_str())
-            .collect();
+        let narrow_types = weld_narrow_types(&report.weld_lint);
         assert!(narrow_types.contains(&"counter-effect"));
         assert!(narrow_types.contains(&"kv-effect"));
     }
@@ -1556,7 +1564,7 @@ mod tests {
         let (_, report) = inject(&out, &[kv, counter]).unwrap();
         // Still 2 — the graft poke bodies inside :begin/:end banners are
         // ignored, only the developer's domain bindings count.
-        assert_eq!(report.weld_lint.findings.len(), 2);
+        assert_eq!(report.weld_lint.len(), 2);
     }
 
     #[test]
@@ -1569,9 +1577,9 @@ mod tests {
         let kv = synthetic_graft_with_effect("kv", 50);
         let (_, report) = inject(&widened, &[kv, counter]).unwrap();
         assert!(
-            report.weld_lint.findings.is_empty(),
+            report.weld_lint.is_empty(),
             "Pattern B widening must not trip the lint: {:#?}",
-            report.weld_lint.findings,
+            report.weld_lint,
         );
     }
 
@@ -1584,7 +1592,7 @@ mod tests {
         let g = synthetic_graft_with_effect("alpha", 10);
         let (_, report) = inject(BARE_SCAFFOLD, &[g]).unwrap();
         assert_eq!(report.codegen.status, CodegenStatus::Skipped);
-        assert!(report.weld_lint.findings.is_empty());
+        assert!(report.weld_lint.is_empty());
     }
     // ---------------------------------------------------------------
     // migrate_legacy_effect

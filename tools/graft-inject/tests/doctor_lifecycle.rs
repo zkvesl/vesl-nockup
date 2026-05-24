@@ -26,13 +26,24 @@ fn setup_composed(subdir: &str, grafts: &str) -> Result<PathBuf> {
     }
     let hoon_app = scratch.join("hoon/app");
     let hoon_lib = scratch.join("hoon/lib");
+    let hoon_common = scratch.join("hoon/common");
+    let hoon_dat = scratch.join("hoon/dat");
     fs::create_dir_all(&hoon_app)?;
     fs::create_dir_all(&hoon_lib)?;
+    fs::create_dir_all(&hoon_common)?;
+    fs::create_dir_all(&hoon_dat)?;
     fs::copy(
         repo_root.join("templates/app.hoon"),
         hoon_app.join("app.hoon"),
     )?;
     copy_dir_contents(&repo_root.join("hoon/lib"), &hoon_lib)?;
+    // Mirror hoon/common and hoon/dat too — the kernel template
+    // imports `/= * /common/wrapper`, and the common-tree files
+    // chain into `hoon/dat` via `/# softed-constraints`. The
+    // transitive-imports lint resolves both, and without these
+    // trees in place `inject --apply` refuses to write.
+    copy_dir_contents(&repo_root.join("hoon/common"), &hoon_common)?;
+    copy_dir_contents(&repo_root.join("hoon/dat"), &hoon_dat)?;
     let app = hoon_app.join("app.hoon");
     let status = Command::new(graft_inject_bin())
         .args([

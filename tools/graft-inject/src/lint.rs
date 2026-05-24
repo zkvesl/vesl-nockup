@@ -1,10 +1,15 @@
 //! Pre/post-inject lint suite: weld-friction, bare-tilde ambiguity,
 //! collision check, transitive imports, internal dupes.
 //!
-//! The lints are advisory passes — they read
-//! kernel source (line vec) and graft manifests, return finding lists,
-//! and surface them via stderr or a `LintReport` JSON shape. Codegen
-//! consumes a couple of helpers here (`CauseUnionMember`,
+//! Every lint produces the same type — [`LintFinding`], with one
+//! variant per lint. Consumers (`run_lint`, `run_inject`, the inject
+//! report) route through a single pattern-match instead of branching on
+//! five wrapper structs. Each lint function returns
+//! `Vec<LintFinding>`; the unified printer ([`print_lint_findings`])
+//! groups by [`LintFinding::kind_label`] and emits the per-lint
+//! remediation hint blocks verbatim.
+//!
+//! Codegen consumes a couple of helpers here (`CauseUnionMember`,
 //! `extract_cause_union_members`, `extract_graft_cause_tags`) because
 //! its cause-tag set composition is the same shape as the lint's
 //! cross-reference. There's no other coupling.
@@ -19,14 +24,135 @@ use crate::manifest::{Graft, discover_grafts};
 use crate::marker::Marker;
 
 // ---------------------------------------------------------------
+// Unified finding type
+// ---------------------------------------------------------------
+
+/// One lint finding. Variants absorb the fields of the per-lint shapes
+/// the wrapper structs used to carry; consumers pattern-match on the
+/// variant and read the inner fields directly. The sub-discriminator
+/// enums [`CollisionKind`] and [`InternalDupeKind`] stay as nested
+/// fields so the JSON projection keeps its existing key shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LintFinding {
+    /// Narrow effect binding in domain code — `(list <graft>-effect)`
+    /// will nest-fail at any cross-graft `weld`. Advisory: surfaces
+    /// during compose but does not gate the write.
+    WeldFriction {
+        /// 1-indexed line number of the narrow binding.
+        line: usize,
+        /// Trimmed line text — short enough to copy-paste into a search.
+        text: String,
+        /// The narrow type referenced, e.g., `counter-effect`.
+        narrow_type: String,
+    },
+    /// Domain `?-` arm body ends with a bare `~` line; the composer's
+    /// chain rebuilder may mistake it for the peek terminator and
+    /// splice the peek chain into the poke body.
+    BareTildeAmbiguity {
+        /// 1-indexed line number of the bare `~`.
+        line: usize,
+        /// Domain arm tag (e.g. "ping") whose body ends in the bare `~`.
+        arm: String,
+    },
+    /// Two grafts (or a graft + the domain) declare the same cause
+    /// tag or state field — composes into a duplicate-headed union /
+    /// record.
+    Collision {
+        kind: CollisionKind,
+        /// The colliding name (`enqueue-job`, `entries`, ...).
+        name: String,
+        /// Owners that declared the name. `(domain)` represents the
+        /// app.hoon domain code; everything else is a graft name.
+        owners: Vec<String>,
+    },
+    /// A `.hoon` file imports a name whose target does not exist on
+    /// disk under the resolved root — hoonc would later silently fail
+    /// when it eager-parses `hoon/common/`.
+    TransitiveImport {
+        /// `.hoon` file that owns the unsatisfied import.
+        source: PathBuf,
+        /// Rune ("/+", "/=", "/-", "/#").
+        rune: String,
+        /// Import name (or `/=` bind name).
+        name: String,
+        /// Expected resolution path that doesn't exist on disk.
+        target: PathBuf,
+        /// Chain of files traversed to reach `source`. Empty when
+        /// `source` is a top-level seed (the input root or a
+        /// hoon/common/ entry).
+        reachable_from: Vec<PathBuf>,
+    },
+    /// Literal duplicate variant head inside the composed `+$ cause`
+    /// union, or duplicate field name inside `+$ versioned-state`.
+    /// Catches the post-injection graft+graft dupe that the manifest-
+    /// side collision lint can miss.
+    InternalDupe {
+        kind: InternalDupeKind,
+        /// Duplicate name (`enqueue-job`, `entries`, ...).
+        name: String,
+        /// 1-indexed line numbers of every occurrence (sorted).
+        lines: Vec<usize>,
+    },
+}
+
+impl LintFinding {
+    /// Stable kind label used by the unified printer's per-finding line
+    /// prefix and the JSON schema's per-kind key. Identifier-style; the
+    /// labels match the existing JSON schema keys.
+    pub(crate) fn kind_label(&self) -> &'static str {
+        match self {
+            LintFinding::WeldFriction { .. } => "weld-friction",
+            LintFinding::BareTildeAmbiguity { .. } => "bare-tilde-ambiguity",
+            LintFinding::Collision { .. } => "collision",
+            LintFinding::TransitiveImport { .. } => "transitive-imports",
+            LintFinding::InternalDupe { .. } => "internal-dupes",
+        }
+    }
+
+    /// 1-indexed source line for findings anchored on a single line.
+    /// `Collision` (manifest-side, no source line), `TransitiveImport`
+    /// (resolution failure spans files), and `InternalDupe` (multi-
+    /// line) carry no single line number and return `None`.
+    #[allow(dead_code)]
+    pub(crate) fn line(&self) -> Option<usize> {
+        match self {
+            LintFinding::WeldFriction { line, .. }
+            | LintFinding::BareTildeAmbiguity { line, .. } => Some(*line),
+            LintFinding::Collision { .. }
+            | LintFinding::TransitiveImport { .. }
+            | LintFinding::InternalDupe { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CollisionKind {
+    CauseTag,
+    StateField,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum InternalDupeKind {
+    CauseTag,
+    StateField,
+}
+
+// ---------------------------------------------------------------
 // Weld-friction lint
 // ---------------------------------------------------------------
 
-/// Weld-friction lint.
+/// Walk `lines` and flag any developer-code line that contains a
+/// narrow effect binding like `(list <graft>-effect)`. Skips lines
+/// inside `graft-inject:<...>:begin / :end` banner regions (those are
+/// graft-injected bodies, not user code; the narrow types are correct
+/// there). Skips entirely when codegen status is Skipped or the variant
+/// list is empty — there's no typed union to widen toward.
 ///
-/// A real composition confirmed that the typed effect
-/// union does NOT auto-fix the cross-graft `weld` friction when the
-/// developer's domain arm binds narrowly:
+/// A real composition confirmed that the typed effect union does NOT
+/// auto-fix the cross-graft `weld` friction when the developer's
+/// domain arm binds narrowly:
 ///
 /// ```text
 /// =/  [efx-c=(list counter-effect) new-counter=counter-state]   :: NARROW
@@ -36,34 +162,10 @@ use crate::marker::Marker;
 ///
 /// The fix is Pattern B: widen each binding to `(list effect)`. The
 /// lint scans developer code (outside `graft-inject:<X>:begin/:end`
-/// banner regions) for narrow bindings and surfaces a stderr note
-/// pointing at the zkvesl-docs §"Composing two graft arms in one
-/// domain cause" so the developer has a searchable handle.
-///
-/// Findings are advisory — Pattern A (backtick casts at the weld
-/// site) still works as an escape hatch.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct WeldLintFinding {
-    /// 1-indexed line number of the offending narrow binding.
-    pub(crate) line: usize,
-    /// Trimmed line text — short enough to copy-paste into a search.
-    pub(crate) text: String,
-    /// The narrow type referenced, e.g., `counter-effect`.
-    pub(crate) narrow_type: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
-pub(crate) struct WeldLint {
-    pub(crate) findings: Vec<WeldLintFinding>,
-}
-
-/// Walk `lines` and flag any developer-code line that contains a
-/// narrow effect binding like `(list <graft>-effect)`. Skips lines
-/// inside `graft-inject:<...>:begin / :end` banner regions (those are
-/// graft-injected bodies, not user code; the narrow types are correct
-/// there). Skips entirely when codegen status is Skipped or the variant
-/// list is empty — there's no typed union to widen toward.
-pub(crate) fn lint_weld_friction(lines: &[String], variants: &[String]) -> WeldLint {
+/// banner regions) for narrow bindings and surfaces a finding pointing
+/// at the zkvesl-docs §"Composing two graft arms in one domain cause"
+/// anchor so the developer has a searchable handle.
+pub(crate) fn lint_weld_friction(lines: &[String], variants: &[String]) -> Vec<LintFinding> {
     let effect_variants: HashSet<&str> = variants
         .iter()
         .filter(|v| v.ends_with("-effect") && v.as_str() != "domain-effect")
@@ -71,10 +173,10 @@ pub(crate) fn lint_weld_friction(lines: &[String], variants: &[String]) -> WeldL
         .collect();
 
     if effect_variants.is_empty() {
-        return WeldLint::default();
+        return Vec::new();
     }
 
-    let mut findings = Vec::new();
+    let mut findings: Vec<LintFinding> = Vec::new();
     let mut in_banner = false;
     for (i, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
@@ -102,7 +204,7 @@ pub(crate) fn lint_weld_friction(lines: &[String], variants: &[String]) -> WeldL
         for variant in &effect_variants {
             let needle = format!("(list {variant})");
             if line.contains(&needle) {
-                findings.push(WeldLintFinding {
+                findings.push(LintFinding::WeldFriction {
                     line: i + 1,
                     text: trimmed.to_string(),
                     narrow_type: (*variant).to_string(),
@@ -111,42 +213,28 @@ pub(crate) fn lint_weld_friction(lines: &[String], variants: &[String]) -> WeldL
             }
         }
     }
-    WeldLint { findings }
+    findings
 }
 
 // ---------------------------------------------------------------
 // Bare-tilde ambiguity lint
 // ---------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct BareTildeLintFinding {
-    /// 1-indexed line number of the bare `~`.
-    pub(crate) line: usize,
-    /// Domain arm tag (e.g. "ping") whose body ends in the bare `~`.
-    pub(crate) arm: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
-pub(crate) struct BareTildeLint {
-    pub(crate) findings: Vec<BareTildeLintFinding>,
-}
-
 /// Pre-apply lint: bare-`~` ambiguity inside domain `?-` switch arms.
 ///
 /// The bug this guards against: `find_last_bare_tilde` walks from
-/// the `nockup:peek`
-/// marker until the next `==` capturing the last `~`-only line as
-/// the peek-chain terminator. The next `==` is typically the
-/// `?-  -.u.act` close in the poke arm, so any bare-`~` line inside a
-/// domain arm body (e.g. `%ping :_ state ^- (list effect) ~`)
+/// the `nockup:peek` marker until the next `==` capturing the last
+/// `~`-only line as the peek-chain terminator. The next `==` is
+/// typically the `?-  -.u.act` close in the poke arm, so any bare-`~`
+/// line inside a domain arm body (e.g. `%ping :_ state ^- (list effect) ~`)
 /// becomes the new "terminator" and graft-inject inserts the peek
 /// chain into the poke body — corrupting the file.
 ///
-/// The canonical re-emit fixed the placement bugs
-/// it targeted, but `emit_peek_chain` still anchors against
-/// `find_last_bare_tilde`. Until that anchor changes, the safest
-/// surface is a pre-apply lint that warns when the user's domain
-/// arms create the structural ambiguity.
+/// The canonical re-emit fixed the placement bugs it targeted, but
+/// `emit_peek_chain` still anchors against `find_last_bare_tilde`.
+/// Until that anchor changes, the safest surface is a pre-apply lint
+/// that warns when the user's domain arms create the structural
+/// ambiguity.
 ///
 /// The lint walks lines inside the `nockup:poke` region but outside
 /// any `graft-inject:*:begin/:end` banner (graft-injected arms are
@@ -154,8 +242,7 @@ pub(crate) struct BareTildeLint {
 /// domain arm body's final line is exactly `~`, the line is flagged
 /// and the developer is pointed at the workaround:
 /// `\`(list effect)\`~` or `^- (list effect) ~` on a single line.
-pub(crate) fn lint_bare_tilde_ambiguity(lines: &[String]) -> BareTildeLint {
-    let mut findings = Vec::new();
+pub(crate) fn lint_bare_tilde_ambiguity(lines: &[String]) -> Vec<LintFinding> {
     // Anchor on the `?-  -.u.act` switch header. graft-inject's
     // `find_last_bare_tilde` would scan the same range from the
     // peek marker forward, so any domain arm body inside this
@@ -168,9 +255,10 @@ pub(crate) fn lint_bare_tilde_ambiguity(lines: &[String]) -> BareTildeLint {
         let t = l.trim();
         t.starts_with("?-") && t.contains("-.u.act")
     }) else {
-        return BareTildeLint::default();
+        return Vec::new();
     };
 
+    let mut findings: Vec<LintFinding> = Vec::new();
     let mut in_banner = false;
     // Track the most recent domain `%<tag>` arm header so each finding
     // can name its parent arm. Domain arms are leading `%<tag>` lines
@@ -225,7 +313,7 @@ pub(crate) fn lint_bare_tilde_ambiguity(lines: &[String]) -> BareTildeLint {
         }
         if trimmed == "~" {
             if let Some(arm) = current_arm.take() {
-                findings.push(BareTildeLintFinding {
+                findings.push(LintFinding::BareTildeAmbiguity {
                     line: i + 1,
                     arm,
                 });
@@ -235,34 +323,12 @@ pub(crate) fn lint_bare_tilde_ambiguity(lines: &[String]) -> BareTildeLint {
             }
         }
     }
-    BareTildeLint { findings }
+    findings
 }
 
 // ---------------------------------------------------------------
 // Collision-check lint
 // ---------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum CollisionKind {
-    CauseTag,
-    StateField,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct CollisionFinding {
-    pub(crate) kind: CollisionKind,
-    /// The colliding name (`enqueue-job`, `entries`, ...).
-    pub(crate) name: String,
-    /// Owners that declared the name. `(domain)` represents the
-    /// app.hoon domain code; everything else is a graft name.
-    pub(crate) owners: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
-pub(crate) struct CollisionLint {
-    pub(crate) findings: Vec<CollisionFinding>,
-}
 
 /// Pre-apply lint: cross-graft and graft-vs-domain name collisions.
 ///
@@ -284,7 +350,7 @@ pub(crate) struct CollisionLint {
 pub(crate) fn lint_collision_check(
     grafts: &[Graft],
     domain_lines: &[String],
-) -> CollisionLint {
+) -> Vec<LintFinding> {
     use std::collections::BTreeMap;
     let mut cause_owners: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut state_owners: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -310,10 +376,10 @@ pub(crate) fn lint_collision_check(
             .push("(domain)".to_string());
     }
 
-    let mut findings = Vec::new();
+    let mut findings: Vec<LintFinding> = Vec::new();
     for (tag, owners) in cause_owners {
         if owners.len() > 1 {
-            findings.push(CollisionFinding {
+            findings.push(LintFinding::Collision {
                 kind: CollisionKind::CauseTag,
                 name: tag,
                 owners,
@@ -322,14 +388,14 @@ pub(crate) fn lint_collision_check(
     }
     for (field, owners) in state_owners {
         if owners.len() > 1 {
-            findings.push(CollisionFinding {
+            findings.push(LintFinding::Collision {
                 kind: CollisionKind::StateField,
                 name: field,
                 owners,
             });
         }
     }
-    CollisionLint { findings }
+    findings
 }
 
 /// Extract `%<tag>` arm headers from a graft's poke block body.
@@ -525,31 +591,10 @@ struct ImportSpec {
     path_arg: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub(crate) struct TransitiveImportFinding {
-    /// .hoon file that owns the unsatisfied import.
-    source: PathBuf,
-    /// Rune ("/+", "/=", "/-", "/#").
-    rune: String,
-    /// Import name (or `/=` bind name).
-    name: String,
-    /// Expected resolution path that doesn't exist on disk.
-    target: PathBuf,
-    /// Chain of files traversed to reach `source`. Empty when
-    /// `source` is a top-level seed (the input root or a
-    /// hoon/common/ entry).
-    reachable_from: Vec<PathBuf>,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-pub(crate) struct TransitiveImportLint {
-    pub(crate) findings: Vec<TransitiveImportFinding>,
-}
-
 /// Pre-apply lint: walk every `.hoon` file reachable from the input
 /// path via `/+`, `/=`, `/-`, `/#` imports, AND eagerly scan every
 /// `.hoon` under `<hoon-root>/common/`. Report unsatisfied edges as
-/// HARD-LINT findings.
+/// findings.
 ///
 /// Reproduces a real friction (`hoon/common/nock-prover.hoon → /#
 /// softed-constraints` after a slimmed copy): even though an app.hoon
@@ -564,7 +609,7 @@ pub(crate) struct TransitiveImportLint {
 /// - `/= <bind> /<path>` → `<hoon-root>/<path>.hoon`
 /// - `/-  <name>`        → `<hoon-root>/sur/<name>.hoon`
 /// - `/# <name>`         → `<hoon-root>/dat/<name>.hoon`
-pub(crate) fn lint_transitive_imports(root_path: &Path, lib_dir: &Path) -> TransitiveImportLint {
+pub(crate) fn lint_transitive_imports(root_path: &Path, lib_dir: &Path) -> Vec<LintFinding> {
     use std::collections::VecDeque;
 
     let hoon_root = lib_dir
@@ -604,7 +649,7 @@ pub(crate) fn lint_transitive_imports(root_path: &Path, lib_dir: &Path) -> Trans
         }
     }
 
-    let mut findings: Vec<TransitiveImportFinding> = Vec::new();
+    let mut findings: Vec<LintFinding> = Vec::new();
     while let Some((current, parents)) = queue.pop_front() {
         if !visited.insert(current.clone()) {
             continue;
@@ -623,7 +668,7 @@ pub(crate) fn lint_transitive_imports(root_path: &Path, lib_dir: &Path) -> Trans
             } else {
                 let mut chain = parents.clone();
                 chain.push(current.clone());
-                findings.push(TransitiveImportFinding {
+                findings.push(LintFinding::TransitiveImport {
                     source: current.clone(),
                     rune: spec.rune.to_string(),
                     name: spec.name.clone(),
@@ -634,7 +679,7 @@ pub(crate) fn lint_transitive_imports(root_path: &Path, lib_dir: &Path) -> Trans
         }
     }
 
-    TransitiveImportLint { findings }
+    findings
 }
 
 /// Parse the leading import block of a .hoon file. Stops at the first
@@ -717,27 +762,6 @@ fn resolve_import(spec: &ImportSpec, hoon_root: &Path, lib_dir: &Path) -> PathBu
 // Internal-dupes lint
 // ---------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum InternalDupeKind {
-    CauseTag,
-    StateField,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct InternalDupeFinding {
-    pub(crate) kind: InternalDupeKind,
-    /// Duplicate name (`enqueue-job`, `entries`, ...).
-    pub(crate) name: String,
-    /// 1-indexed line numbers of every occurrence (sorted).
-    pub(crate) lines: Vec<usize>,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-pub(crate) struct InternalDupeLint {
-    pub(crate) findings: Vec<InternalDupeFinding>,
-}
-
 /// Member of a literal `+$ cause` definition. Distinguishes inline
 /// `[%<tag> ...]` variants from sub-union type references like
 /// `settle-cause` or `intent-cause` — the codegen pass needs both
@@ -769,10 +793,10 @@ pub(crate) enum CauseUnionMember {
 /// Reports literal-match duplicates only. Near-miss disambiguation
 /// (`%enqueue-job-f` vs `%enqueue-job-i`) is intentionally not
 /// flagged — adds parser complexity without matching empirical demand.
-pub(crate) fn lint_internal_dupes(lines: &[String]) -> InternalDupeLint {
+pub(crate) fn lint_internal_dupes(lines: &[String]) -> Vec<LintFinding> {
     use std::collections::BTreeMap;
 
-    let mut findings = Vec::new();
+    let mut findings: Vec<LintFinding> = Vec::new();
 
     let mut cause_lines: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (tag, line) in extract_all_cause_variants(lines) {
@@ -780,7 +804,7 @@ pub(crate) fn lint_internal_dupes(lines: &[String]) -> InternalDupeLint {
     }
     for (tag, line_nums) in cause_lines {
         if line_nums.len() > 1 {
-            findings.push(InternalDupeFinding {
+            findings.push(LintFinding::InternalDupe {
                 kind: InternalDupeKind::CauseTag,
                 name: tag,
                 lines: line_nums,
@@ -794,7 +818,7 @@ pub(crate) fn lint_internal_dupes(lines: &[String]) -> InternalDupeLint {
     }
     for (name, line_nums) in state_lines {
         if line_nums.len() > 1 {
-            findings.push(InternalDupeFinding {
+            findings.push(LintFinding::InternalDupe {
                 kind: InternalDupeKind::StateField,
                 name,
                 lines: line_nums,
@@ -802,7 +826,7 @@ pub(crate) fn lint_internal_dupes(lines: &[String]) -> InternalDupeLint {
         }
     }
 
-    InternalDupeLint { findings }
+    findings
 }
 
 /// Walk from `+$ cause $%(...)` open to its closing `==`, emitting
@@ -957,19 +981,273 @@ fn bracket_tag(s: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------
+// Unified printer
+// ---------------------------------------------------------------
+
+/// One stderr line for a single finding, prefixed with `  {kind}: `.
+/// The kind prefix lets `grep '<kind>:'` count findings without
+/// scraping the body. `path` provides context for findings that don't
+/// embed a source path of their own (today: `BareTildeAmbiguity`).
+pub(crate) fn print_lint_finding(f: &LintFinding, path: &Path) {
+    let kind = f.kind_label();
+    match f {
+        LintFinding::WeldFriction { line, text, .. } => {
+            eprintln!("  {kind}: line {line}: {text}");
+        }
+        LintFinding::BareTildeAmbiguity { line, arm } => {
+            eprintln!(
+                "  {kind}: {}:{line} — domain arm `%{arm}` body ends with bare `~` line",
+                path.display(),
+            );
+        }
+        LintFinding::Collision {
+            kind: ck,
+            name,
+            owners,
+        } => {
+            let ck_str = match ck {
+                CollisionKind::CauseTag => "cause-tag",
+                CollisionKind::StateField => "state-field",
+            };
+            eprintln!(
+                "  {kind}: {ck_str} `{name}` declared by: {}",
+                owners.join(", "),
+            );
+        }
+        LintFinding::TransitiveImport {
+            source,
+            rune,
+            name,
+            target,
+            reachable_from,
+        } => {
+            eprintln!(
+                "  {kind}: {}: {rune} {name} → {} (NOT FOUND)",
+                source.display(),
+                target.display(),
+            );
+            for parent in reachable_from {
+                eprintln!("      reachable from: {}", parent.display());
+            }
+        }
+        LintFinding::InternalDupe {
+            kind: dk,
+            name,
+            lines,
+        } => {
+            let dk_str = match dk {
+                InternalDupeKind::CauseTag => "cause-tag",
+                InternalDupeKind::StateField => "state-field",
+            };
+            let line_list: Vec<String> = lines.iter().map(usize::to_string).collect();
+            eprintln!(
+                "  {kind}: duplicate {dk_str} `{name}` at lines {}",
+                line_list.join(", "),
+            );
+        }
+    }
+}
+
+/// Group `findings` by [`LintFinding::kind_label`] in canonical order
+/// (weld-friction → bare-tilde-ambiguity → collision →
+/// transitive-imports → internal-dupes), print each finding via
+/// [`print_lint_finding`], then emit the per-lint remediation hint
+/// once per non-empty group. The hint strings have been tuned through
+/// the dogfood rounds and cross-link to zkvesl-docs — they are kept
+/// here verbatim.
+pub(crate) fn print_lint_findings(findings: &[LintFinding], path: &Path) {
+    if findings.is_empty() {
+        return;
+    }
+    for kind in KIND_ORDER {
+        let group: Vec<&LintFinding> = findings
+            .iter()
+            .filter(|f| f.kind_label() == *kind)
+            .collect();
+        if group.is_empty() {
+            continue;
+        }
+        for f in &group {
+            print_lint_finding(f, path);
+        }
+        print_remediation_hint(kind);
+    }
+}
+
+const KIND_ORDER: &[&str] = &[
+    "weld-friction",
+    "bare-tilde-ambiguity",
+    "collision",
+    "transitive-imports",
+    "internal-dupes",
+];
+
+/// Emit the per-lint remediation hint block after a group of findings
+/// of that kind. The text is the same dogfood-tuned copy the prior
+/// per-kind printers shipped — only the dispatch is unified.
+fn print_remediation_hint(kind: &str) {
+    match kind {
+        "weld-friction" => {
+            eprintln!(
+                "    cross-graft `(weld a b)` over these bindings will nest-fail. \
+                 widen each to `(list effect)` so the typed union absorbs each graft's effect."
+            );
+            eprintln!(
+                "    see zkvesl-docs §\"Composing two graft arms in one domain cause\" \
+                 (/guides/grafting#composing-two-graft-arms-in-one-domain-cause)"
+            );
+        }
+        "bare-tilde-ambiguity" => {
+            eprintln!(
+                "    graft-inject's chain-rebuilder may mistake this for the peek-chain"
+            );
+            eprintln!("    terminator. Refactor to one of:");
+            eprintln!("      `(list effect)`~");
+            eprintln!("      ^- (list effect) ~");
+        }
+        "collision" => {
+            eprintln!(
+                "    duplicate names compose into one cause $% / state record."
+            );
+            eprintln!(
+                "    Disambiguate via manifest rename, profile-letter suffix, or"
+            );
+            eprintln!("    domain shadowing.");
+        }
+        "transitive-imports" => {
+            eprintln!(
+                "    hoonc eager-parses hoon/common/ regardless of import-graph"
+            );
+            eprintln!(
+                "    reachability; unsatisfied edges leave hoonc exit 0 with no"
+            );
+            eprintln!(
+                "    out.jam (the \"no panic!\" silent-fail). Either add the missing"
+            );
+            eprintln!(
+                "    target file or strip the offending file from hoon/common/."
+            );
+        }
+        "internal-dupes" => {
+            eprintln!(
+                "    literal duplicates in the composed +$ cause $%(...) or"
+            );
+            eprintln!(
+                "    +$ versioned-state $:(...) — hoonc accepts whichever wins"
+            );
+            eprintln!(
+                "    lexically (mint-lost) or fires nest-fail on duplicate fields."
+            );
+            eprintln!(
+                "    Rename, merge into a tagged sum, or distinguish by argument shape."
+            );
+        }
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------
+// JSON projection (run_lint --json)
+// ---------------------------------------------------------------
+
+#[derive(Serialize)]
+struct BareTildeRecord<'a> {
+    line: usize,
+    arm: &'a str,
+}
+
+#[derive(Serialize)]
+struct CollisionRecord<'a> {
+    kind: CollisionKind,
+    name: &'a str,
+    owners: &'a [String],
+}
+
+#[derive(Serialize)]
+struct TransitiveImportRecord<'a> {
+    source: &'a Path,
+    rune: &'a str,
+    name: &'a str,
+    target: &'a Path,
+    reachable_from: &'a [PathBuf],
+}
+
+#[derive(Serialize)]
+struct InternalDupeRecord<'a> {
+    kind: InternalDupeKind,
+    name: &'a str,
+    lines: &'a [usize],
+}
+
+/// Per-kind JSON projection — keys + record shape match the historic
+/// `LintReport` schema (`bare_tilde_ambiguity`, `collision`,
+/// `transitive_imports`, `internal_dupes`). Weld-friction has its own
+/// stderr path inside the inject report and is not part of the
+/// `lint` subcommand JSON, matching pre-Phase-1 behavior.
+#[derive(Serialize, Default)]
+struct LintReport<'a> {
+    bare_tilde_ambiguity: Vec<BareTildeRecord<'a>>,
+    collision: Vec<CollisionRecord<'a>>,
+    transitive_imports: Vec<TransitiveImportRecord<'a>>,
+    internal_dupes: Vec<InternalDupeRecord<'a>>,
+}
+
+impl<'a> LintReport<'a> {
+    fn from_findings(findings: &'a [LintFinding]) -> Self {
+        let mut report = Self::default();
+        for f in findings {
+            match f {
+                // Weld-friction is not part of the lint subcommand JSON
+                // schema — it's reported through the inject path's
+                // stderr, not the standalone lint driver.
+                LintFinding::WeldFriction { .. } => {}
+                LintFinding::BareTildeAmbiguity { line, arm } => {
+                    report.bare_tilde_ambiguity.push(BareTildeRecord {
+                        line: *line,
+                        arm,
+                    });
+                }
+                LintFinding::Collision { kind, name, owners } => {
+                    report.collision.push(CollisionRecord {
+                        kind: *kind,
+                        name,
+                        owners,
+                    });
+                }
+                LintFinding::TransitiveImport {
+                    source,
+                    rune,
+                    name,
+                    target,
+                    reachable_from,
+                } => {
+                    report.transitive_imports.push(TransitiveImportRecord {
+                        source,
+                        rune,
+                        name,
+                        target,
+                        reachable_from,
+                    });
+                }
+                LintFinding::InternalDupe { kind, name, lines } => {
+                    report.internal_dupes.push(InternalDupeRecord {
+                        kind: *kind,
+                        name,
+                        lines,
+                    });
+                }
+            }
+        }
+        report
+    }
+}
+
+// ---------------------------------------------------------------
 // Lint CLI dispatch (`graft-inject lint ...`)
 // ---------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
-struct LintReport<'a> {
-    bare_tilde_ambiguity: &'a [BareTildeLintFinding],
-    collision: &'a [CollisionFinding],
-    transitive_imports: &'a [TransitiveImportFinding],
-    internal_dupes: &'a [InternalDupeFinding],
-}
-
 /// Driver for the `graft-inject lint` subcommand. Loads the kernel,
-/// runs every advisory lint pass, and surfaces findings either as
+/// runs every structural lint pass, and surfaces findings either as
 /// pretty stderr lines (default) or as a stable JSON report (`--json`).
 /// Returns `Err` when at least one finding fires so the parent
 /// dispatch can map that to a non-zero exit code (callers that just
@@ -977,9 +1255,9 @@ struct LintReport<'a> {
 /// not this driver).
 ///
 /// `lib_dir` doubles as the manifest discovery root — when it doesn't
-/// exist the collision-check is skipped (bare-tilde lint stays useful
-/// on its own). The findings themselves are emitted to stderr in the
-/// human-readable form, or to stdout as JSON when `--json` is set.
+/// exist the collision-check is skipped (the other lints stay useful
+/// on their own). Findings emit to stderr in the human-readable form,
+/// or to stdout as JSON when `--json` is set.
 pub(crate) fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
     match path.extension().and_then(|e| e.to_str()) {
         Some("hoon") => {}
@@ -996,185 +1274,68 @@ pub(crate) fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
     let source = fs::read_to_string(path)
         .with_context(|| format!("reading {}", path.display()))?;
     let lines: Vec<String> = source.lines().map(String::from).collect();
-    let bare_tilde = lint_bare_tilde_ambiguity(&lines);
+
+    let mut findings: Vec<LintFinding> = Vec::new();
+    findings.extend(lint_bare_tilde_ambiguity(&lines));
 
     // Collision check needs the discovered graft set so it can
     // cross-reference cause tags and state fields. When --lib-dir
     // doesn't exist we skip collision check rather than hard-error;
-    // bare-tilde lint stays useful on its own (e.g. on a kernel
+    // the other lints stay useful on their own (e.g. on a kernel
     // outside its project tree).
-    let collision = if lib_dir.is_dir() {
+    if lib_dir.is_dir() {
         let grafts = discover_grafts(lib_dir)
             .with_context(|| format!("discovering grafts under {}", lib_dir.display()))?;
-        lint_collision_check(&grafts, &lines)
-    } else {
-        CollisionLint::default()
-    };
+        findings.extend(lint_collision_check(&grafts, &lines));
+    }
 
     // Transitive import walk. Runs unconditionally — the silent-fail
-    // fires when hoonc eager-parses hoon/common/, and
-    // the lint needs to mirror that scope to be useful.
-    let transitive_imports = lint_transitive_imports(path, lib_dir);
+    // fires when hoonc eager-parses hoon/common/, and the lint needs
+    // to mirror that scope to be useful.
+    findings.extend(lint_transitive_imports(path, lib_dir));
 
-    // Internal-dupe lint: literal duplicate cause-tag heads
-    // or state-field names inside the composed unions. Catches both
+    // Internal-dupe lint: literal duplicate cause-tag heads or
+    // state-field names inside the composed unions. Catches both
     // hand-written domain dupes and post-injection graft dupes that
     // collision_check (manifest-side) misses.
-    let internal_dupes = lint_internal_dupes(&lines);
-
-    let findings_total = bare_tilde.findings.len()
-        + collision.findings.len()
-        + transitive_imports.findings.len()
-        + internal_dupes.findings.len();
+    findings.extend(lint_internal_dupes(&lines));
 
     if json {
         // Stable schema: { "bare_tilde_ambiguity": [...], "collision": [...],
-        // "transitive_imports": [...] }. Future lint families append
-        // top-level keys without reshaping existing ones (mirrors the
-        // --list --json schema policy at the GraftSummary block above).
-        let report = LintReport {
-            bare_tilde_ambiguity: &bare_tilde.findings,
-            collision: &collision.findings,
-            transitive_imports: &transitive_imports.findings,
-            internal_dupes: &internal_dupes.findings,
-        };
+        // "transitive_imports": [...], "internal_dupes": [...] }. Future
+        // lint families append top-level keys without reshaping
+        // existing ones.
+        let report = LintReport::from_findings(&findings);
         let s = serde_json::to_string_pretty(&report)
             .expect("LintReport always serializes");
         println!("{s}");
     } else {
-        eprintln!("graft-inject lint: {findings_total} finding(s)");
-        if !bare_tilde.findings.is_empty() {
-            eprintln!("  bare-tilde-ambiguity:");
-            for f in &bare_tilde.findings {
-                eprintln!(
-                    "    {}:{} — domain arm `%{}` body ends with bare `~` line",
-                    path.display(),
-                    f.line,
-                    f.arm,
-                );
-            }
-            eprintln!(
-                "    graft-inject's chain-rebuilder may mistake this for the peek-chain"
-            );
-            eprintln!("    terminator. Refactor to one of:");
-            eprintln!("      `(list effect)`~");
-            eprintln!("      ^- (list effect) ~");
-        }
-        if !collision.findings.is_empty() {
-            eprintln!("  collision:");
-            for f in &collision.findings {
-                let kind = match f.kind {
-                    CollisionKind::CauseTag => "cause-tag",
-                    CollisionKind::StateField => "state-field",
-                };
-                eprintln!(
-                    "    {} `{}` declared by: {}",
-                    kind,
-                    f.name,
-                    f.owners.join(", ")
-                );
-            }
-            eprintln!(
-                "    duplicate names compose into one cause $% / state record."
-            );
-            eprintln!(
-                "    Disambiguate via manifest rename, profile-letter suffix, or"
-            );
-            eprintln!("    domain shadowing.");
-        }
-        if !transitive_imports.findings.is_empty() {
-            eprintln!("  transitive-imports:");
-            for f in &transitive_imports.findings {
-                eprintln!(
-                    "    {}: {} {} → {} (NOT FOUND)",
-                    f.source.display(),
-                    f.rune,
-                    f.name,
-                    f.target.display(),
-                );
-                for parent in &f.reachable_from {
-                    eprintln!("      reachable from: {}", parent.display());
-                }
-            }
-            eprintln!(
-                "    hoonc eager-parses hoon/common/ regardless of import-graph"
-            );
-            eprintln!(
-                "    reachability; unsatisfied edges leave hoonc exit 0 with no"
-            );
-            eprintln!(
-                "    out.jam (the \"no panic!\" silent-fail). Either add the missing"
-            );
-            eprintln!(
-                "    target file or strip the offending file from hoon/common/."
-            );
-        }
-        if !internal_dupes.findings.is_empty() {
-            eprintln!("  internal-dupes:");
-            for f in &internal_dupes.findings {
-                let kind = match f.kind {
-                    InternalDupeKind::CauseTag => "cause-tag",
-                    InternalDupeKind::StateField => "state-field",
-                };
-                let line_list: Vec<String> = f.lines.iter().map(|l| l.to_string()).collect();
-                eprintln!(
-                    "    duplicate {} `{}` at lines {}",
-                    kind,
-                    f.name,
-                    line_list.join(", "),
-                );
-            }
-            eprintln!(
-                "    literal duplicates in the composed +$ cause $%(...) or"
-            );
-            eprintln!(
-                "    +$ versioned-state $:(...) — hoonc accepts whichever wins"
-            );
-            eprintln!(
-                "    lexically (mint-lost) or fires nest-fail on duplicate fields."
-            );
-            eprintln!(
-                "    Rename, merge into a tagged sum, or distinguish by argument shape."
-            );
-        }
+        eprintln!("graft-inject lint: {} finding(s)", findings.len());
+        print_lint_findings(&findings, path);
     }
 
-    if findings_total > 0 {
-        bail!("graft-inject lint: {findings_total} finding(s) above");
+    if !findings.is_empty() {
+        bail!("graft-inject lint: {} finding(s) above", findings.len());
     }
     Ok(())
-}
-
-/// Stderr surface for the weld-friction lint. Each finding gets its
-/// own line so reviewers can grep / copy. The closing pointer to the
-/// zkvesl-docs anchor uses a stable heading slug so the developer can
-/// search the docs site without needing to remember the URL.
-pub(crate) fn print_weld_lint(lint: &WeldLint) {
-    if lint.findings.is_empty() {
-        return;
-    }
-    let n = lint.findings.len();
-    eprintln!(
-        "  weld-friction lint: {n} narrow effect binding{} found in domain code",
-        if n == 1 { "" } else { "s" },
-    );
-    for f in &lint.findings {
-        eprintln!("    line {}: {}", f.line, f.text);
-    }
-    eprintln!(
-        "    cross-graft `(weld a b)` over these bindings will nest-fail. \
-         widen each to `(list effect)` so the typed union absorbs each graft's effect."
-    );
-    eprintln!(
-        "    see zkvesl-docs §\"Composing two graft arms in one domain cause\" \
-         (/guides/grafting#composing-two-graft-arms-in-one-domain-cause)"
-    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::manifest::{Block, GraftBlocks};
+
+    /// Helper: assert exactly one finding and unwrap its
+    /// `BareTildeAmbiguity` variant, panicking with full state on
+    /// mismatch. The pattern-match style is the new shape Phase 1
+    /// introduced; the helper keeps the test bodies focused.
+    fn expect_bare_tilde(findings: &[LintFinding]) -> (usize, &str) {
+        assert_eq!(findings.len(), 1, "expected 1 finding, got {findings:#?}");
+        match &findings[0] {
+            LintFinding::BareTildeAmbiguity { line, arm } => (*line, arm.as_str()),
+            other => panic!("expected BareTildeAmbiguity, got {other:?}"),
+        }
+    }
 
     // ---------- bare-tilde lint ----------
 
@@ -1194,11 +1355,11 @@ mod tests {
     ::  nockup:poke
 =="#;
         let lines: Vec<String> = fixture.lines().map(String::from).collect();
-        let lint = lint_bare_tilde_ambiguity(&lines);
-        assert_eq!(lint.findings.len(), 1, "expected 1 finding, got {lint:#?}");
-        assert_eq!(lint.findings[0].arm, "ping");
+        let findings = lint_bare_tilde_ambiguity(&lines);
+        let (line, arm) = expect_bare_tilde(&findings);
+        assert_eq!(arm, "ping");
         // Line 5 is the `~` (1-indexed; line 1 is the `?-` switch).
-        assert_eq!(lint.findings[0].line, 5);
+        assert_eq!(line, 5);
     }
 
     /// Workaround form (`(list effect)~` on one line) is safe — no
@@ -1213,10 +1374,10 @@ mod tests {
   [~ state]
 =="#;
         let lines: Vec<String> = fixture.lines().map(String::from).collect();
-        let lint = lint_bare_tilde_ambiguity(&lines);
+        let findings = lint_bare_tilde_ambiguity(&lines);
         assert!(
-            lint.findings.is_empty(),
-            "workaround form should not flag, got {lint:#?}"
+            findings.is_empty(),
+            "workaround form should not flag, got {findings:#?}"
         );
     }
 
@@ -1236,10 +1397,10 @@ mod tests {
   `(list effect)`~
 =="#;
         let lines: Vec<String> = fixture.lines().map(String::from).collect();
-        let lint = lint_bare_tilde_ambiguity(&lines);
+        let findings = lint_bare_tilde_ambiguity(&lines);
         assert!(
-            lint.findings.is_empty(),
-            "graft-injected bodies must be skipped, got {lint:#?}"
+            findings.is_empty(),
+            "graft-injected bodies must be skipped, got {findings:#?}"
         );
     }
 
@@ -1248,8 +1409,8 @@ mod tests {
     fn bare_tilde_lint_no_switch_no_findings() {
         let fixture = "++  peek\n  ~\n--";
         let lines: Vec<String> = fixture.lines().map(String::from).collect();
-        let lint = lint_bare_tilde_ambiguity(&lines);
-        assert!(lint.findings.is_empty());
+        let findings = lint_bare_tilde_ambiguity(&lines);
+        assert!(findings.is_empty());
     }
 
     // ---------- collision-check lint ----------
@@ -1299,6 +1460,20 @@ mod tests {
         }
     }
 
+    /// Helper: collect every Collision finding into (kind, name, owners)
+    /// triples for set-style assertions.
+    fn collisions(findings: &[LintFinding]) -> Vec<(CollisionKind, &str, &[String])> {
+        findings
+            .iter()
+            .filter_map(|f| match f {
+                LintFinding::Collision { kind, name, owners } => {
+                    Some((*kind, name.as_str(), owners.as_slice()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// queue-graft and pipeline-graft both
     /// declare `%enqueue-job`. Cross-graft cause-tag collision should
     /// fire one finding naming both grafts as owners.
@@ -1314,16 +1489,14 @@ mod tests {
             &["enqueue-job", "ack-job"],
             &["pipeline"],
         );
-        let lint = lint_collision_check(&[queue, pipeline], &[]);
-        assert_eq!(lint.findings.len(), 1);
-        assert_eq!(lint.findings[0].name, "enqueue-job");
-        assert_eq!(lint.findings[0].kind, CollisionKind::CauseTag);
-        assert!(lint.findings[0].owners.contains(&"queue-graft".to_string()));
-        assert!(
-            lint.findings[0]
-                .owners
-                .contains(&"pipeline-graft".to_string())
-        );
+        let findings = lint_collision_check(&[queue, pipeline], &[]);
+        let cs = collisions(&findings);
+        assert_eq!(cs.len(), 1);
+        let (kind, name, owners) = cs[0];
+        assert_eq!(kind, CollisionKind::CauseTag);
+        assert_eq!(name, "enqueue-job");
+        assert!(owners.contains(&"queue-graft".to_string()));
+        assert!(owners.contains(&"pipeline-graft".to_string()));
     }
 
     /// Domain declares `entries` field and a
@@ -1339,20 +1512,14 @@ mod tests {
             "      ::  nockup:state".to_string(),
             "  ==".to_string(),
         ];
-        let lint = lint_collision_check(&[audit], &domain);
-        assert_eq!(lint.findings.len(), 1);
-        assert_eq!(lint.findings[0].name, "entries");
-        assert_eq!(lint.findings[0].kind, CollisionKind::StateField);
-        assert!(
-            lint.findings[0]
-                .owners
-                .contains(&"(domain)".to_string())
-        );
-        assert!(
-            lint.findings[0]
-                .owners
-                .contains(&"audit-graft".to_string())
-        );
+        let findings = lint_collision_check(&[audit], &domain);
+        let cs = collisions(&findings);
+        assert_eq!(cs.len(), 1);
+        let (kind, name, owners) = cs[0];
+        assert_eq!(kind, CollisionKind::StateField);
+        assert_eq!(name, "entries");
+        assert!(owners.contains(&"(domain)".to_string()));
+        assert!(owners.contains(&"audit-graft".to_string()));
     }
 
     /// Two grafts with disjoint tag sets and disjoint field sets
@@ -1363,10 +1530,10 @@ mod tests {
         let queue = synthetic_collision_graft("queue-graft", &["queue-push"], &["queue"]);
         let counter =
             synthetic_collision_graft("counter-graft", &["counter-inc"], &["counter"]);
-        let lint = lint_collision_check(&[queue, counter], &[]);
+        let findings = lint_collision_check(&[queue, counter], &[]);
         assert!(
-            lint.findings.is_empty(),
-            "disjoint grafts must not collide, got {lint:#?}"
+            findings.is_empty(),
+            "disjoint grafts must not collide, got {findings:#?}"
         );
     }
 
@@ -1398,13 +1565,142 @@ mod tests {
             "      ::  nockup:cause".to_string(),
             "  ==".to_string(),
         ];
-        let lint = lint_collision_check(&[queue], &domain);
+        let findings = lint_collision_check(&[queue], &domain);
+        let cs = collisions(&findings);
         assert!(
-            lint.findings.iter().any(|f| f.name == "queue-push"
-                && f.kind == CollisionKind::CauseTag
-                && f.owners.contains(&"(domain)".to_string())
-                && f.owners.contains(&"queue-graft".to_string())),
-            "expected domain-vs-graft cause-tag finding, got {lint:#?}"
+            cs.iter().any(|(kind, name, owners)| *kind == CollisionKind::CauseTag
+                && *name == "queue-push"
+                && owners.contains(&"(domain)".to_string())
+                && owners.contains(&"queue-graft".to_string())),
+            "expected domain-vs-graft cause-tag finding, got {findings:#?}"
         );
+    }
+
+    // ---------- unified finding shape ----------
+
+    /// `kind_label` returns the same identifier-style label the printer
+    /// emits and the JSON schema keys use. Catches a typo'd label
+    /// before it desynchronizes printer output from JSON keys.
+    #[test]
+    fn lint_finding_kind_labels_are_stable() {
+        let weld = LintFinding::WeldFriction {
+            line: 1,
+            text: "x".into(),
+            narrow_type: "kv-effect".into(),
+        };
+        let bare = LintFinding::BareTildeAmbiguity {
+            line: 1,
+            arm: "ping".into(),
+        };
+        let coll = LintFinding::Collision {
+            kind: CollisionKind::CauseTag,
+            name: "x".into(),
+            owners: vec![],
+        };
+        let trans = LintFinding::TransitiveImport {
+            source: PathBuf::new(),
+            rune: "/+".into(),
+            name: "x".into(),
+            target: PathBuf::new(),
+            reachable_from: vec![],
+        };
+        let dupe = LintFinding::InternalDupe {
+            kind: InternalDupeKind::CauseTag,
+            name: "x".into(),
+            lines: vec![],
+        };
+        assert_eq!(weld.kind_label(), "weld-friction");
+        assert_eq!(bare.kind_label(), "bare-tilde-ambiguity");
+        assert_eq!(coll.kind_label(), "collision");
+        assert_eq!(trans.kind_label(), "transitive-imports");
+        assert_eq!(dupe.kind_label(), "internal-dupes");
+    }
+
+    /// `line()` returns Some only for findings anchored on a single
+    /// source line. Multi-line / cross-file variants return None.
+    #[test]
+    fn lint_finding_line_anchors_only_single_line_variants() {
+        assert_eq!(
+            LintFinding::WeldFriction {
+                line: 12,
+                text: "".into(),
+                narrow_type: "".into(),
+            }
+            .line(),
+            Some(12)
+        );
+        assert_eq!(
+            LintFinding::BareTildeAmbiguity {
+                line: 5,
+                arm: "ping".into(),
+            }
+            .line(),
+            Some(5)
+        );
+        assert_eq!(
+            LintFinding::Collision {
+                kind: CollisionKind::CauseTag,
+                name: "".into(),
+                owners: vec![],
+            }
+            .line(),
+            None
+        );
+        assert_eq!(
+            LintFinding::TransitiveImport {
+                source: PathBuf::new(),
+                rune: "".into(),
+                name: "".into(),
+                target: PathBuf::new(),
+                reachable_from: vec![],
+            }
+            .line(),
+            None
+        );
+        assert_eq!(
+            LintFinding::InternalDupe {
+                kind: InternalDupeKind::CauseTag,
+                name: "".into(),
+                lines: vec![],
+            }
+            .line(),
+            None
+        );
+    }
+
+    /// JSON projection keeps the historic schema keys
+    /// (`bare_tilde_ambiguity`, `collision`, `transitive_imports`,
+    /// `internal_dupes`) and per-finding field shape — even on an
+    /// empty findings input, all four keys appear with empty arrays.
+    #[test]
+    fn lint_report_json_schema_preserves_keys() {
+        let findings: Vec<LintFinding> = vec![];
+        let report = LintReport::from_findings(&findings);
+        let s = serde_json::to_string(&report).unwrap();
+        assert!(s.contains("\"bare_tilde_ambiguity\":[]"));
+        assert!(s.contains("\"collision\":[]"));
+        assert!(s.contains("\"transitive_imports\":[]"));
+        assert!(s.contains("\"internal_dupes\":[]"));
+        // Weld-friction is NOT a top-level run_lint JSON key (matches
+        // pre-Phase-1 schema).
+        assert!(!s.contains("\"weld_friction\""));
+    }
+
+    /// Round-trip a Collision finding through the JSON projection and
+    /// confirm the record shape matches the pre-Phase-1 layout —
+    /// `{kind: "cause_tag" | "state_field", name, owners}`.
+    #[test]
+    fn lint_report_collision_serializes_with_legacy_shape() {
+        let findings = vec![LintFinding::Collision {
+            kind: CollisionKind::CauseTag,
+            name: "enqueue-job".into(),
+            owners: vec!["queue-graft".into(), "pipeline-graft".into()],
+        }];
+        let report = LintReport::from_findings(&findings);
+        let s = serde_json::to_string(&report).unwrap();
+        assert!(s.contains("\"kind\":\"cause_tag\""));
+        assert!(s.contains("\"name\":\"enqueue-job\""));
+        assert!(s.contains("\"queue-graft\""));
+        assert!(s.contains("\"pipeline-graft\""));
     }
 }

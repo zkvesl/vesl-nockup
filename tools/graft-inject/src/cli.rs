@@ -30,7 +30,10 @@ use crate::inject::{
     InjectReport, MigrationReport, enforce_markers_placeable, inject, migrate_legacy_effect,
     print_migration_line,
 };
-use crate::lint::{lint_bare_tilde_ambiguity, print_weld_lint, run_lint};
+use crate::lint::{
+    LintFinding, lint_bare_tilde_ambiguity, lint_collision_check, lint_internal_dupes,
+    lint_transitive_imports, print_lint_findings, run_lint,
+};
 use crate::manifest::{Graft, atomic_write, check_schema_compat, discover_grafts};
 use crate::marker::Marker;
 use crate::update::run_update;
@@ -717,36 +720,17 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
     };
     print_migration_line(&migration);
 
-    // Structural pre-apply guard. A domain `?-` arm whose body ends in a
-    // bare `~` line makes the peek-chain emitter mistake it for the chain
-    // terminator and splice the peek chain into the poke body. Surface it
-    // before composing; refuse to write on `--apply`, since composing the
-    // file is the step that corrupts it.
-    let bare_tilde =
-        lint_bare_tilde_ambiguity(&source.lines().map(String::from).collect::<Vec<_>>());
-    for f in &bare_tilde.findings {
-        eprintln!(
-            "graft-inject: bare-tilde ambiguity at {}:{} — domain arm `%{}` body ends in a bare `~` line.",
-            path.display(),
-            f.line,
-            f.arm,
-        );
-    }
-    if !bare_tilde.findings.is_empty() {
-        eprintln!("  graft-inject's peek-chain emitter can mistake that `~` for the chain");
-        eprintln!("  terminator and splice the peek chain into the poke body. Refactor each");
-        eprintln!("  arm so its body does not end in a bare `~` line — `^- (list effect) ~`");
-        eprintln!(
-            "  on one line works. `graft-inject lint {}` reports the full set.",
-            path.display(),
-        );
-        if cli.apply {
-            bail!(
-                "refusing to write {}: resolve the bare-tilde ambiguity above first",
-                path.display(),
-            );
-        }
-    }
+    // Pre-inject structural lints. Each pass is independent of compose;
+    // gating up front lets the printer surface a unified report before
+    // any bytes change. `--apply` refuses the write on any finding —
+    // composing the file is the step that turns these silent-fail
+    // surfaces into corrupt output.
+    let pre_lines: Vec<String> = source.lines().map(String::from).collect();
+    let mut pre_findings: Vec<LintFinding> = Vec::new();
+    pre_findings.extend(lint_bare_tilde_ambiguity(&pre_lines));
+    pre_findings.extend(lint_collision_check(&grafts, &pre_lines));
+    pre_findings.extend(lint_transitive_imports(path, &cli.lib_dir));
+    gate_inject_lint_findings(&pre_findings, path, cli.apply)?;
 
     let (output, report) = inject(&source, &grafts)
         .with_context(|| format!("injecting into {}", path.display()))?;
@@ -754,6 +738,13 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
     // Refuse a partial compose: a graft contributing a block for an
     // absent marker would have that block silently dropped.
     enforce_markers_placeable(&report, path)?;
+
+    // Internal-dupe scan runs on the composed output — the lint reads
+    // the literal cause-union and state-record shapes, which only
+    // settle into their final form after inject runs.
+    let post_lines: Vec<String> = output.lines().map(String::from).collect();
+    let post_findings: Vec<LintFinding> = lint_internal_dupes(&post_lines);
+    gate_inject_lint_findings(&post_findings, path, cli.apply)?;
 
     if cli.dry_run {
         eprintln!(
@@ -793,6 +784,39 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Surface a set of structural lint findings on stderr and gate the
+/// inject write on them. The header line + `print_lint_findings` are
+/// always emitted; the bail only fires under `--apply` (preview mode
+/// shows findings but never refuses). The error message enumerates
+/// the unique kinds that tripped so the err string is self-explanatory
+/// in CI logs without re-reading stderr.
+fn gate_inject_lint_findings(
+    findings: &[LintFinding],
+    path: &Path,
+    apply: bool,
+) -> Result<()> {
+    if findings.is_empty() {
+        return Ok(());
+    }
+    eprintln!(
+        "graft-inject: {} structural lint finding(s)",
+        findings.len()
+    );
+    print_lint_findings(findings, path);
+    if !apply {
+        return Ok(());
+    }
+    let mut kinds: Vec<&str> = findings.iter().map(LintFinding::kind_label).collect();
+    kinds.sort();
+    kinds.dedup();
+    bail!(
+        "refusing to write {}: resolve the {} structural lint finding(s) above first ({})",
+        path.display(),
+        findings.len(),
+        kinds.join(", "),
+    );
 }
 
 /// Resolve the effective graft set per CLI flags. `--grafts` is explicit
@@ -973,7 +997,7 @@ pub(crate) fn print_report(path: &Path, report: &InjectReport, grafts: &[Graft],
         );
     }
     print_codegen_line(&report.codegen);
-    print_weld_lint(&report.weld_lint);
+    print_lint_findings(&report.weld_lint, path);
     if !applied {
         eprintln!("  (preview only — pass --apply to write {})", path.display());
     }
@@ -1133,6 +1157,63 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// `inject --apply` refuses to write when the structural collision
+    /// lint fires — two grafts declaring the same `%<tag>` poke arm
+    /// would compose into a duplicate-headed cause union. The kernel
+    /// file must be untouched after the refused write, and the error
+    /// must surface the `LintFinding::Collision` variant via its kind
+    /// label.
+    #[test]
+    fn inject_apply_refuses_collision() {
+        let dir = tempdir_for_test("collision_refuse");
+        // Two synthetic manifests that both declare `%shared-tag`.
+        let alpha_toml = r#"[graft]
+name     = "alpha-graft"
+version  = "0.1.0"
+priority = 50
+
+[graft.blocks.poke]
+body = """
+::
+  %shared-tag
+[~ state]"""
+"#;
+        let beta_toml = r#"[graft]
+name     = "beta-graft"
+version  = "0.1.0"
+priority = 60
+
+[graft.blocks.poke]
+body = """
+::
+  %shared-tag
+[~ state]"""
+"#;
+        fs::write(dir.join("alpha-graft.toml"), alpha_toml).unwrap();
+        fs::write(dir.join("beta-graft.toml"), beta_toml).unwrap();
+
+        // Minimal kernel with the poke marker so enforce_markers_placeable
+        // doesn't preempt the collision gate.
+        let kernel = dir.join("app.hoon");
+        fs::write(&kernel, "?-  -.u.act\n  ::  nockup:poke\n  [~ state]\n==\n").unwrap();
+        let before = fs::read_to_string(&kernel).unwrap();
+
+        let mut cli = cli_with(dir.clone());
+        cli.path = Some(kernel.clone());
+        cli.apply = true;
+        let err = run_inject(cli).expect_err("collision + --apply must refuse");
+        assert!(
+            err.to_string().contains("collision"),
+            "error should name the collision kind, got: {err}"
+        );
+        assert_eq!(
+            fs::read_to_string(&kernel).unwrap(),
+            before,
+            "the file must be untouched after a refused --apply",
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// `inject` refuses when an active graft contributes a block for a
     /// marker absent from the file — the block would be silently dropped.
     #[test]
@@ -1188,8 +1269,15 @@ mod tests {
     fn apply_writes() {
         // --apply is the explicit write-enabler.
         let dir = tempdir_with_two_manifests("apply_writes");
+        // Stub the `/+ lib` target so the transitive-imports lint
+        // doesn't fire on the scaffold's illustrative library import.
+        // The `/= * /common/wrapper` line is stripped from the scaffold
+        // because the resolver would look for it under lib_dir.parent(),
+        // which in this flat tempdir layout lives outside the test root.
+        fs::write(dir.join("lib.hoon"), "").unwrap();
+        let kernel_source = BARE_SCAFFOLD.replace("/=  *  /common/wrapper\n", "");
         let target = dir.join("app.hoon");
-        fs::write(&target, BARE_SCAFFOLD).unwrap();
+        fs::write(&target, &kernel_source).unwrap();
 
         let mut cli = cli_with(dir.clone());
         cli.path = Some(target.clone());
@@ -1198,7 +1286,7 @@ mod tests {
         run_inject(cli).unwrap();
 
         let after = fs::read_to_string(&target).unwrap();
-        assert_ne!(after, BARE_SCAFFOLD, "--apply must modify the file");
+        assert_ne!(after, kernel_source, "--apply must modify the file");
         assert!(after.contains("::  graft-inject:settle-graft:imports:begin"));
         let _ = fs::remove_dir_all(&dir);
     }

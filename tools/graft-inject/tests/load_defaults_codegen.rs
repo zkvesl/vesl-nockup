@@ -205,9 +205,19 @@ fn load_defaults_codegen_skipped_when_marker_absent() -> Result<()> {
     }
     let hoon_app = scratch.join("hoon/app");
     let hoon_lib = scratch.join("hoon/lib");
+    let hoon_common = scratch.join("hoon/common");
+    let hoon_dat = scratch.join("hoon/dat");
     fs::create_dir_all(&hoon_app)?;
     fs::create_dir_all(&hoon_lib)?;
+    fs::create_dir_all(&hoon_common)?;
+    fs::create_dir_all(&hoon_dat)?;
     copy_dir_contents(&repo.join("hoon/lib"), &hoon_lib)?;
+    // Mirror hoon/common and hoon/dat — the kernel template imports
+    // `/= * /common/wrapper`, and the common-tree files chain into
+    // `hoon/dat` via `/# softed-constraints`. The transitive-imports
+    // lint refuses `--apply` without these trees in place.
+    copy_dir_contents(&repo.join("hoon/common"), &hoon_common)?;
+    copy_dir_contents(&repo.join("hoon/dat"), &hoon_dat)?;
 
     let raw = fs::read_to_string(repo.join("templates/app.hoon"))?;
     let stripped = raw

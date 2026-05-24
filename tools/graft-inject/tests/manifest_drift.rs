@@ -22,9 +22,12 @@ use anyhow::{Context, Result};
 mod fixtures;
 use fixtures::{copy_dir_contents, graft_inject_bin, repo_root};
 
-/// Build a tmpdir scratch tree with the repo's canonical hoon/lib +
-/// templates/app.hoon. Skips hoon/common/dat/jams (graft-inject doesn't
-/// need them; only hoonc would).
+/// Build a tmpdir scratch tree with the repo's canonical hoon/lib,
+/// hoon/common, hoon/dat, and templates/app.hoon. hoon/common and
+/// hoon/dat are needed because the transitive-imports lint resolves
+/// `/= * /common/wrapper` (and its `/# softed-constraints` chain)
+/// before `graft-inject --apply` writes; without them, the lint
+/// refuses the write.
 fn setup_scratch(scratch_subdir: &str) -> Result<std::path::PathBuf> {
     let repo_root = repo_root();
     let scratch = repo_root.join("target").join(scratch_subdir);
@@ -33,13 +36,19 @@ fn setup_scratch(scratch_subdir: &str) -> Result<std::path::PathBuf> {
     }
     let hoon_app = scratch.join("hoon/app");
     let hoon_lib = scratch.join("hoon/lib");
+    let hoon_common = scratch.join("hoon/common");
+    let hoon_dat = scratch.join("hoon/dat");
     fs::create_dir_all(&hoon_app)?;
     fs::create_dir_all(&hoon_lib)?;
+    fs::create_dir_all(&hoon_common)?;
+    fs::create_dir_all(&hoon_dat)?;
     fs::copy(
         repo_root.join("templates/app.hoon"),
         hoon_app.join("app.hoon"),
     )?;
     copy_dir_contents(&repo_root.join("hoon/lib"), &hoon_lib)?;
+    copy_dir_contents(&repo_root.join("hoon/common"), &hoon_common)?;
+    copy_dir_contents(&repo_root.join("hoon/dat"), &hoon_dat)?;
     Ok(scratch)
 }
 
