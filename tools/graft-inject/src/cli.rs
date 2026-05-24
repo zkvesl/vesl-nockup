@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use crate::codegen::{
     CodegenReport, CodegenStatus, run_codegen_harness_methods, run_codegen_kernel_cause_tags,
 };
-use crate::doctor::run_doctor;
+use crate::doctor::{check_hand_edits, emit_human as emit_doctor_human, run_doctor};
 use crate::inject::{
     InjectReport, MigrationReport, enforce_markers_placeable, inject, migrate_legacy_effect,
     print_migration_line,
@@ -136,6 +136,14 @@ pub(crate) struct Cli {
     /// invalid severities hard-error so a typo doesn't silently no-op.
     #[arg(long = "lint-override")]
     lint_override: Vec<String>,
+
+    /// Re-inject through banner pairs whose body has been hand-edited.
+    /// By default `inject --apply` refuses the write when a hand-edit
+    /// is present so the user's customization is not silently
+    /// overwritten — pass this flag to acknowledge the loss (e.g. when
+    /// rolling back to canonical) and proceed.
+    #[arg(long = "force-overwrite-hand-edits")]
+    force_overwrite_hand_edits: bool,
 }
 
 /// Subcommands. Each variant carries its own argument set so
@@ -175,6 +183,12 @@ pub(crate) enum Command {
         /// CLI overrides win over the `[lint]` table in `nockapp.toml`.
         #[arg(long = "lint-override")]
         lint_override: Vec<String>,
+
+        /// Re-inject through banner pairs whose body has been
+        /// hand-edited. By default `--apply` refuses the write so the
+        /// edit is not silently overwritten; pass this to proceed.
+        #[arg(long = "force-overwrite-hand-edits")]
+        force_overwrite_hand_edits: bool,
     },
 
     /// List discovered grafts under --lib-dir.
@@ -422,6 +436,7 @@ pub(crate) fn dispatch(cli: Cli) -> Result<()> {
             apply,
             no_migrate,
             lint_override,
+            force_overwrite_hand_edits,
         }) => run_inject(Cli {
             command: None,
             path: Some(path),
@@ -435,6 +450,7 @@ pub(crate) fn dispatch(cli: Cli) -> Result<()> {
             apply,
             no_migrate,
             lint_override,
+            force_overwrite_hand_edits,
         }),
         Some(Command::List {
             lib_dir,
@@ -453,6 +469,7 @@ pub(crate) fn dispatch(cli: Cli) -> Result<()> {
             apply: false,
             no_migrate: false,
             lint_override: Vec::new(),
+            force_overwrite_hand_edits: false,
         }),
         Some(Command::Lint {
             path,
@@ -771,6 +788,26 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
     pre_findings.extend(lint_transitive_imports(path, &cli.lib_dir));
     pre_findings.extend(lint_unresolved_cause_references(&grafts, &pre_lines));
     gate_inject_lint_findings(&pre_findings, path, cli.apply, &policy)?;
+
+    // Pre-inject hand-edit gate. Re-uses `doctor`'s check_hand_edits so
+    // a banner-bounded body whose content drifted from its manifest is
+    // detected before it gets silently overwritten. `--apply` is the
+    // only step that does the overwriting, so preview runs surface the
+    // findings without bailing. `--force-overwrite-hand-edits` is the
+    // explicit "yes, roll the customization back to canonical" opt-in.
+    let hand_edits = check_hand_edits(path, &source, &grafts);
+    if !hand_edits.is_empty() {
+        emit_doctor_human(path, &hand_edits);
+        if cli.apply && !cli.force_overwrite_hand_edits {
+            bail!(
+                "refusing to write {}: {} hand-edited block(s) above would be \
+                 overwritten. Move the customization out of the banner pair, \
+                 or pass --force-overwrite-hand-edits to roll back to canonical.",
+                path.display(),
+                hand_edits.len(),
+            );
+        }
+    }
 
     let (output, report) = inject(&source, &grafts)
         .with_context(|| format!("injecting into {}", path.display()))?;
@@ -1110,6 +1147,7 @@ mod tests {
             apply: false,
             no_migrate: false,
             lint_override: Vec::new(),
+            force_overwrite_hand_edits: false,
         }
     }
 

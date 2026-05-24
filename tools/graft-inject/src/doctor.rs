@@ -316,7 +316,15 @@ fn check_patch_consistency(project_root: Option<&Path>) -> Vec<DoctorFinding> {
 /// banners against what the manifest would render now. A mismatch means
 /// the block was edited in place — the next `inject --apply` that
 /// re-injects it will silently overwrite the edit.
-fn check_hand_edits(path: &Path, source: &str, grafts: &[Graft]) -> Vec<DoctorFinding> {
+///
+/// Exposed at crate scope because `run_inject` re-uses it as a pre-apply
+/// safety gate (and refuses the write under `--apply` unless
+/// `--force-overwrite-hand-edits` is set).
+pub(crate) fn check_hand_edits(
+    path: &Path,
+    source: &str,
+    grafts: &[Graft],
+) -> Vec<DoctorFinding> {
     let lines: Vec<String> = source.lines().map(String::from).collect();
     let mut findings = Vec::new();
     for g in grafts {
