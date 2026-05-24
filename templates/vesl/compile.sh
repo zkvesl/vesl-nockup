@@ -7,6 +7,11 @@
 # runs hoonc, then checks the `out.jam` artifact and fails loud when hoonc
 # lied — so a following `cargo run` never boots a stale or empty kernel.
 #
+# On success, refreshes .out-jam-source-fingerprint so the next
+# `vesl-test verify-jam` reflects this compile rather than the previous
+# one — keeping `edit -> ./compile.sh -> vesl-test verify-jam` a clean
+# fresh-result loop.
+#
 # Usage: ./compile.sh [hoon/app/app.hoon]
 set -euo pipefail
 
@@ -22,4 +27,16 @@ if [ ! -s out.jam ]; then
   exit 1
 fi
 
-echo "compile.sh: ${kernel} -> out.jam ($(wc -c < out.jam) bytes)"
+# Refresh the verify-jam source fingerprint. Mirror exactly the file set
+# vesl-test/src/bin/vesl_test.rs prints in its "missing fingerprint" hint
+# (kernel + hoon/lib/*.hoon + hoon/lib/*.toml) — if the sets drift, the
+# hint becomes a lie. Atomic write so a SIGINT between sha256sum and
+# overwrite cannot leave a partial sidecar.
+fingerprint=".out-jam-source-fingerprint"
+tmp="$(mktemp "${fingerprint}.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+sha256sum "$kernel" hoon/lib/*.hoon hoon/lib/*.toml > "$tmp"
+mv "$tmp" "$fingerprint"
+trap - EXIT
+
+echo "compile.sh: ${kernel} -> out.jam ($(wc -c < out.jam) bytes), fingerprint refreshed"
