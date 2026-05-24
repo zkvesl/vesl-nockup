@@ -22,6 +22,7 @@ toml = "0.8"
 sha2 = "0.10"
 zeroize = "1"
 bytes = "1"
+tracing = "0.1"
 
 # Sibling vesl-nockup-bundled crates (refreshed by sync.sh from vesl-core).
 nock-noun-rs      = { path = "../nock-noun-rs" }

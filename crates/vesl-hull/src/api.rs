@@ -1197,7 +1197,13 @@ pub async fn serve_with_extra_routes(
     if std::env::var("HULL_API_KEY").map_or(true, |k| k.is_empty()) {
         eprintln!("WARNING: HULL_API_KEY not set -- API endpoints are unauthenticated");
     }
-    println!("Hull API listening on http://{bind_addr}:{port}");
+    // Ready signal: the listener is bound and `axum::serve` is about to take
+    // over the socket. Orchestration scripts (kubernetes readinessProbe,
+    // systemd, `wait-for-it`) can grep this line instead of port-polling.
+    tracing::info!(
+        target: "vesl_hull::serve",
+        "hull listening on http://{bind_addr}:{port}"
+    );
     println!("  POST /commit    -- commit key-value fields");
     println!("  POST /settle    -- settle a note");
     println!("  POST /verify    -- verify a field commitment");
