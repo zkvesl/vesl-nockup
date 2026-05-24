@@ -38,7 +38,7 @@ use crate::lint::{
 use crate::manifest::{Graft, atomic_write, check_schema_compat, discover_grafts};
 use crate::marker::Marker;
 use crate::update::run_update;
-use crate::DEFAULT_LIB_DIR;
+use crate::{DEFAULT_KERNEL_PATH, DEFAULT_LIB_DIR};
 use crate::util::check_lib_dir_trust;
 
 pub(crate) const ASCII_LOGO: &str = r#"
@@ -171,7 +171,9 @@ impl Cli {
 pub(crate) enum Command {
     /// Compose grafts into app.hoon (preview-by-default; --apply to write).
     Inject {
-        /// Target Hoon source file.
+        /// Target Hoon source file. Defaults to `hoon/app/app.hoon`
+        /// (the template scaffold's canonical kernel location).
+        #[arg(default_value = DEFAULT_KERNEL_PATH)]
         path: PathBuf,
 
         /// Comma-separated graft names, in injection order. When omitted,
@@ -226,7 +228,9 @@ pub(crate) enum Command {
     /// Run pre-apply structural validations on app.hoon. Exits 1 on
     /// any HARD finding so CI can gate `--apply` on the lint passing.
     Lint {
-        /// Target Hoon source file.
+        /// Target Hoon source file. Defaults to `hoon/app/app.hoon`
+        /// (the template scaffold's canonical kernel location).
+        #[arg(default_value = DEFAULT_KERNEL_PATH)]
         path: PathBuf,
 
         /// Manifest discovery root for collision-check across grafts.
@@ -248,7 +252,10 @@ pub(crate) enum Command {
     /// `nockup:load-defaults` marker. Exits nonzero on findings so CI
     /// can gate on it.
     Doctor {
-        /// Target Hoon source file (the project's app.hoon).
+        /// Target Hoon source file (the project's app.hoon). Defaults
+        /// to `hoon/app/app.hoon` so a bare `nockup-graft doctor`
+        /// inside a project Just Works.
+        #[arg(default_value = DEFAULT_KERNEL_PATH)]
         path: PathBuf,
 
         /// Manifest discovery root.
@@ -1230,6 +1237,51 @@ mod tests {
         assert!(cli.command.is_none());
         assert_eq!(cli.path.as_deref(), Some(Path::new("hoon/app/app.hoon")));
         assert_eq!(cli.grafts, vec!["foo".to_string()]);
+    }
+
+    /// `graft-inject inject` (no positional) resolves to the template
+    /// scaffold's canonical kernel path so a bare invocation inside a
+    /// project Just Works. Out-of-project, the path falls through to
+    /// the same "file not found" diagnostic any explicit miss would
+    /// produce — clap doesn't error here.
+    #[test]
+    fn cli_inject_defaults_path_to_scaffold_kernel() {
+        let cli = Cli::try_parse_from(["graft-inject", "inject"])
+            .expect("inject with no PATH must parse via default");
+        match cli.command {
+            Some(Command::Inject { path, .. }) => {
+                assert_eq!(path, PathBuf::from("hoon/app/app.hoon"));
+            }
+            other => panic!("expected Command::Inject, got {other:?}"),
+        }
+    }
+
+    /// `graft-inject lint` — same default-path contract as `inject`.
+    #[test]
+    fn cli_lint_defaults_path_to_scaffold_kernel() {
+        let cli = Cli::try_parse_from(["graft-inject", "lint"])
+            .expect("lint with no PATH must parse via default");
+        match cli.command {
+            Some(Command::Lint { path, .. }) => {
+                assert_eq!(path, PathBuf::from("hoon/app/app.hoon"));
+            }
+            other => panic!("expected Command::Lint, got {other:?}"),
+        }
+    }
+
+    /// `graft-inject doctor` — same default-path contract as `inject`.
+    /// Closes the bare-invocation friction the sandbox-build DX eval
+    /// flagged on doctor specifically.
+    #[test]
+    fn cli_doctor_defaults_path_to_scaffold_kernel() {
+        let cli = Cli::try_parse_from(["graft-inject", "doctor"])
+            .expect("doctor with no PATH must parse via default");
+        match cli.command {
+            Some(Command::Doctor { path, .. }) => {
+                assert_eq!(path, PathBuf::from("hoon/app/app.hoon"));
+            }
+            other => panic!("expected Command::Doctor, got {other:?}"),
+        }
     }
 
 

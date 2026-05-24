@@ -44,6 +44,13 @@ use std::process::ExitCode;
 /// The templates emit two spaces as the canonical form.
 const MARKER_PREFIX: &str = "nockup:";
 const DEFAULT_LIB_DIR: &str = "hoon/lib";
+/// Default target for the `<PATH>` positional on `inject` / `lint` /
+/// `doctor`. Matches the template scaffold's canonical kernel location
+/// so a bare invocation inside a project Just Works; an out-of-project
+/// invocation falls through to the same "file not found" / "no
+/// nockapp.toml ancestor" diagnostics it would surface for any explicit
+/// path that doesn't exist.
+const DEFAULT_KERNEL_PATH: &str = "hoon/app/app.hoon";
 
 /// Manifest-schema version this binary understands. A graft manifest may
 /// declare `schema_version` in its `[graft]` table; a manifest targeting
