@@ -85,6 +85,8 @@ nockup graft inject --apply hoon/app/app.hoon    # write
 
 The template's `app.hoon` ships with ten `::  nockup:*` markers. `nockup graft inject` discovers every `<name>-graft.toml` under `hoon/lib/`, composes their per-marker blocks, and (with `--apply`) writes the result. About 80 lines per graft. Preview is the default — nothing lands on disk until `--apply`. See [Inject](https://github.com/zkvesl/zkvesl-docs/blob/main/docs/build/inject.md) for marker semantics, lint families, and the per-graft sha256 banner.
 
+Inject also refuses to compose when the project has no `nockapp.toml` — the file scaffolded above is the trust anchor (see [Manifest Schema → Trust Model](https://github.com/zkvesl/zkvesl-docs/blob/main/docs/build/grafts/manifest-schema.md#trust-model)). Without it, inject would splice arbitrary Hoon from any directory into your kernel; running from inside the scaffolded project keeps this check satisfied.
+
 ```bash
 hoonc hoon/app/app.hoon hoon/ && [ -s out.jam ] || \
   (echo "hoonc: silent-failed — exit 0 but no out.jam" >&2; exit 1)
