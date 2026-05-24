@@ -144,6 +144,23 @@ pub(crate) struct Cli {
     /// rolling back to canonical) and proceed.
     #[arg(long = "force-overwrite-hand-edits")]
     force_overwrite_hand_edits: bool,
+
+    /// Raise the default log floor from INFO to WARN before spawning
+    /// any subprocess (e.g. the `nockup package install` invoked by
+    /// `update`). nockup-graft's own status lines are unaffected; this
+    /// flag exists so verbose subprocess INFO doesn't drown the
+    /// composer's output. RUST_LOG (if set) still wins.
+    #[arg(short = 'q', long, global = true)]
+    quiet: bool,
+}
+
+impl Cli {
+    /// Whether the operator passed `--quiet` / `-q`. Exposed so
+    /// `lib::run` can translate the flag into a `RUST_LOG=warn`
+    /// default for any subprocess this binary spawns.
+    pub(crate) fn is_quiet(&self) -> bool {
+        self.quiet
+    }
 }
 
 /// Subcommands. Each variant carries its own argument set so
@@ -451,6 +468,7 @@ pub(crate) fn dispatch(cli: Cli) -> Result<()> {
             no_migrate,
             lint_override,
             force_overwrite_hand_edits,
+            quiet: cli.quiet,
         }),
         Some(Command::List {
             lib_dir,
@@ -470,6 +488,7 @@ pub(crate) fn dispatch(cli: Cli) -> Result<()> {
             no_migrate: false,
             lint_override: Vec::new(),
             force_overwrite_hand_edits: false,
+            quiet: cli.quiet,
         }),
         Some(Command::Lint {
             path,
@@ -1148,6 +1167,7 @@ mod tests {
             no_migrate: false,
             lint_override: Vec::new(),
             force_overwrite_hand_edits: false,
+            quiet: false,
         }
     }
 

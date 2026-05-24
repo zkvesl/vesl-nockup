@@ -41,6 +41,13 @@ use vesl_test::watch::{self, DEFAULT_EFFECT_WINDOW_MS, WatchOpts};
 #[derive(Parser, Debug)]
 #[command(name = "vesl-test", about = "Runtime introspection + build-provenance for grafted NockApp kernels")]
 struct Cli {
+    /// Raise the default log floor from INFO to WARN. Suppresses
+    /// nockapp / hoonc INFO chatter so the actual command output is
+    /// readable. RUST_LOG (if set) still wins — `--quiet` only
+    /// shifts the default.
+    #[arg(short = 'q', long, global = true)]
+    quiet: bool,
+
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -116,6 +123,13 @@ enum InspectCmd {
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Translate --quiet into a RUST_LOG default. Only sets the var when
+    // the caller didn't already pin a log floor — so `RUST_LOG=debug
+    // vesl-test --quiet` still gets debug logs (the explicit env wins).
+    if cli.quiet && std::env::var_os("RUST_LOG").is_none() {
+        // SAFETY: single-threaded at this point (no tokio tasks spawned yet).
+        unsafe { std::env::set_var("RUST_LOG", "warn") };
+    }
     let result: Result<u8> = match cli.cmd {
         Cmd::Inspect { sub } => match sub {
             InspectCmd::Peek {

@@ -75,6 +75,14 @@ use crate::util::warn_if_stale;
 pub fn run() -> ExitCode {
     warn_if_stale();
     let cli = Cli::parse();
+    // Translate --quiet into a RUST_LOG default that propagates to any
+    // subprocess this binary spawns (e.g. `nockup package install` from
+    // the `update` subcommand). RUST_LOG (if already set) wins.
+    if cli.is_quiet() && std::env::var_os("RUST_LOG").is_none() {
+        // SAFETY: single-threaded — no tokio runtime or other threads
+        // exist at this point in the process.
+        unsafe { std::env::set_var("RUST_LOG", "warn") };
+    }
     let result = dispatch(cli);
     match result {
         Ok(()) => ExitCode::SUCCESS,

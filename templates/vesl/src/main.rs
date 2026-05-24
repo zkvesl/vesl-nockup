@@ -16,6 +16,13 @@ use vesl_core::{
 #[derive(Parser)]
 #[command(name = "{{project_name}}", about = "{{description}}")]
 struct Args {
+    /// Raise the default log floor from INFO to WARN. Suppresses
+    /// nockapp boot / PMA INFO chatter so the actual app output is
+    /// readable. RUST_LOG (if set) still wins — `--quiet` only
+    /// shifts the default.
+    #[arg(short = 'q', long, global = true)]
+    quiet: bool,
+
     #[command(subcommand)]
     cmd: Option<Cmd>,
 
@@ -41,6 +48,12 @@ enum Cmd {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
+    // Translate --quiet into a RUST_LOG default before nockapp reads
+    // it. RUST_LOG (if explicitly set) still wins.
+    if args.quiet && std::env::var_os("RUST_LOG").is_none() {
+        // SAFETY: single-threaded at this point (no tokio tasks spawned yet).
+        unsafe { std::env::set_var("RUST_LOG", "warn") };
+    }
     boot::init_default_tracing(&args.boot);
     let kernel = load_kernel()?;
     let app: NockApp = boot::setup(&kernel, args.boot, &[], "{{project_name}}", None).await?;
