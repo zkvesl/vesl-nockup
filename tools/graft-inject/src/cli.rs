@@ -371,8 +371,9 @@ pub(crate) enum CodegenTarget {
     /// `*-graft.toml` poke body so a rename in either surface surfaces
     /// at codegen time rather than as a runtime empty effect list.
     HarnessMethods {
-        /// Path to the sidecar TOML (default: `hoon/lib/harness-bindings.toml`).
-        #[arg(long, default_value = "hoon/lib/harness-bindings.toml")]
+        /// Path to the sidecar TOML. Defaults to
+        /// `hoon/lib/harness-bindings.toml` when omitted.
+        #[arg(default_value = "hoon/lib/harness-bindings.toml")]
         bindings: PathBuf,
 
         /// Manifest discovery root for the cross-check.
