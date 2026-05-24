@@ -20,7 +20,7 @@ pub mod signing;
 pub mod verify;
 
 pub use api::{
-    serve, serve_with_extra_routes, router, router_with_extra,
+    serve, serve_with_extra_routes, router, router_with_extra, router_with_extra_inner,
     AppState, SharedState, Field,
     check_auth_config_with_bind, load_note_counter,
 };

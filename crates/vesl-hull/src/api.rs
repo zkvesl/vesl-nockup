@@ -11,8 +11,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::body::HttpBody;
+use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::Next;
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{middleware, Json, Router};
 use nock_noun_rs::{make_atom_in, make_tag_in};
@@ -248,6 +251,33 @@ async fn check_api_key(
     }
 }
 
+/// Hull-wide request-body size cap (4 MiB). Shared by the streaming
+/// `RequestBodyLimitLayer` and the upfront size_hint precheck below.
+pub(crate) const HULL_BODY_LIMIT: usize = 4 * 1024 * 1024;
+
+/// Reject requests whose body advertises a known size larger than
+/// [`HULL_BODY_LIMIT`] before invoking the handler.
+///
+/// Tower-http's `RequestBodyLimitLayer` only checks the `Content-Length`
+/// header. Bodies built in-process (`Body::from(Vec<u8>)`, `Body::from_stream`
+/// with a sized stream) propagate their length via `Body::size_hint`
+/// without setting the header; without this precheck, a handler that
+/// ignores the body lets such a request through despite exceeding the
+/// limit. Wire requests are unaffected — axum's H1/H2 parsers populate
+/// `size_hint` from the parsed `Content-Length`, so an honest client
+/// trips this check upfront either way.
+async fn enforce_body_size_upfront(
+    req: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if let Some(upper) = req.body().size_hint().upper() {
+        if upper > HULL_BODY_LIMIT as u64 {
+            return Err(StatusCode::PAYLOAD_TOO_LARGE);
+        }
+    }
+    Ok(next.run(req).await)
+}
+
 /// Pre-flight auth check (C-004). Call before starting the server.
 ///
 /// Assumes a loopback bind. Production callers should use
@@ -308,12 +338,32 @@ pub fn router(state: SharedState) -> Router {
 
 /// Build the router with extra custom routes mounted alongside the hull's
 /// stock endpoints, layered uniformly under the same middleware stack
-/// (auth, 4 MiB body limit, 200/60s rate limit + 256-deep buffer).
+/// (auth, body size enforcement, 200/60s rate limit + 256-deep buffer).
 ///
-/// Layers wrap the **merged** Router, so they apply to every route
+/// Body-size enforcement is two-stage: an upfront `Body::size_hint`
+/// precheck (catches in-process bodies + wire bodies whose parser
+/// populated the size_hint from `Content-Length`) plus tower-http's
+/// streaming [`RequestBodyLimitLayer`]. A handler that never reads its
+/// body still receives a 413 from the upfront stage when the size is
+/// known; chunked or unknown-length bodies fall through to the
+/// streaming layer, which fires when the handler polls past the cap.
+///
+/// All layers wrap the **merged** Router, so they apply to every route
 /// regardless of which half it came from. This is the canonical
 /// composition entry point post-R6 §1.
 pub fn router_with_extra(state: SharedState, extra: Router<SharedState>) -> Router {
+    router_with_extra_inner(state, extra, 200, std::time::Duration::from_secs(60))
+}
+
+/// Inner builder. Exposed `pub` so integration tests can drive the
+/// rate-limit layer with a shorter window without re-implementing the
+/// layer stack.
+pub fn router_with_extra_inner(
+    state: SharedState,
+    extra: Router<SharedState>,
+    rate_per_window: u64,
+    rate_window: std::time::Duration,
+) -> Router {
     stock_routes()
         .merge(extra)
         .layer(
@@ -322,9 +372,10 @@ pub fn router_with_extra(state: SharedState, extra: Router<SharedState>) -> Rout
                     StatusCode::TOO_MANY_REQUESTS
                 }))
                 .buffer(256)
-                .rate_limit(200, std::time::Duration::from_secs(60)),
+                .rate_limit(rate_per_window, rate_window),
         )
-        .layer(RequestBodyLimitLayer::new(4 * 1024 * 1024)) // H-001
+        .layer(RequestBodyLimitLayer::new(HULL_BODY_LIMIT)) // H-001: streaming cap
+        .layer(middleware::from_fn(enforce_body_size_upfront)) // H-001: upfront cap
         .layer(middleware::from_fn(check_api_key))
         .with_state(state)
 }
@@ -1128,8 +1179,10 @@ pub async fn serve(state: SharedState, port: u16, bind_addr: &str) -> Result<(),
 }
 
 /// Start the HTTP server with extra custom routes merged into the hull's
-/// stock router. Layers (auth, body limit, rate limit) apply to every
-/// route uniformly — see [`router_with_extra`] for the merge ordering.
+/// stock router. Auth, the two-stage body-size cap (upfront `size_hint`
+/// precheck + streaming `RequestBodyLimitLayer`), and the 200/60s rate
+/// limit apply to every route uniformly — see [`router_with_extra`] for
+/// the merge ordering and the body-size semantics.
 ///
 /// Recommended over `Router::merge(router(state), my_routes)`, which
 /// silently drops the middleware stack on the merged-in routes (R6 §1).
@@ -1271,4 +1324,70 @@ mod tests {
             RbacConfig::from_toml(Some(&HullRbacToml { enabled: Some(true) })).enabled
         );
     }
+
+    // ---- Body-size precheck (H-001 upfront stage) ----
+    //
+    // Pinned regression for the gap surfaced in the 2026-05-24 sandbox-build
+    // DX review: tower-http's `RequestBodyLimitLayer` only inspects the
+    // `Content-Length` header. A request whose body advertises its size via
+    // `Body::size_hint` (e.g. `Body::from(Vec<u8>)`, or a wire body parsed
+    // from an honest `Content-Length`) but does not set the header is let
+    // through tower-http when the handler ignores the body. The precheck
+    // middleware closes that gap by inspecting `size_hint` directly.
+
+    use axum::body::Body;
+    use axum::http::Request;
+    use axum::routing::post;
+    use tower::ServiceExt;
+
+    async fn echo_ignore_body() -> &'static str {
+        "ok"
+    }
+
+    fn precheck_only_router() -> Router {
+        Router::new()
+            .route("/x", post(echo_ignore_body))
+            .layer(middleware::from_fn(enforce_body_size_upfront))
+    }
+
+    #[tokio::test]
+    async fn precheck_rejects_oversize_body_without_content_length_header() {
+        let app = precheck_only_router();
+        let big_body = vec![b'x'; HULL_BODY_LIMIT + 1];
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/x")
+                    .body(Body::from(big_body))
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn precheck_passes_undersize_body() {
+        let app = precheck_only_router();
+        let small_body = vec![b'x'; 1024];
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/x")
+                    .body(Body::from(small_body))
+                    .unwrap(),
+            )
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // Unknown-length bodies (size_hint().upper() == None) fall through to
+    // tower-http's streaming layer in the real router. The precheck on its
+    // own must not synthesise a 413; it short-circuits only when the body
+    // advertises a known upper size that exceeds the cap. Covered by code
+    // review: the `if let Some(upper)` guard in `enforce_body_size_upfront`
+    // is unreachable when `upper()` is None, so the request passes through.
 }

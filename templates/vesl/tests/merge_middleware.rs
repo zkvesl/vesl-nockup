@@ -25,8 +25,9 @@ use nockapp::NockApp;
 use tokio::sync::Mutex;
 use tower::ServiceExt;
 use vesl_hull::{
-    resolve_with_demo_key_checked, router_with_extra, AppState, DefaultHashPayloadBuilder,
-    HullConfig, ManifestSummary, RbacConfig, SettlementCliOverrides, SharedState,
+    resolve_with_demo_key_checked, router_with_extra, router_with_extra_inner, AppState,
+    DefaultHashPayloadBuilder, HullConfig, ManifestSummary, RbacConfig, SettlementCliOverrides,
+    SharedState,
 };
 
 static INIT_ENV: Once = Once::new();
@@ -160,6 +161,63 @@ async fn health_remains_unauthenticated_after_merge() {
     let body = read_body(resp).await;
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(parsed["status"], "ok");
+}
+
+/// Tower's `Buffer + rate_limit` composition with axum's `HandleErrorLayer`
+/// is hard to trigger deterministically from in-process oneshots: the
+/// buffer worker queues requests indefinitely while the rate slot refills,
+/// rather than back-pressuring with the `BoxError` that the layer maps to
+/// 429. Marking `#[ignore]` so the regression detector lives in the tree
+/// without making CI flaky. Run manually with:
+///
+///     cargo test --test merge_middleware -- --ignored rate_limit
+///
+/// or replace with a `wrk`/`hey` smoke test against `serve --no-auth`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "tower Buffer+RateLimit composition buffers rather than 429s in-process; track G2/F2 follow-up"]
+async fn rate_limit_layer_covers_custom_route() {
+    let state = boot_state().await;
+    // 1 request per 60s window — the second concurrent request must
+    // either back-pressure into the buffer (still pending after a short
+    // settle) or be mapped to 429 by the HandleErrorLayer. We assert at
+    // least one of 100 concurrent custom-route hits did not succeed.
+    let app = router_with_extra_inner(
+        state,
+        extra_routes(),
+        1,
+        std::time::Duration::from_secs(60),
+    );
+
+    let mut throttled_or_buffered = 0u32;
+    let mut succeeded = 0u32;
+    let mut set: tokio::task::JoinSet<Option<StatusCode>> = tokio::task::JoinSet::new();
+    for _ in 0..100 {
+        let app = app.clone();
+        set.spawn(async move {
+            let fut = app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/custom-echo")
+                    .header("authorization", "Bearer merge-test-secret")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            );
+            tokio::time::timeout(std::time::Duration::from_millis(500), fut)
+                .await
+                .ok()
+                .and_then(|r| r.ok().map(|resp| resp.status()))
+        });
+    }
+    while let Some(res) = set.join_next().await {
+        match res.expect("join") {
+            Some(StatusCode::OK) => succeeded += 1,
+            _ => throttled_or_buffered += 1,
+        }
+    }
+    assert!(
+        succeeded <= 5,
+        "rate-limit must cover the merged custom route -- got {succeeded} OK / {throttled_or_buffered} throttled-or-buffered out of 100"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
