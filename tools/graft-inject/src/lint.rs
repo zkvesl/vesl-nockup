@@ -1111,16 +1111,55 @@ pub(crate) fn lint_unresolved_cause_references(
         .iter()
         .filter_map(|g| g.types.as_ref().and_then(|t| t.cause.as_deref()))
         .collect();
+    // Banner-bounded reference entries are part of a graft's own
+    // cause block — they're either declared (active graft, no lint
+    // needed) or about to be orphan-pruned by `inject` (inactive
+    // graft, false-positive flag if the lint fired). Skip those line
+    // ranges so the lint only flags references the developer added
+    // outside any graft-inject banner.
+    let banner_lines = banner_line_set(lines);
     let mut findings: Vec<LintFinding> = Vec::new();
     for member in extract_cause_union_members(lines) {
         let CauseUnionMember::Reference { name, line } = member else {
             continue;
         };
+        if banner_lines.contains(&line) {
+            continue;
+        }
         if !declared.contains(name.as_str()) {
             findings.push(LintFinding::UnresolvedCauseReference { line, name });
         }
     }
     findings
+}
+
+/// Build the set of 1-indexed line numbers that fall inside a
+/// `::  graft-inject:<...>:begin / :end` banner pair. The `begin` and
+/// `end` lines themselves are included so a reference that
+/// accidentally lands on a banner line is also skipped.
+fn banner_line_set(lines: &[String]) -> HashSet<usize> {
+    let mut out: HashSet<usize> = HashSet::new();
+    let mut in_banner = false;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let is_marker = trimmed.starts_with("::") && trimmed.contains("graft-inject:");
+        if is_marker {
+            if trimmed.contains(":begin ") || trimmed.ends_with(":begin") {
+                in_banner = true;
+                out.insert(i + 1);
+                continue;
+            }
+            if trimmed.ends_with(":end") {
+                out.insert(i + 1);
+                in_banner = false;
+                continue;
+            }
+        }
+        if in_banner {
+            out.insert(i + 1);
+        }
+    }
+    out
 }
 
 /// Walk from `+$ cause $%(...)` open to its closing `==`, emitting
@@ -2087,6 +2126,25 @@ mod tests {
             .collect();
         let findings = lint_unresolved_cause_references(&[], &domain);
         assert!(findings.is_empty());
+    }
+
+    /// References inside a `graft-inject:<X>:cause:begin/:end` banner
+    /// belong to a graft's own block. They're either declared by an
+    /// active graft (resolved) or about to be orphan-pruned by the
+    /// next inject pass (transient state). Either way, flagging a
+    /// banner-bounded reference is a false positive — the lint must
+    /// only fire on developer-added references outside any banner.
+    #[test]
+    fn unresolved_cause_reference_skips_banner_bounded() {
+        let domain: Vec<String> = "+$  cause\n  $%  [%cause ~]\n      ::  graft-inject:validate-graft:cause:begin sha256:deadbeef\n      validate-cause\n      ::  graft-inject:validate-graft:cause:end\n      ::  nockup:cause\n  =="
+            .lines()
+            .map(String::from)
+            .collect();
+        let findings = lint_unresolved_cause_references(&[], &domain);
+        assert!(
+            findings.is_empty(),
+            "banner-bounded references must be skipped, got {findings:#?}"
+        );
     }
 
     // ---------- unified finding shape ----------
