@@ -36,13 +36,25 @@ use vesl_hull::{
     DefaultHashPayloadBuilder, HullConfig, ManifestSummary, RbacConfig, SettlementCliOverrides,
 };
 
-async fn boot_state() -> Arc<Mutex<AppState>> {
+// Each call returns a fresh `Arc<Mutex<AppState>>` *and* the `TempDir`
+// backing its PMA datadir. Hold the TempDir for the lifetime of the
+// test — when it drops, the kernel's event log + snapshots are wiped,
+// so the next `boot_state()` boots cleanly. Without this, tests share
+// a single `./.data.vesl-desync-test/` and the second one resumes
+// state from the first.
+async fn boot_state() -> (Arc<Mutex<AppState>>, tempfile::TempDir) {
     // Disable auth on loopback — the static flag is process-wide,
     // so the first test to call this wins, but every test wants
     // the same behaviour.
     check_auth_config_with_bind(true, "127.0.0.1").expect("loopback no-auth");
 
-    let cli = boot::default_boot_cli(false);
+    let tmp = tempfile::Builder::new()
+        .prefix("vesl-desync-test-")
+        .tempdir()
+        .expect("create tempdir for desync test datadir");
+    let mut cli = boot::default_boot_cli(false);
+    cli.data_dir = Some(tmp.path().to_path_buf());
+
     let kernel = fs::read("out.jam")
         .expect("out.jam missing — run `hoonc hoon/app/app.hoon hoon/` first");
     let app: NockApp = boot::setup(&kernel, cli, &[], "vesl-desync-test", None)
@@ -55,7 +67,7 @@ async fn boot_state() -> Arc<Mutex<AppState>> {
     )
     .expect("default settlement resolves to Local mode");
 
-    Arc::new(Mutex::new(AppState {
+    let state = Arc::new(Mutex::new(AppState {
         app,
         fields: Vec::new(),
         tree: None,
@@ -66,7 +78,8 @@ async fn boot_state() -> Arc<Mutex<AppState>> {
         manifest: ManifestSummary::empty(),
         settle_builder: Arc::new(DefaultHashPayloadBuilder),
         rbac: RbacConfig::default(),
-    }))
+    }));
+    (state, tmp)
 }
 
 async fn json_post(app: axum::Router, uri: &str, body: &str) -> (StatusCode, Vec<u8>) {
@@ -98,7 +111,7 @@ async fn get_uri(app: axum::Router, uri: &str) -> (StatusCode, Vec<u8>) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn double_commit_returns_409() {
-    let state = boot_state().await;
+    let (state, _tmp) = boot_state().await;
 
     let body_a = r#"{"fields":[{"key":"k","value":"v1"}]}"#;
     let (status, _) = json_post(router(state.clone()), "/commit", body_a).await;
@@ -130,7 +143,7 @@ async fn double_commit_returns_409() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn settle_after_single_field_commit_succeeds() {
-    let state = boot_state().await;
+    let (state, _tmp) = boot_state().await;
 
     let body = r#"{"fields":[{"key":"a","value":"1"}]}"#;
     let (status, _) = json_post(router(state.clone()), "/commit", body).await;
@@ -156,7 +169,7 @@ async fn settle_after_single_field_commit_succeeds() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn commit_success_path_still_updates_state() {
-    let state = boot_state().await;
+    let (state, _tmp) = boot_state().await;
 
     let body = r#"{"fields":[{"key":"x","value":"y"}]}"#;
     let (status, _) = json_post(router(state.clone()), "/commit", body).await;
@@ -191,7 +204,7 @@ async fn settle_replay_id_returns_409_with_cord() {
     // [%settle-error 'settle-graft: note already settled'] and the
     // hull surfaces the cord verbatim in the 409 body via the new
     // cord routing.
-    let state = boot_state().await;
+    let (state, _tmp) = boot_state().await;
 
     let body = r#"{"fields":[{"key":"a","value":"1"}]}"#;
     let (status, _) = json_post(router(state.clone()), "/commit", body).await;
@@ -229,7 +242,7 @@ async fn settle_unregistered_hull_returns_409_with_cord() {
     // hull=99 was never registered, so settle-graft emits
     // [%settle-error 'settle-graft: root not registered'] and the
     // hull surfaces the cord verbatim in the 409 body.
-    let state = boot_state().await;
+    let (state, _tmp) = boot_state().await;
 
     let body = r#"{"fields":[{"key":"a","value":"1"}]}"#;
     let (status, _) = json_post(router(state.clone()), "/commit", body).await;
@@ -263,7 +276,7 @@ async fn settle_invalid_data_hex_returns_400() {
     // the hull. "zzz" is not valid hex, so the handler returns 400
     // before pokeing the kernel — the kernel never sees this
     // request and the counter must not advance.
-    let state = boot_state().await;
+    let (state, _tmp) = boot_state().await;
 
     let body = r#"{"fields":[{"key":"a","value":"1"}]}"#;
     let (status, _) = json_post(router(state.clone()), "/commit", body).await;
