@@ -137,6 +137,55 @@ impl LintFinding {
             | LintFinding::InternalDupe { .. } => None,
         }
     }
+
+    /// Default severity tier per variant. The printer routes the word
+    /// (`error: ...`, `warning: ...`, `note: ...`) and the inject /
+    /// `lint` drivers gate on the presence of any
+    /// [`LintSeverity::Error`]. Defaults match the pre-Phase-3 gate
+    /// behavior: `weld-friction` was advisory-only, every other lint
+    /// gated the write or exit code.
+    pub(crate) fn severity(&self) -> LintSeverity {
+        match self {
+            LintFinding::WeldFriction { .. } => LintSeverity::Warn,
+            LintFinding::BareTildeAmbiguity { .. }
+            | LintFinding::Collision { .. }
+            | LintFinding::TransitiveImport { .. }
+            | LintFinding::InternalDupe { .. }
+            | LintFinding::UnresolvedCauseReference { .. } => LintSeverity::Error,
+        }
+    }
+}
+
+/// Severity tier per lint finding. The printer prefixes each line with
+/// the matching word (`error`, `warning`, `note`) and the inject /
+/// `lint` drivers gate the write / exit-code on the presence of any
+/// [`LintSeverity::Error`]. Warnings and notes surface but never gate,
+/// giving the policy machinery a principled middle between the
+/// pre-Phase-3 binary outcomes (advisory or hard-bail).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LintSeverity {
+    Error,
+    Warn,
+    /// Reserved for policy overrides that demote a lint below `Warn`.
+    /// No lint defaults to `Note` today — the variant exists so
+    /// `[lint] <name> = "note"` is a valid config setting.
+    #[allow(dead_code)]
+    Note,
+}
+
+impl LintSeverity {
+    /// Lower-case word the printer emits before the kind label
+    /// (`error: <kind>: ...`). Matches the
+    /// existing rustc / gcc convention so terminal scrapers that watch
+    /// for `error:` / `warning:` markers pick the right lines.
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            LintSeverity::Error => "error",
+            LintSeverity::Warn => "warning",
+            LintSeverity::Note => "note",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1039,19 +1088,22 @@ fn bracket_tag(s: &str) -> Option<String> {
 // Unified printer
 // ---------------------------------------------------------------
 
-/// One stderr line for a single finding, prefixed with `  {kind}: `.
-/// The kind prefix lets `grep '<kind>:'` count findings without
-/// scraping the body. `path` provides context for findings that don't
-/// embed a source path of their own (today: `BareTildeAmbiguity`).
+/// One stderr line for a single finding, prefixed with
+/// `  {severity}: {kind}: `. The severity word follows rustc / gcc
+/// convention so terminal scrapers picking up `error:` / `warning:`
+/// markers route correctly; the kind prefix lets `grep '<kind>:'` count
+/// findings by kind without scraping the body. `path` provides context
+/// for findings that don't embed a source path of their own.
 pub(crate) fn print_lint_finding(f: &LintFinding, path: &Path) {
     let kind = f.kind_label();
+    let sev = f.severity().word();
     match f {
         LintFinding::WeldFriction { line, text, .. } => {
-            eprintln!("  {kind}: line {line}: {text}");
+            eprintln!("  {sev}: {kind}: line {line}: {text}");
         }
         LintFinding::BareTildeAmbiguity { line, arm } => {
             eprintln!(
-                "  {kind}: {}:{line} — domain arm `%{arm}` body ends with bare `~` line",
+                "  {sev}: {kind}: {}:{line} — domain arm `%{arm}` body ends with bare `~` line",
                 path.display(),
             );
         }
@@ -1065,7 +1117,7 @@ pub(crate) fn print_lint_finding(f: &LintFinding, path: &Path) {
                 CollisionKind::StateField => "state-field",
             };
             eprintln!(
-                "  {kind}: {ck_str} `{name}` declared by: {}",
+                "  {sev}: {kind}: {ck_str} `{name}` declared by: {}",
                 owners.join(", "),
             );
         }
@@ -1077,7 +1129,7 @@ pub(crate) fn print_lint_finding(f: &LintFinding, path: &Path) {
             reachable_from,
         } => {
             eprintln!(
-                "  {kind}: {}: {rune} {name} → {} (NOT FOUND)",
+                "  {sev}: {kind}: {}: {rune} {name} → {} (NOT FOUND)",
                 source.display(),
                 target.display(),
             );
@@ -1096,13 +1148,13 @@ pub(crate) fn print_lint_finding(f: &LintFinding, path: &Path) {
             };
             let line_list: Vec<String> = lines.iter().map(usize::to_string).collect();
             eprintln!(
-                "  {kind}: duplicate {dk_str} `{name}` at lines {}",
+                "  {sev}: {kind}: duplicate {dk_str} `{name}` at lines {}",
                 line_list.join(", "),
             );
         }
         LintFinding::UnresolvedCauseReference { line, name } => {
             eprintln!(
-                "  {kind}: {}:{line} — `+$ cause` references `{name}`, but no graft's [graft.types].cause declares that type",
+                "  {sev}: {kind}: {}:{line} — `+$ cause` references `{name}`, but no graft's [graft.types].cause declares that type",
                 path.display(),
             );
         }
@@ -1231,12 +1283,14 @@ fn print_remediation_hint(kind: &str) {
 
 #[derive(Serialize)]
 struct BareTildeRecord<'a> {
+    severity: LintSeverity,
     line: usize,
     arm: &'a str,
 }
 
 #[derive(Serialize)]
 struct CollisionRecord<'a> {
+    severity: LintSeverity,
     kind: CollisionKind,
     name: &'a str,
     owners: &'a [String],
@@ -1244,6 +1298,7 @@ struct CollisionRecord<'a> {
 
 #[derive(Serialize)]
 struct TransitiveImportRecord<'a> {
+    severity: LintSeverity,
     source: &'a Path,
     rune: &'a str,
     name: &'a str,
@@ -1253,6 +1308,7 @@ struct TransitiveImportRecord<'a> {
 
 #[derive(Serialize)]
 struct InternalDupeRecord<'a> {
+    severity: LintSeverity,
     kind: InternalDupeKind,
     name: &'a str,
     lines: &'a [usize],
@@ -1260,6 +1316,7 @@ struct InternalDupeRecord<'a> {
 
 #[derive(Serialize)]
 struct UnresolvedCauseReferenceRecord<'a> {
+    severity: LintSeverity,
     line: usize,
     name: &'a str,
 }
@@ -1284,6 +1341,7 @@ impl<'a> LintReport<'a> {
     fn from_findings(findings: &'a [LintFinding]) -> Self {
         let mut report = Self::default();
         for f in findings {
+            let severity = f.severity();
             match f {
                 // Weld-friction is not part of the lint subcommand JSON
                 // schema — it's reported through the inject path's
@@ -1291,12 +1349,14 @@ impl<'a> LintReport<'a> {
                 LintFinding::WeldFriction { .. } => {}
                 LintFinding::BareTildeAmbiguity { line, arm } => {
                     report.bare_tilde_ambiguity.push(BareTildeRecord {
+                        severity,
                         line: *line,
                         arm,
                     });
                 }
                 LintFinding::Collision { kind, name, owners } => {
                     report.collision.push(CollisionRecord {
+                        severity,
                         kind: *kind,
                         name,
                         owners,
@@ -1310,6 +1370,7 @@ impl<'a> LintReport<'a> {
                     reachable_from,
                 } => {
                     report.transitive_imports.push(TransitiveImportRecord {
+                        severity,
                         source,
                         rune,
                         name,
@@ -1319,6 +1380,7 @@ impl<'a> LintReport<'a> {
                 }
                 LintFinding::InternalDupe { kind, name, lines } => {
                     report.internal_dupes.push(InternalDupeRecord {
+                        severity,
                         kind: *kind,
                         name,
                         lines,
@@ -1328,6 +1390,7 @@ impl<'a> LintReport<'a> {
                     report
                         .unresolved_cause_references
                         .push(UnresolvedCauseReferenceRecord {
+                            severity,
                             line: *line,
                             name,
                         });
@@ -1401,20 +1464,55 @@ pub(crate) fn run_lint(path: &Path, lib_dir: &Path, json: bool) -> Result<()> {
         // Stable schema: { "bare_tilde_ambiguity": [...], "collision": [...],
         // "transitive_imports": [...], "internal_dupes": [...] }. Future
         // lint families append top-level keys without reshaping
-        // existing ones.
+        // existing ones; each record gains an additive "severity" field.
         let report = LintReport::from_findings(&findings);
         let s = serde_json::to_string_pretty(&report)
             .expect("LintReport always serializes");
         println!("{s}");
     } else {
-        eprintln!("graft-inject lint: {} finding(s)", findings.len());
+        eprintln!("graft-inject lint: {}", summarize_severity(&findings));
         print_lint_findings(&findings, path);
     }
 
-    if !findings.is_empty() {
-        bail!("graft-inject lint: {} finding(s) above", findings.len());
+    let errors = findings
+        .iter()
+        .filter(|f| f.severity() == LintSeverity::Error)
+        .count();
+    if errors > 0 {
+        bail!("graft-inject lint: {errors} error finding(s) above");
     }
     Ok(())
+}
+
+/// One-line summary breaking findings out by severity, e.g.
+/// `3 error(s), 2 warning(s)`. Empty-severity buckets are dropped so
+/// the line stays terse when only one tier fires.
+pub(crate) fn summarize_severity(findings: &[LintFinding]) -> String {
+    let mut errors = 0usize;
+    let mut warnings = 0usize;
+    let mut notes = 0usize;
+    for f in findings {
+        match f.severity() {
+            LintSeverity::Error => errors += 1,
+            LintSeverity::Warn => warnings += 1,
+            LintSeverity::Note => notes += 1,
+        }
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if errors > 0 {
+        parts.push(format!("{errors} error(s)"));
+    }
+    if warnings > 0 {
+        parts.push(format!("{warnings} warning(s)"));
+    }
+    if notes > 0 {
+        parts.push(format!("{notes} note(s)"));
+    }
+    if parts.is_empty() {
+        "0 finding(s)".to_string()
+    } else {
+        parts.join(", ")
+    }
 }
 
 #[cfg(test)]
@@ -1863,7 +1961,8 @@ mod tests {
 
     /// Round-trip a Collision finding through the JSON projection and
     /// confirm the record shape matches the pre-Phase-1 layout —
-    /// `{kind: "cause_tag" | "state_field", name, owners}`.
+    /// `{kind: "cause_tag" | "state_field", name, owners}` — plus the
+    /// Phase-3 additive `severity` field.
     #[test]
     fn lint_report_collision_serializes_with_legacy_shape() {
         let findings = vec![LintFinding::Collision {
@@ -1877,5 +1976,89 @@ mod tests {
         assert!(s.contains("\"name\":\"enqueue-job\""));
         assert!(s.contains("\"queue-graft\""));
         assert!(s.contains("\"pipeline-graft\""));
+        // Severity field is additive — Collision defaults to Error.
+        assert!(s.contains("\"severity\":\"error\""));
+    }
+
+    // ---------- severity tiering ----------
+
+    /// Default severity per variant matches the Phase-3 specification:
+    /// `weld-friction` is the only `Warn`; every other lint defaults
+    /// to `Error` so its gate behavior matches pre-Phase-3.
+    #[test]
+    fn lint_finding_severity_defaults_match_spec() {
+        let weld = LintFinding::WeldFriction {
+            line: 1,
+            text: "".into(),
+            narrow_type: "x".into(),
+        };
+        let bare = LintFinding::BareTildeAmbiguity {
+            line: 1,
+            arm: "x".into(),
+        };
+        let coll = LintFinding::Collision {
+            kind: CollisionKind::CauseTag,
+            name: "x".into(),
+            owners: vec![],
+        };
+        let trans = LintFinding::TransitiveImport {
+            source: PathBuf::new(),
+            rune: "/+".into(),
+            name: "x".into(),
+            target: PathBuf::new(),
+            reachable_from: vec![],
+        };
+        let dupe = LintFinding::InternalDupe {
+            kind: InternalDupeKind::CauseTag,
+            name: "x".into(),
+            lines: vec![],
+        };
+        let unres = LintFinding::UnresolvedCauseReference {
+            line: 1,
+            name: "x".into(),
+        };
+        assert_eq!(weld.severity(), LintSeverity::Warn);
+        assert_eq!(bare.severity(), LintSeverity::Error);
+        assert_eq!(coll.severity(), LintSeverity::Error);
+        assert_eq!(trans.severity(), LintSeverity::Error);
+        assert_eq!(dupe.severity(), LintSeverity::Error);
+        assert_eq!(unres.severity(), LintSeverity::Error);
+    }
+
+    /// `summarize_severity` breaks the count out by tier, drops empty
+    /// buckets, and falls back to the `0 finding(s)` form when the
+    /// input is empty.
+    #[test]
+    fn summarize_severity_groups_by_tier() {
+        let empty: Vec<LintFinding> = vec![];
+        assert_eq!(summarize_severity(&empty), "0 finding(s)");
+
+        let mixed = vec![
+            LintFinding::BareTildeAmbiguity {
+                line: 1,
+                arm: "x".into(),
+            },
+            LintFinding::Collision {
+                kind: CollisionKind::CauseTag,
+                name: "x".into(),
+                owners: vec![],
+            },
+            LintFinding::WeldFriction {
+                line: 1,
+                text: "".into(),
+                narrow_type: "x".into(),
+            },
+        ];
+        assert_eq!(
+            summarize_severity(&mixed),
+            "2 error(s), 1 warning(s)"
+        );
+
+        let warn_only = vec![LintFinding::WeldFriction {
+            line: 1,
+            text: "".into(),
+            narrow_type: "x".into(),
+        }];
+        assert_eq!(summarize_severity(&warn_only), "1 warning(s)");
     }
 }

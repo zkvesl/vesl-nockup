@@ -31,8 +31,9 @@ use crate::inject::{
     print_migration_line,
 };
 use crate::lint::{
-    LintFinding, lint_bare_tilde_ambiguity, lint_collision_check, lint_internal_dupes,
-    lint_transitive_imports, lint_unresolved_cause_references, print_lint_findings, run_lint,
+    LintFinding, LintSeverity, lint_bare_tilde_ambiguity, lint_collision_check,
+    lint_internal_dupes, lint_transitive_imports, lint_unresolved_cause_references,
+    print_lint_findings, run_lint, summarize_severity,
 };
 use crate::manifest::{Graft, atomic_write, check_schema_compat, discover_grafts};
 use crate::marker::Marker;
@@ -789,10 +790,11 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
 
 /// Surface a set of structural lint findings on stderr and gate the
 /// inject write on them. The header line + `print_lint_findings` are
-/// always emitted; the bail only fires under `--apply` (preview mode
-/// shows findings but never refuses). The error message enumerates
-/// the unique kinds that tripped so the err string is self-explanatory
-/// in CI logs without re-reading stderr.
+/// always emitted; the bail only fires under `--apply` AND when at
+/// least one finding is at [`LintSeverity::Error`] (preview mode and
+/// warning-only findings never refuse the write). The error message
+/// enumerates the unique error-tier kinds that tripped so the err
+/// string is self-explanatory in CI logs without re-reading stderr.
 fn gate_inject_lint_findings(
     findings: &[LintFinding],
     path: &Path,
@@ -802,21 +804,36 @@ fn gate_inject_lint_findings(
         return Ok(());
     }
     eprintln!(
-        "graft-inject: {} structural lint finding(s)",
-        findings.len()
+        "graft-inject: {}",
+        summarize_severity(findings)
     );
     print_lint_findings(findings, path);
     if !apply {
         return Ok(());
     }
-    let mut kinds: Vec<&str> = findings.iter().map(LintFinding::kind_label).collect();
-    kinds.sort();
-    kinds.dedup();
+    let error_kinds: Vec<&str> = {
+        let mut k: Vec<&str> = findings
+            .iter()
+            .filter(|f| f.severity() == LintSeverity::Error)
+            .map(LintFinding::kind_label)
+            .collect();
+        k.sort();
+        k.dedup();
+        k
+    };
+    if error_kinds.is_empty() {
+        // Warnings / notes only — surface but don't gate.
+        return Ok(());
+    }
+    let error_count = findings
+        .iter()
+        .filter(|f| f.severity() == LintSeverity::Error)
+        .count();
     bail!(
-        "refusing to write {}: resolve the {} structural lint finding(s) above first ({})",
+        "refusing to write {}: resolve the {} error-level lint finding(s) above first ({})",
         path.display(),
-        findings.len(),
-        kinds.join(", "),
+        error_count,
+        error_kinds.join(", "),
     );
 }
 
