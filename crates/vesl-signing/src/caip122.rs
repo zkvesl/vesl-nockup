@@ -274,18 +274,41 @@ pub struct SiwnVerifyContext<'a> {
     pub expected_version: &'a str,
 }
 
+/// Hard cap on the base64-encoded SIWN header length. Legitimate
+/// bundles are ~1.4 KB; 16 KB headroom absorbs reasonable signer
+/// variations while bounding the `B64.decode` allocation against
+/// memory-exhaustion DoS. Audit 2026-05-25 M-33.
+pub const MAX_SIWN_HEADER_LEN: usize = 16 * 1024;
+
+/// Hard cap on the inner CAIP-122 body length once the bundle is
+/// JSON-decoded. The body is line-structured with 8 fields plus a
+/// blank separator — a few hundred bytes typically, 4 KB is a
+/// comfortable ceiling. Audit 2026-05-25 M-33.
+pub const MAX_SIWN_BODY_LEN: usize = 4 * 1024;
+
 /// Decode a `SIGN-IN-WITH-X` header value and verify it. Enforces:
-/// domain / chain ID / URI / version match against `ctx`, signature
-/// validity, timestamp window, and replay freshness (via the supplied
-/// [`ReplayCache`], keyed on the full message digest).
+/// header / body length caps, domain / chain ID / URI / version match
+/// against `ctx`, signature validity, timestamp window, and replay
+/// freshness (via the supplied [`ReplayCache`], keyed on the full
+/// message digest).
 pub fn verify<C: ReplayCache>(
     header_b64: &str,
     ctx: &SiwnVerifyContext<'_>,
     cache: &C,
     now: DateTime<Utc>,
 ) -> Result<VerifiedIdentity, SiwnError> {
+    // AUDIT 2026-05-25 M-33: bound the input length before `B64.decode`
+    // allocates ~0.75x the input length. Without this an attacker
+    // submitting a multi-MB string forces arbitrary allocation before
+    // signature verification even runs.
+    if header_b64.len() > MAX_SIWN_HEADER_LEN {
+        return Err(SiwnError::MalformedBody("header exceeds maximum length"));
+    }
     let json = B64.decode(header_b64.as_bytes())?;
     let bundle: SiwnHeader = serde_json::from_slice(&json)?;
+    if bundle.message.len() > MAX_SIWN_BODY_LEN {
+        return Err(SiwnError::MalformedBody("body exceeds maximum length"));
+    }
     let params = parse_caip122_message(&bundle.message)?;
 
     if params.domain != ctx.expected_domain {

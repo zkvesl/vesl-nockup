@@ -54,6 +54,25 @@ impl VeslWallet {
     /// Build a wallet from a BIP-39 mnemonic + optional passphrase. The
     /// passphrase corresponds to BIP-39's "25th word" extension; pass an
     /// empty string for no passphrase.
+    ///
+    /// **Audit 2026-05-25 L-32 — caller-owned secret residue.** The 64-byte
+    /// BIP-39 seed derived inside this function is zeroized on drop (via
+    /// the M-13 fix), and `bip39`'s `zeroize` feature scrubs internal
+    /// `Mnemonic` state. **But the caller's `phrase` and `passphrase`
+    /// strings are owned by the caller and survive in their original
+    /// buffers after this function returns** — `Mnemonic::parse` reads
+    /// the bytes; it does not mutate or wipe them. Process-memory dumps
+    /// (core file, debugger ptrace, /proc/&lt;pid&gt;/mem leak) recover the
+    /// mnemonic verbatim from the caller's storage even after the
+    /// wallet's own seed has been wiped.
+    ///
+    /// Callers handling secret mnemonics MUST keep `phrase` (and
+    /// `passphrase`, if non-empty) in a `zeroize::Zeroizing<String>`
+    /// buffer — or equivalent — that wipes on drop. This API does not
+    /// take ownership of those strings, and changing it to require
+    /// `Zeroizing<String>` would be an API-breaking change deferred
+    /// to a future major version. Until then, the wipe discipline lives
+    /// on the caller side.
     pub fn from_seed_phrase(
         phrase: &str,
         passphrase: &str,

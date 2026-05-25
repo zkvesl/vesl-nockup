@@ -7,11 +7,11 @@
 
 [vesl-core]
 repo = "https://github.com/zkvesl/vesl-core"
-pin  = "3f9e20d8df20772d7df3e17b643bee0da4e960bd"
+pin  = "6abfe31a94a26536ce5a13d63e36730b9d5eb83d"
 
 [vesl-wallet]
 repo = "https://github.com/zkvesl/vesl-wallet"
-pin  = "880b77c10f32ffd2719ef4501db7a77692013387"
+pin  = "0d76f00f5d8fd736e8bda04a160dec52248b7c23"
 
 [nockchain]
 repo = "https://github.com/nockchain/nockchain"

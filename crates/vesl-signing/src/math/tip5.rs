@@ -300,6 +300,22 @@ fn calc_digest(sponge: &[u64; 16]) -> [u64; 5] {
 }
 
 pub fn hash_varlen(input: &mut Vec<Belt>) -> [u64; 5] {
+    // AUDIT 2026-05-25 M-34: reduce inputs to canonical form before
+    // the sponge absorbs them. `Belt(pub u64)` has no validating
+    // constructor, so downstream callers (vesl-core, hull-llm,
+    // third-party HW wallet impls) can construct a Belt with a value
+    // >= PRIME. The pre-existing `debug_assert!` is a release-mode
+    // no-op; under that release path an off-field input would flow
+    // through montify/mont_reduction with no normalization, producing
+    // a digest the Hoon-side `atom-to-digest` (which reduces mod p)
+    // cannot reproduce — the same cross-VM divergence primitive C-04
+    // closed at the nockchain-tip5-rs boundary. Matching the Hoon
+    // normalization here removes the footgun at the public API.
+    for b in input.iter_mut() {
+        if b.0 >= crate::math::belt::PRIME {
+            b.0 %= crate::math::belt::PRIME;
+        }
+    }
     let mut sponge = [0u64; STATE_SIZE];
     for b in input.iter() {
         debug_assert!(
