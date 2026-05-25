@@ -12,9 +12,9 @@ open the PR against `zkvesl/vesl-nockup:dev`.
 
 ## Good first PRs
 
-The recent module splits opened up three template-shaped contribution
-surfaces — adding new entries follows an established pattern, so you
-don't need to read the whole subsystem first.
+Several subsystems are laid out as template-shaped contribution
+surfaces — adding a new entry follows the pattern of an existing
+sibling, so you don't need to read the whole subsystem first.
 
 | Add a... | Open this directory | Pattern |
 |---|---|---|

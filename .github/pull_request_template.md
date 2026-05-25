@@ -21,7 +21,7 @@ synced paths are touched here.
 The sync-verify CI job is the hard gate; this comment is a heads-up.
 
 First-time contributor? See CONTRIBUTING.md's "Good first PRs"
-table — adding a lint, HTTP handler, or codegen target is now a
+table — adding a lint, HTTP handler, or codegen target is a
 template-shaped change.
 -->
 
