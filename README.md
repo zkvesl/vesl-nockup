@@ -280,7 +280,7 @@ poke(&mut app, build_kv_delete_poke("greeting")).await?;
 
 Compose by listing the graft alongside the others: `nockup graft inject --grafts settle,mint,kv hoon/app/app.hoon`. Peek path is `[%kv-value key=@t]` returning the stored atom or `~`. The store is capped at 10M entries (`%kv-error 'capacity'` on overflow). Overwrite of an existing key bypasses the cap.
 
-`kv-graft` is the *loose* store: overwrite-on-set, noop on delete-missing. The strict counterpart (`registry-graft`) — error on overwrite, error on missing-update, structured `record=*` values — ships later in Phase 02. Pick by stance.
+`kv-graft` is the *loose* store: overwrite-on-set, noop on delete-missing. The strict counterpart (`registry-graft`) — error on overwrite, error on missing-update, structured `record=*` values — is the structured alternative. Pick by stance.
 
 **`counter-graft` (priority 60)** — named `@ud` counters, init on first touch, saturating at `2^64-1`:
 
@@ -364,7 +364,7 @@ poke(&mut app, build_registry_del_poke(key_id)).await?;
 // → %registry-deleted. Del on missing key → %registry-error.
 ```
 
-Peek path is `[%registry-entry key=@]`. Registry has the heaviest C1 surface in Phase 02 — both put and update cue caller-supplied bytes inside their poke arms under a `mule` guard, so malformed jam surfaces as `%registry-error` rather than crashing the kernel. `kv-graft` is the loose counterpart (overwrite-on-set, noop-on-missing-delete, atom values); pick by stance.
+Peek path is `[%registry-entry key=@]`. Registry has the heaviest unsafe-input surface in vesl — both put and update cue caller-supplied bytes inside their poke arms under a `mule` guard, so malformed jam surfaces as `%registry-error` rather than crashing the kernel. `kv-graft` is the loose counterpart (overwrite-on-set, noop-on-missing-delete, atom values); pick by stance.
 
 > **Pre-jam payloads in custom domain arms.** If you delegate to `%registry-put` from your own kernel arm, jam the payload first (`(jam payload)` in Hoon, or pre-jam on the Rust side via `vesl_core::jam_to_bytes`). Registry's `mule (cue payload)` reads the bytes as jam — passing a raw atom may emit `%registry-stored` with garbage state OR `%registry-error 'cue failure'`, depending on what bits the atom happens to contain. The same constraint applies at the queue-pop → batch-add cross-graft seam (use `vesl_core::rejam_atom` between the two pokes).
 
@@ -479,7 +479,7 @@ snapshots/before-mint-graft/
 
 **Same-composition resume** (the new kernel has the same set of grafts as the snapshot) roundtrips cleanly — the snapshot's state is preserved, and both pre- and post-resume pokes emit effects. There are no new graft axes, so the defaults overlay is a no-op and nothing is reset.
 
-**Schema-extension resume** (the new kernel adds grafts that weren't in the snapshot) works in v0.2 via `nockup graft inject` codegen at the `nockup:load-defaults` marker. The marker template ships an identity `++load` placeholder; `nockup graft inject` replaces it with a `=/  defaults  ^*(versioned-state)` + `%_  defaults  <field>  ^*(<field>-state)  ...  ==` overlay so resumed snapshots with a smaller noun shape get type defaults at the new graft axes instead of panicking inside the wrapper's mule guard. Pre-v0.2 (no marker, identity load) silently dropped effects on every graft past the first added priority band; the fix landed under RM4 §1 v0.2.
+**Schema-extension resume** (the new kernel adds grafts that weren't in the snapshot) works in v0.2 via `nockup graft inject` codegen at the `nockup:load-defaults` marker. The marker template ships an identity `++load` placeholder; `nockup graft inject` replaces it with a `=/  defaults  ^*(versioned-state)` + `%_  defaults  <field>  ^*(<field>-state)  ...  ==` overlay so resumed snapshots with a smaller noun shape get type defaults at the new graft axes instead of panicking inside the wrapper's mule guard. Pre-v0.2 (no marker, identity load) silently dropped effects on every graft past the first added priority band; the fix landed in v0.2 with the marker codegen.
 
 For test setups that need state-equivalence assertions, see `tools/graft-inject/tests/checkpoint_lifecycle.rs` (state survives same-composition resume modulo the v0.2 defaults overlay) and `tools/graft-inject/tests/resume_emits_effects.rs` (post-resume effect emission across priority bands, including the schema-extension test that flipped from `#[ignore]` to active under v0.2).
 
@@ -630,7 +630,7 @@ Worked example — an **`%audited-set` arm** that increments a per-key request c
 (welp efx-c (welp efx-aw ~[[%set-audited key.u.act]]))
 ```
 
-Five lines for three graft pokes plus a domain effect — the same arm written without the helpers runs to twelve lines (each graft poke gets its own `=/ cause`, `=/ [efx state]  (poke …)`, and the `state(counter …, kv …, log …)` update threads three field-updates on the bottom line). The R6 dogfood log measures a 6-line saving on this single arm; multi-arm domains scale that linearly.
+Five lines for three graft pokes plus a domain effect — the same arm written without the helpers runs to twelve lines (each graft poke gets its own `=/ cause`, `=/ [efx state]  (poke …)`, and the `state(counter …, kv …, log …)` update threads three field-updates on the bottom line). Measured savings are about 6 lines on this single arm; multi-arm domains scale linearly.
 
 The convention `apply-<graft>` relies on: each graft's state lives at the field named after the graft (`counter.state`, `kv.state`, …). Every shipped template + the `nockup graft inject` codegen emits state fields with these names already, so the helpers compose with anything `nockup graft inject` produces. If your kernel renames the field (`cnt.state` instead of `counter.state`), `hoonc` rejects with `find . counter` at the `apply-counter` call site — loud, attributable.
 
@@ -702,7 +702,7 @@ Inside each `%settle-*` arm, replace the gate body:
 
 `verify-gate` is `$-([note-id=@ data=* expected-root=@] ?)`. `note-id` is bound so domain gates can enforce `note-id == deterministic-fn(data)`, closing the pre-commit race (audit H-03). `data` is whatever your Rust side jammed into the `payload` atom; your gate casts it (`;;(manifest data)`, `;;(my-intent data)`, etc.) and returns a loobean. The caller decides what the data shape is — the graft doesn't care. The installed three-arg signature matches `hoon/lib/settle-graft.toml:34`.
 
-**Swapping a gate selection mid-project.** When you change `[graft.gates] gate = "..."` in a manifest (e.g., promoting a project from `sig-verify-schnorr` in development to `manifest-verify` in production), re-run `nockup graft inject --apply hoon/app/app.hoon` — the composer detects the manifest drift via the `sha256:<short>` prefix it embeds in each `::  graft-inject:<graft>:<marker>:begin` banner, strips the stale block, and re-injects from the new manifest. The drift event is announced on stderr (`graft-inject: settle-graft: manifest drift at poke (banner sha256 eec1fca7a063 → current 3c43c1086620). Re-injecting.`). Pre-Phase-03h kernels whose banners predate the sha256 suffix are detected as legacy and force-re-injected once on first run after the upgrade — the new format is stamped in place, no manual cleanup needed.
+**Swapping a gate selection mid-project.** When you change `[graft.gates] gate = "..."` in a manifest (e.g., promoting a project from `sig-verify-schnorr` in development to `manifest-verify` in production), re-run `nockup graft inject --apply hoon/app/app.hoon` — the composer detects the manifest drift via the `sha256:<short>` prefix it embeds in each `::  graft-inject:<graft>:<marker>:begin` banner, strips the stale block, and re-injects from the new manifest. The drift event is announced on stderr (`graft-inject: settle-graft: manifest drift at poke (banner sha256 eec1fca7a063 → current 3c43c1086620). Re-injecting.`). Older kernels whose banners predate the sha256 suffix are detected as legacy and force-re-injected once on first run after the upgrade — the new format is stamped in place, no manual cleanup needed.
 
 ### Removing a graft
 
@@ -728,7 +728,7 @@ sed -i '/graft-inject:rbac-graft:[a-z-]*:begin/,/:end/d' hoon/app/app.hoon
 
 Then `cargo install --path tools/graft-inject --force` to upgrade and never need that workaround again.
 
-**`hoon/common/` transitive-import note.** When you slim the sandbox before a non-forge compile (a `rm hoon/lib/forge-graft.*` and `rm -rf hoon/dat hoon/jams` pass), strip the corresponding `hoon/common/` files too — `nock-prover.hoon`, `nock-verifier.hoon`, `pow.hoon`, `tx-engine{,-0,-1}.hoon`, and the `v0-v1`/`v2`/`stark` subtrees transitively `/#` into `hoon/dat/`. hoonc's eager-parse pass over the entire `hoon/common/` tree pulls them in regardless of whether your kernel reaches them, and the unsatisfied `/dat/` references show up as the misleading "no panic!" silent-fail (RM2 seed-A.md DOC-GAP-1 RECUR). vesl-core's `.dev/DOGFOOD.md` slim-cp recipe ships the canonical strip list. Pair the slim-cp with `nockup graft lint hoon/app/app.hoon` (RM2 §1.1 transitive-imports) to surface any further unsatisfied edges before hoonc runs.
+**`hoon/common/` transitive-import note.** When you slim the sandbox before a non-forge compile (a `rm hoon/lib/forge-graft.*` and `rm -rf hoon/dat hoon/jams` pass), strip the corresponding `hoon/common/` files too — `nock-prover.hoon`, `nock-verifier.hoon`, `pow.hoon`, `tx-engine{,-0,-1}.hoon`, and the `v0-v1`/`v2`/`stark` subtrees transitively `/#` into `hoon/dat/`. hoonc's eager-parse pass over the entire `hoon/common/` tree pulls them in regardless of whether your kernel reaches them, and the unsatisfied `/dat/` references show up as the misleading "no panic!" silent-fail (the missing-target subset of the silent-fail case). vesl-core's `.dev/` sandbox recipes ship the canonical strip list. Pair the slim-cp with `nockup graft lint hoon/app/app.hoon` (the `transitive-imports` lint surfaces this) to catch any further unsatisfied edges before hoonc runs.
 
 ### Drive a catalog gate from Rust
 
@@ -920,9 +920,9 @@ watch: subscribed to out.jam (filter: none)
 
 **Filter.** `--filter cause=<tag>` keeps only events whose cause matches the stdin command's tag (we know it pre-poke). `--filter effect=<tag>` keeps only events whose effect-list includes `<tag>` (we know it post-broadcast). No filter emits everything.
 
-**Kernel-died.** When the spawned `app.run()` task panics or returns an error, watch prints a `kernel-died: <reason>` row instead of itself crashing — see RM4 round.md HARD-BUG-1 for the surface this is built to diagnose.
+**Kernel-died.** When the spawned `app.run()` task panics or returns an error, watch prints a `kernel-died: <reason>` row instead of itself crashing — the kernel-died failure surface is what this is built to diagnose.
 
-**When you'd reach for `watch` over `inspect peek`:** any time you can't tell from the bare poke return whether the kernel saw what you sent. The two HARD-BUGs in RM4 (registry-del crash + post-resume effect-loss) both presented as opaque return values from the hull side; with `watch` running next door, the cause is on the wire and the effect-list is structured.
+**When you'd reach for `watch` over `inspect peek`:** any time you can't tell from the bare poke return whether the kernel saw what you sent. Two stubborn return-path bugs (registry-del crash + post-resume effect-loss) both presented as opaque return values from the hull side; with `watch` running next door, the cause is on the wire and the effect-list is structured.
 
 ## Troubleshooting
 
@@ -936,7 +936,7 @@ You edited `app.hoon` without the marker comments, or a marker is mistyped. A ma
 Type error in the kernel. Most common cause: your `effect` type is narrower than the union the grafted arms produce. Use `+$  effect  *` unless you've explicitly constrained it.
 
 **`hoonc` fails with `mint-lost` / `-lost %<tag>` on a multi-graft compose**
-The composed `?-` over `-.u.act` isn't exhaustive. Usually this means one of the graft manifests is stale — re-install the vesl graft package (or re-run `sync.sh` in a dev checkout) to pick up the latest arm set. If the missing tag is `%settle-rotate-epoch`, your manifest predates the C-01 remediation that removed it; re-sync.
+The composed `?-` over `-.u.act` isn't exhaustive. Usually this means one of the graft manifests is stale — re-install the vesl graft package (or re-run `sync.sh` in a dev checkout) to pick up the latest arm set. If the missing tag is `%settle-rotate-epoch`, your manifest predates the security-audit fix that removed it; re-sync.
 
 **`hoonc` fails with `missing dependency /jams/constraints-0-1.jam`**
 Forge-graft pulls in the STARK prover tree, which depends on pre-jammed constraint tables. Copy `hoon/dat/` and `hoon/jams/` from `vesl-nockup/` into your project to satisfy the dependency.
@@ -954,7 +954,7 @@ The verify-gate returned `%.n`. The `?>` in `lib/settle-graft.hoon`'s `%settle-n
 The hull emitted a cause-tag the kernel's `+$ cause` union doesn't accept, so `(soft cause)` returned `~` and the wrapper short-circuited before any arm ran. The diagnostic prints at the default tracing level (priority 1) — no `RUST_LOG=trace` needed. The bracketed `[%<tag> ...]` is the cord-decoded head of the rejected cause; the trailing `(full: <noun>)` is the complete cause cell for advanced inspection. If the head shows `%unknown`, the cause noun was either an atom or a cell whose head is itself a cell — both are malformed shapes for `[%tag args...]` causes. Common causes: typo in the hull-side bytestring; kernel rename without a corresponding hull update; new graft installed but the kernel hasn't been re-composed via `nockup graft inject --apply`. To catch this at compile time, see *Step 6 → Hull/kernel drift detection*.
 
 **Peek returns `~` on what looks like a valid path**
-Settle-graft's peek paths are **namespaced**: `[%settle-registered hull ~]`, `[%settle-noted note-id ~]`, `[%settle-root hull ~]`, `[%settle-epoch ~]`, `[%settle-count ~]`. Pre-Phase-10 unprefixed forms (`%registered` / `%settled` / `%root` / `%epoch`) and the transitional Phase-10 `%vesl-*` forms are both retired — Phase 12A landed `%settle-*` as the final naming. Rust callers going through `vesl-core` are unaffected; the builders construct pokes, not peek paths.
+Settle-graft's peek paths are **namespaced**: `[%settle-registered hull ~]`, `[%settle-noted note-id ~]`, `[%settle-root hull ~]`, `[%settle-epoch ~]`, `[%settle-count ~]`. Earlier unprefixed forms (`%registered` / `%settled` / `%root` / `%epoch`) and a transitional `%vesl-*` set are both retired — `%settle-*` is the final naming. Rust callers going through `vesl-core` are unaffected; the builders construct pokes, not peek paths.
 
 **`out.jam` changed but `nockup graft inject` reported nothing**
 A comment-only or whitespace edit in a transitively-parsed `.hoon` library (anything under `hoon/lib/`, including helpers like `domain-patterns.hoon` that no marker imports directly) can shift `out.jam` even when `nockup graft inject`'s per-graft summary reports `injected 0/N; skipped` across the board. The cause is hoonc-side, not `nockup graft inject` — something position-sensitive in the source (likely span metadata) bleeds into the jammed output. `nockup graft inject` is **manifest-keyed**: it re-injects only when a `<graft>.toml` digest changes, so library `.hoon` edits slip past it. If you need byte-stable `out.jam`, treat any `.hoon` edit as material — bump the corresponding `.toml`'s body to force a re-inject pass — even if you intended only a comment.
