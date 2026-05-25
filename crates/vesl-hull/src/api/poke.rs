@@ -28,13 +28,13 @@ pub(super) async fn poke_kernel_with_timeout(
     .await
     {
         Err(_) => {
-            eprintln!("kernel {log_prefix} poke timed out");
+            tracing::warn!(target: "vesl_hull::poke", "kernel {log_prefix} poke timed out");
             PokeOutcome::Crashed {
                 error: PokeCrashError::Timeout,
             }
         }
         Ok(Err(e)) => {
-            eprintln!("kernel {log_prefix} poke failed: {e}");
+            tracing::error!(target: "vesl_hull::poke", "kernel {log_prefix} poke failed: {e}");
             PokeOutcome::Crashed {
                 error: PokeCrashError::KernelPoke(e),
             }

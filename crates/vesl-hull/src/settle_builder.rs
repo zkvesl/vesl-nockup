@@ -242,8 +242,9 @@ pub fn payload_builder_for_gate(gate: &str) -> Arc<dyn SettlePayloadBuilder> {
         "default-hash" => Arc::new(DefaultHashPayloadBuilder),
         "manifest-verify" => Arc::new(ManifestVerifyPayloadBuilder),
         other => {
-            eprintln!(
-                "WARNING: gate `{other}` has no SettlePayloadBuilder impl yet; \
+            tracing::warn!(
+                target: "vesl_hull::settle_builder",
+                "gate `{other}` has no SettlePayloadBuilder impl yet; \
                  falling back to default-hash. Stock /settle will dead-deny \
                  on this gate — write a custom route or add a SettlePayloadBuilder impl."
             );

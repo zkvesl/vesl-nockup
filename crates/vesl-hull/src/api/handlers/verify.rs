@@ -94,7 +94,7 @@ pub(in crate::api) async fn verify_tx_handler(
     };
 
     let mut client = ChainClient::connect(chain_config).await.map_err(|e| {
-        eprintln!("verify-tx: failed to connect to chain: {e}");
+        tracing::error!(target: "vesl_hull::verify_tx", "failed to connect to chain: {e}");
         (
             StatusCode::BAD_GATEWAY,
             Json(ErrorBody {
@@ -112,7 +112,7 @@ pub(in crate::api) async fn verify_tx_handler(
             }),
         )),
         Err(VerifyTxError::Chain(e)) => {
-            eprintln!("verify-tx: chain RPC error for {tx_id}: {e}");
+            tracing::error!(target: "vesl_hull::verify_tx", "chain RPC error for {tx_id}: {e}");
             Err((
                 StatusCode::BAD_GATEWAY,
                 Json(ErrorBody {

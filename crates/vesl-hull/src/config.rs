@@ -123,7 +123,11 @@ pub fn load_config(path: &Path) -> HullConfig {
         Ok(contents) => match toml::from_str(&contents) {
             Ok(cfg) => cfg,
             Err(e) => {
-                eprintln!("WARNING: failed to parse {}: {e} -- using default config", path.display());
+                tracing::warn!(
+                    target: "vesl_hull::config",
+                    "failed to parse {}: {e} -- using default config",
+                    path.display()
+                );
                 HullConfig::default()
             }
         },

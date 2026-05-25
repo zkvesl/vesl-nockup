@@ -149,7 +149,10 @@ pub async fn serve_with_extra_routes(
     let app = router_with_extra(state, extra);
     let listener = tokio::net::TcpListener::bind(format!("{bind_addr}:{port}")).await?;
     if std::env::var("HULL_API_KEY").map_or(true, |k| k.is_empty()) {
-        eprintln!("WARNING: HULL_API_KEY not set -- API endpoints are unauthenticated");
+        tracing::warn!(
+            target: "vesl_hull::serve",
+            "HULL_API_KEY not set -- API endpoints are unauthenticated"
+        );
     }
     // Ready signal: the listener is bound and `axum::serve` is about to take
     // over the socket. Orchestration scripts (kubernetes readinessProbe,
@@ -158,12 +161,12 @@ pub async fn serve_with_extra_routes(
         target: "vesl_hull::serve",
         "hull listening on http://{bind_addr}:{port}"
     );
-    println!("  POST /commit    -- commit key-value fields");
-    println!("  POST /settle    -- settle a note");
-    println!("  POST /verify    -- verify a field commitment");
-    println!("  GET  /tx/:tx_id -- fetch chain-attested receipt for a submitted tx");
-    println!("  GET  /status    -- current state");
-    println!("  GET  /health    -- liveness check");
+    tracing::info!(target: "vesl_hull::serve", "  POST /commit    -- commit key-value fields");
+    tracing::info!(target: "vesl_hull::serve", "  POST /settle    -- settle a note");
+    tracing::info!(target: "vesl_hull::serve", "  POST /verify    -- verify a field commitment");
+    tracing::info!(target: "vesl_hull::serve", "  GET  /tx/:tx_id -- fetch chain-attested receipt for a submitted tx");
+    tracing::info!(target: "vesl_hull::serve", "  GET  /status    -- current state");
+    tracing::info!(target: "vesl_hull::serve", "  GET  /health    -- liveness check");
     axum::serve(listener, app).await?;
     Ok(())
 }
