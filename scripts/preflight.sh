@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# vesl-nockup push preflight — the local gate that defines "all clear to push."
+# vesl-nockup quick preflight — the fast local gate for routine pushes.
 #
-# Runs the same checks ci.yml gates on, minus the network-only / slow
-# end-to-end jobs (init-simulation, templates spot-check). Any step's
-# nonzero exit aborts the preflight.
+# Runs the unit-level gates ci.yml depends on: clean tree, branch
+# dev/main, pin agreement, bundled-crate sync, lint, and the workspace
+# *unit* test suite. Skips the slow integration sweep under
+# tools/graft-inject/tests/ that boots real nockchain stacks; for that,
+# use scripts/preflight-full.sh (see CLAUDE.md §9 for scenarios).
 #
 # Manual run:
 #   ./scripts/preflight.sh
@@ -16,8 +18,7 @@
 # Override (edge cases — known-flaky test, hotfix bypass, etc.):
 #   git push --no-verify
 #
-# Speed: ~60–180s on a warm cargo cache; the workspace cargo test step
-# dominates.
+# Speed: ~30–90s on a warm cargo cache.
 
 set -euo pipefail
 
@@ -55,8 +56,8 @@ step "./sync.sh --verify (canonical pins)"
 step "cargo clippy --workspace --all-targets -- -D warnings"
 cargo clippy --workspace --all-targets -- -D warnings
 
-step "cargo test --workspace"
-cargo test --workspace
+step "cargo test --workspace --lib (unit tests only — integration suite is the full preflight's job)"
+cargo test --workspace --lib
 
 echo
-echo "preflight: all clear."
+echo "preflight: all clear (quick)."
