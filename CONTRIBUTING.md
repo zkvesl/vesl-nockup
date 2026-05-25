@@ -1,5 +1,94 @@
 # Contributing to vesl-nockup
 
+vesl-nockup is the user-facing toolchain for building NockApps:
+`graft-inject` composer, `vesl-test` lifecycle harness, `vesl-hull`
+HTTP API, plus a stack of templates. We welcome external PRs.
+This doc names what's safe to edit, how to run the suite, and where
+to look first if you want a small win on your way in.
+
+PRs land against the `dev` branch — `main` is squash-merged from
+`dev` on release days. Branch off `origin/dev`, push to your fork,
+open the PR against `zkvesl/vesl-nockup:dev`.
+
+## Good first PRs
+
+The recent module splits opened up three template-shaped contribution
+surfaces — adding new entries follows an established pattern, so you
+don't need to read the whole subsystem first.
+
+| Add a... | Open this directory | Pattern |
+|---|---|---|
+| **Lint pass** | `tools/graft-inject/src/lint/` | Copy `bare_tilde.rs` (~200 lines, self-contained), wire it into `mod.rs`, and add a `default_severity_table` entry. The 6 existing lints sit side by side as templates. |
+| **HTTP handler** | `crates/vesl-hull/src/api/handlers/` | Copy `health.rs` (10 lines) or `status.rs` (~25 lines), expose with `pub(in crate::api)`, add a route line in `api/mod.rs`'s `stock_routes()`. Auth + body-limit + rate-limit + RBAC are inherited from the layer stack. |
+| **Codegen target** | `tools/graft-inject/src/codegen/` | Copy `kernel_cause_tags.rs` as a template; new entry point goes in `codegen/mod.rs`'s re-exports. |
+| **Template** | `templates/` | Add a sibling dir to `templates/vesl/`. CI's `templates-check` job runs `cargo check` on every template; opt out via `# ci: skip-template-check` in `Cargo.toml` if your template needs Jinja substitution. |
+| **vesl-test inspector mode** | `test/vesl-test/src/` | The `inspect` and `watch` subcommands are clap dispatches over `peek` + effect-stream filters. Add a sibling subcommand by extending the clap enum and wiring a driver fn. |
+
+Open a draft PR early if you want a sanity check on the approach
+before writing it out — we'd rather you not waste time on a wrong
+shape.
+
+## Running tests
+
+```bash
+# Full workspace test suite — incremental ~5s warm; cold (first build
+# after fresh clone) takes 8-12 minutes because the nockchain sibling
+# crates compile in.
+cargo test --workspace
+
+# Lint-policy gates that CI enforces. Run this before pushing; it's
+# the same invocation CI's `clippy` job runs.
+cargo clippy --workspace --all-targets -- -D warnings
+
+# Verify the synced bundle still matches what sync.sh would produce.
+# CI's `sync-verify` job runs the same check; running it locally
+# catches the failure before you push.
+./sync.sh --verify
+
+# Spot-check a single template profile end-to-end (graft-inject
+# compose + cargo check). CI runs all five profiles (A B F G J);
+# locally you can run one at a time.
+./tools/spot-check.sh A
+```
+
+If you're only touching `tools/graft-inject/`, the per-crate test
+loop is much faster than the full workspace:
+
+```bash
+cargo test -p graft-inject --lib    # 123 unit tests, <1s warm
+cargo test -p vesl-hull --lib       # 37 unit tests, <1s warm
+```
+
+## CI and getting reviewed
+
+PRs run six jobs (visible at the bottom of the PR conversation):
+
+- **check-pins** — confirms `NOCK_PIN` / `VESL_CORE_PIN` /
+  `VESL_WALLET_PIN` agree across `sync.sh`, `ci.yml`, and that the
+  SHAs exist upstream. Sub-second; fails on ghost SHAs.
+- **sync-verify** — runs `./sync.sh --verify` against the pinned
+  upstreams. Fails on any hand-edit to synced paths.
+- **test** — `cargo test --workspace` against the pinned nockchain
+  sibling.
+- **clippy** — `cargo clippy --workspace --all-targets -- -D warnings`.
+- **templates-check** — `cargo check` per template directory.
+- **graft-inject-check** + **spot-check-path-independence** — install
+  the binary from your branch and run the spot-check matrix.
+- **e2e-init-simulation** — `nockup project init` against a file://
+  registry fixture, verifies the three extension hooks compose.
+
+A clean run shows green checks across every job in <15 min. A red
+job's "Details" link goes straight to the failing step's logs.
+Re-run a flaky job from the PR page if needed; persistent failures
+get triaged.
+
+**Reviewer routing.** Tag `@zkvesl` on the PR or in your description
+if it sits open more than a day; we triage from there.
+
+For PRs touching `tools/graft-inject/` internals (the composer, lint
+engine, codegen), expect a closer review — these surfaces ship in
+the binary every user runs.
+
 ## Before you edit
 
 vesl-nockup bundles synced code from two upstreams alongside its own
