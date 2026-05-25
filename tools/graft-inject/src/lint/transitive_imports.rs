@@ -101,7 +101,16 @@ pub(crate) fn lint_transitive_imports(root_path: &Path, lib_dir: &Path) -> Vec<L
         };
         let lines: Vec<String> = content.lines().map(String::from).collect();
         for spec in parse_imports(&lines) {
-            let target = resolve_import(&spec, &hoon_root, lib_dir);
+            // AUDIT 2026-05-25 L-31: skip imports that try to traverse
+            // outside the lib_dir / hoon_root tree (e.g. a malicious
+            // `.hoon` declaring `/+ ../../../etc/passwd`). resolve_import
+            // returns None for any spec whose name or path_arg contains
+            // `..` or `/`; we drop the import silently rather than
+            // reading the attacker-chosen file or leaking its existence
+            // via the finding's `target` PathBuf in JSON output.
+            let Some(target) = resolve_import(&spec, &hoon_root, lib_dir) else {
+                continue;
+            };
             if target.exists() {
                 let mut next_parents = parents.clone();
                 next_parents.push(current.clone());
@@ -185,16 +194,42 @@ fn split_import_names(rest: &str) -> Vec<String> {
         .collect()
 }
 
-/// Resolve an import spec to a candidate file path under hoon-root.
-fn resolve_import(spec: &ImportSpec, hoon_root: &Path, lib_dir: &Path) -> PathBuf {
+/// Reject import names that try to escape their containing directory.
+/// Hoon imports name a module; the name should never contain a path
+/// separator or a `..` component. AUDIT 2026-05-25 L-31: without this
+/// guard, a malicious `.hoon` could declare e.g. `/+ ../../../etc/passwd`
+/// and the lint walker would attempt to read attacker-chosen files
+/// outside `lib_dir`, disclosing one bit of existence per file via the
+/// `target` PathBuf in JSON output.
+fn is_safe_import_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('/')
+        && !name.contains('\\')
+        && !name.contains("..")
+}
+
+/// Reject `/=` path arguments that contain `..` components. Legitimate
+/// slash-paths under hoon-root never need to traverse upward. Mirror of
+/// `is_safe_import_name` for the path-shaped argument of `/=`.
+fn is_safe_path_arg(path: &str) -> bool {
+    !path.split('/').any(|seg| seg == "..")
+}
+
+/// Resolve an import spec to a candidate file path under hoon-root, or
+/// `None` if the spec attempts a path-traversal escape.
+fn resolve_import(spec: &ImportSpec, hoon_root: &Path, lib_dir: &Path) -> Option<PathBuf> {
     match spec.rune {
-        "/+" => lib_dir.join(format!("{}.hoon", spec.name)),
+        "/+" => is_safe_import_name(&spec.name)
+            .then(|| lib_dir.join(format!("{}.hoon", spec.name))),
         "/=" => {
             let p = spec.path_arg.trim_start_matches('/');
-            hoon_root.join(format!("{}.hoon", p))
+            is_safe_path_arg(p)
+                .then(|| hoon_root.join(format!("{}.hoon", p)))
         }
-        "/-" => hoon_root.join("sur").join(format!("{}.hoon", spec.name)),
-        "/#" => hoon_root.join("dat").join(format!("{}.hoon", spec.name)),
-        _ => PathBuf::new(),
+        "/-" => is_safe_import_name(&spec.name)
+            .then(|| hoon_root.join("sur").join(format!("{}.hoon", spec.name))),
+        "/#" => is_safe_import_name(&spec.name)
+            .then(|| hoon_root.join("dat").join(format!("{}.hoon", spec.name))),
+        _ => None,
     }
 }
