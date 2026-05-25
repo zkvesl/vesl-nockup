@@ -9,6 +9,7 @@ use std::path::Path;
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::find_project_root;
+use crate::manifest::atomic_write;
 
 /// Validate a kernel base name against the Hoon module name shape:
 /// lowercase letter start, then lowercase letters, digits, or hyphens.
@@ -60,7 +61,10 @@ fn rewrite_nockapp_toml(path: &Path, new_name: &str) -> Result<()> {
         doc["project"] = Item::Table(Table::new());
     }
     doc["project"]["kernel_name"] = value(new_name);
-    fs::write(path, doc.to_string())
+    // AUDIT 2026-05-25 L-30: route through atomic_write (tempfile + fsync +
+    // rename) so a SIGKILL or disk-full event mid-write can't truncate the
+    // user's nockapp.toml. Matches the codebase's atomic-write discipline.
+    atomic_write(path, &doc.to_string())
         .with_context(|| format!("write {}", path.display()))?;
     Ok(())
 }
@@ -99,7 +103,10 @@ fn rewrite_readme_codeblocks(path: &Path, from: &str, new: &str) -> Result<usize
             out.push_str(line);
         }
     }
-    fs::write(path, out)
+    // AUDIT 2026-05-25 L-30: route through atomic_write (tempfile + fsync +
+    // rename) so a SIGKILL or disk-full event mid-write can't truncate the
+    // user's README.md.
+    atomic_write(path, &out)
         .with_context(|| format!("write {}", path.display()))?;
     Ok(count)
 }
@@ -128,6 +135,15 @@ pub(super) fn run_rename_kernel(new: &str, from: Option<&str>, apply: bool) -> R
     let from_owned = from.map(str::to_string).unwrap_or_else(|| {
         read_kernel_name_from_toml(&toml_path).unwrap_or_else(|| "app".to_string())
     });
+    // AUDIT 2026-05-25 M-35: validate `from_owned` against the same kernel
+    // name shape we apply to `new`. Without this guard a hostile
+    // `nockapp.toml` (cloned malicious template, attacker-supplied project
+    // tree) could set `[project].kernel_name = "../../../path/to/victim"`,
+    // and the subsequent `app_dir.join(format!("{from_owned}.hoon"))` would
+    // traverse out of `hoon/app/` — a destructive cross-tree `fs::rename`
+    // confused-deputy when the user runs `nockup graft rename-kernel
+    // --apply` inside that project.
+    validate_kernel_name(&from_owned)?;
 
     let app_dir = project_root.join("hoon/app");
     let old_path = app_dir.join(format!("{from_owned}.hoon"));
