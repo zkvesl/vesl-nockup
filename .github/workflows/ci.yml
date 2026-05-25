@@ -54,6 +54,29 @@ jobs:
           ref: ${{ env.VESL_WALLET_PIN }}
           path: vesl-wallet
 
+      - name: Checkout nockchain (sibling, at NOCK_PIN)
+        # sync.sh copies vesl-core/hoon/common via `cp -rL` — the file
+        # in vesl-core is a symlink into nockchain/hoon/common. Without
+        # nockchain checked out, the symlink is broken and sync.sh
+        # aborts with "hoon/common does not resolve into a nockchain
+        # tree".
+        uses: actions/checkout@v4
+        with:
+          repository: nockchain/nockchain
+          ref: ${{ env.NOCK_PIN }}
+          path: nockchain
+
+      - name: Materialize vesl-core's hoon symlinks
+        # vesl-core's hoon/{common,dat,apps,jams} are gitignored
+        # symlinks that scripts/setup-hoon-tree.sh creates against
+        # $NOCK_HOME. Without this step a fresh vesl-core checkout has
+        # no hoon/common at all, and sync.sh's cp -rL fails.
+        env:
+          NOCK_HOME: ${{ github.workspace }}/nockchain
+        run: |
+          cd "$GITHUB_WORKSPACE/vesl-core"
+          ./scripts/setup-hoon-tree.sh
+
       - name: Run sync.sh --verify
         working-directory: vesl-nockup
         run: ./sync.sh --verify "$GITHUB_WORKSPACE/vesl-core" "$GITHUB_WORKSPACE/vesl-wallet"
@@ -72,6 +95,16 @@ jobs:
           repository: nockchain/nockchain
           ref: ${{ env.NOCK_PIN }}
           path: nockchain
+
+      - name: Checkout vesl-wallet (sibling)
+        # vesl-nockup's bundled vesl-core has a path-dep
+        # `../../../vesl-wallet/crates/vesl-signing/` — so any workspace
+        # build needs vesl-wallet at sibling depth, not just nockchain.
+        uses: actions/checkout@v4
+        with:
+          repository: zkvesl/vesl-wallet
+          ref: ${{ env.VESL_WALLET_PIN }}
+          path: vesl-wallet
 
       - uses: dtolnay/rust-toolchain@nightly
 
@@ -97,6 +130,16 @@ jobs:
           repository: nockchain/nockchain
           ref: ${{ env.NOCK_PIN }}
           path: nockchain
+
+      - name: Checkout vesl-wallet (sibling)
+        # vesl-nockup's bundled vesl-core has a path-dep
+        # `../../../vesl-wallet/crates/vesl-signing/` — so any workspace
+        # build needs vesl-wallet at sibling depth, not just nockchain.
+        uses: actions/checkout@v4
+        with:
+          repository: zkvesl/vesl-wallet
+          ref: ${{ env.VESL_WALLET_PIN }}
+          path: vesl-wallet
 
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -124,6 +167,16 @@ jobs:
           repository: nockchain/nockchain
           ref: ${{ env.NOCK_PIN }}
           path: nockchain
+
+      - name: Checkout vesl-wallet (sibling)
+        # vesl-nockup's bundled vesl-core has a path-dep
+        # `../../../vesl-wallet/crates/vesl-signing/` — so any workspace
+        # build needs vesl-wallet at sibling depth, not just nockchain.
+        uses: actions/checkout@v4
+        with:
+          repository: zkvesl/vesl-wallet
+          ref: ${{ env.VESL_WALLET_PIN }}
+          path: vesl-wallet
 
       - uses: dtolnay/rust-toolchain@nightly
 
@@ -171,6 +224,16 @@ jobs:
           ref: ${{ env.NOCK_PIN }}
           path: nockchain
 
+      - name: Checkout vesl-wallet (sibling)
+        # vesl-nockup's bundled vesl-core has a path-dep
+        # `../../../vesl-wallet/crates/vesl-signing/` — so any workspace
+        # build needs vesl-wallet at sibling depth, not just nockchain.
+        uses: actions/checkout@v4
+        with:
+          repository: zkvesl/vesl-wallet
+          ref: ${{ env.VESL_WALLET_PIN }}
+          path: vesl-wallet
+
       - uses: dtolnay/rust-toolchain@nightly
 
       - uses: Swatinem/rust-cache@v2
@@ -208,6 +271,16 @@ jobs:
           repository: nockchain/nockchain
           ref: ${{ env.NOCK_PIN }}
           path: nockchain
+
+      - name: Checkout vesl-wallet (sibling)
+        # vesl-nockup's bundled vesl-core has a path-dep
+        # `../../../vesl-wallet/crates/vesl-signing/` — so any workspace
+        # build needs vesl-wallet at sibling depth, not just nockchain.
+        uses: actions/checkout@v4
+        with:
+          repository: zkvesl/vesl-wallet
+          ref: ${{ env.VESL_WALLET_PIN }}
+          path: vesl-wallet
 
       - uses: dtolnay/rust-toolchain@nightly
 
@@ -257,8 +330,12 @@ jobs:
     # zkvesl/vesl-graft package is published to typhoon, which is why
     # we depend on a fixture rather than the upstream registry.
     #
-    # NOCKUP_PIN is the commit of nockchain/master that carries the
-    # extension-hooks PR. Bump when that PR moves.
+    # NOCKUP_PIN tracks the nockchain branch carrying the extension-hooks
+    # PR. That branch is not yet upstream on github.com/nockchain/nockchain
+    # (it lives in the local merge tree only), so this job cannot run in
+    # GitHub Actions. Re-enable (drop `if: false`) once the extension-hooks
+    # PR lands upstream and update NOCKUP_PIN to its merge SHA.
+    if: false
     runs-on: ubuntu-latest
     env:
       NOCKUP_PIN: extension-hooks
