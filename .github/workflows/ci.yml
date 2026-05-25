@@ -117,6 +117,21 @@ jobs:
         with:
           workspaces: vesl-nockup
 
+      - name: Cache hoonc binary
+        id: hoonc-cache-test
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/hoonc
+          key: hoonc-${{ env.NOCK_PIN }}
+
+      - name: Install hoonc (cache miss only)
+        # Integration tests under tools/graft-inject/tests/ spawn hoonc
+        # as a subprocess; without it on PATH, batch_lifecycle and the
+        # other lifecycle tests fail with "spawn hoonc: No such file or
+        # directory".
+        if: steps.hoonc-cache-test.outputs.cache-hit != 'true'
+        run: cargo install --locked --path nockchain/crates/hoonc --force --bin hoonc
+
       - name: cargo test (workspace)
         working-directory: vesl-nockup
         run: cargo test --workspace
@@ -314,7 +329,8 @@ jobs:
           workspaces: vesl-nockup
 
       - name: Install hoonc
-        run: cargo install --path nockchain/hoonc --force
+        # nockchain layout puts hoonc under crates/hoonc, not at repo root.
+        run: cargo install --locked --path nockchain/crates/hoonc --force --bin hoonc
 
       - name: Install graft-inject
         working-directory: vesl-nockup

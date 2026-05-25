@@ -72,7 +72,7 @@ pub(crate) fn emit_harness_methods_rs(
     s.push_str(&format!(
         "//! Source: {} sha256:{}\n",
         source_path.display(),
-        &loaded.sha256
+        loaded.sha256
     ));
     s.push_str("//! Re-run after every harness-bindings change. Do not edit by hand.\n");
     s.push_str("//!\n");
