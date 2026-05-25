@@ -1,0 +1,49 @@
+name: Feature request
+description: A new capability for nockup-graft, vesl-test, vesl-hull, or the template catalog.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Lead with the problem; we'll figure out the right shape together.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that the current tooling doesn't support?
+      placeholder: |
+        I'm building [...]. The current CLI / template / hull lets me [...]
+        but not [...].
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape (optional)
+      description: |
+        A new subcommand, a new template, a new vesl-hull route, a new
+        graft-inject lint — whatever fits.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What did you try first? What didn't fit, and why?
+    validations:
+      required: false
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: Where does this live?
+      options:
+        - CLI (nockup-graft / vesl-test)
+        - vesl-hull (HTTP surface)
+        - Template catalog
+        - sync.sh / supply chain
+        - Docs only
+        - Not sure
+    validations:
+      required: true
