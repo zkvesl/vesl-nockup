@@ -21,7 +21,8 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use crate::cli::print_report;
 use crate::doctor::{collect_findings, emit_human};
-use crate::inject::{enforce_markers_placeable, inject, migrate_legacy_effect, print_migration_line};
+use crate::inject::{enforce_markers_placeable, inject};
+use crate::migration::{migrate_legacy_effect, print_migration_line};
 use crate::manifest::{Graft, atomic_write, check_schema_compat, discover_grafts};
 
 /// `nockup graft update` entry point.

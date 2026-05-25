@@ -70,6 +70,7 @@ mod inject;
 mod lint;
 mod manifest;
 mod marker;
+mod migration;
 mod update;
 mod util;
 

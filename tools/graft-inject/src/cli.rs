@@ -26,10 +26,8 @@ use crate::codegen::{
     CodegenReport, CodegenStatus, run_codegen_harness_methods, run_codegen_kernel_cause_tags,
 };
 use crate::doctor::{check_hand_edits, emit_human as emit_doctor_human, run_doctor};
-use crate::inject::{
-    InjectReport, MigrationReport, enforce_markers_placeable, inject, migrate_legacy_effect,
-    print_migration_line,
-};
+use crate::inject::{InjectReport, enforce_markers_placeable, inject};
+use crate::migration::{MigrationReport, migrate_legacy_effect, print_migration_line};
 use crate::lint::{
     LintFinding, LintPolicy, LintSeverity, lint_bare_tilde_ambiguity, lint_collision_check,
     lint_internal_dupes, lint_transitive_imports, lint_unresolved_cause_references,
