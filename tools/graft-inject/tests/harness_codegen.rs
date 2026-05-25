@@ -44,7 +44,6 @@ fn committed_generated_harness_matches_codegen_output() {
         .args([
             "codegen",
             "harness-methods",
-            "--bindings",
             "hoon/lib/harness-bindings.toml",
             "--lib-dir",
             "hoon/lib",
@@ -72,7 +71,7 @@ fn committed_generated_harness_matches_codegen_output() {
              \n\
              \tcargo run -p graft-inject --bin nockup-graft -- \\\n\
              \t  codegen harness-methods \\\n\
-             \t  --bindings hoon/lib/harness-bindings.toml \\\n\
+             \t  hoon/lib/harness-bindings.toml \\\n\
              \t  --lib-dir hoon/lib \\\n\
              \t  --out test/vesl-test/src/generated_harness.rs\n\
              \n\
