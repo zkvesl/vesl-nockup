@@ -89,10 +89,10 @@ pub(super) async fn enforce_body_size_upfront(
     req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    if let Some(upper) = req.body().size_hint().upper() {
-        if upper > HULL_BODY_LIMIT as u64 {
-            return Err(StatusCode::PAYLOAD_TOO_LARGE);
-        }
+    if let Some(upper) = req.body().size_hint().upper()
+        && upper > HULL_BODY_LIMIT as u64
+    {
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
     Ok(next.run(req).await)
 }

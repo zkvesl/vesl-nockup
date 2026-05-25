@@ -78,7 +78,7 @@ pub(crate) fn emit_harness_methods_rs(
     s.push_str("//!\n");
     s.push_str("//! See `tools/graft-inject/src/harness_bindings.rs` for the sidecar\n");
     s.push_str("//! schema and `tools/graft-inject/src/codegen.rs` for the emitter.\n");
-    s.push_str("\n");
+    s.push('\n');
     s.push_str("#![allow(unused_imports)]\n\n");
 
     let used = collect_used_types(loaded);
@@ -86,7 +86,7 @@ pub(crate) fn emit_harness_methods_rs(
         for ident in &used {
             s.push_str(&render_use_line(ident));
         }
-        s.push_str("\n");
+        s.push('\n');
     }
 
     // 3. + 4. — per-graft typed outcome enums + extension traits.
@@ -106,7 +106,7 @@ pub(crate) fn emit_harness_methods_rs(
             continue;
         }
         if !first {
-            s.push_str("\n");
+            s.push('\n');
         }
         first = false;
         s.push_str(&format!(
@@ -237,7 +237,7 @@ fn emit_outcome_ext_trait(s: &mut String, graft: &HarnessGraftBindings) {
     let method = format!("as_{}_outcome", graft.name);
     let outcome = format!("{pascal}Outcome");
 
-    s.push_str(&format!("/// Extension trait — decodes a [`vesl_core::PokeOutcome`] into a\n"));
+    s.push_str("/// Extension trait — decodes a [`vesl_core::PokeOutcome`] into a\n");
     s.push_str(&format!("/// typed [`{outcome}`] when the underlying effect came from\n"));
     s.push_str(&format!("/// `{}-graft`. Other grafts' effects collapse to\n", graft.name));
     s.push_str(&format!("/// [`{outcome}::Unknown`].\n"));
