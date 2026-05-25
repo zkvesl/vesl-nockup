@@ -33,8 +33,13 @@ pub const BIP44_PURPOSE: u32 = 44;
 
 /// Role 0 — long-lived intent signing key (Schnorr-over-Cheetah).
 ///
-/// Signs under the `vesl_signing::domain::domain_separators::VESL_INTENT`
-/// (`"vesl-intent-v1"`) Tip5 domain separator.
+/// Reserved for the `vesl_signing::domain::domain_separators::VESL_INTENT`
+/// (`"vesl-intent-v1"`) Tip5 domain separator. Upstream intent scripting
+/// has not landed yet, so the wallet's `sign_intent` accessor is currently
+/// a raw passthrough — callers needing cross-protocol separation today
+/// must hash under `VESL_INTENT` themselves. The role-0 path slot stays
+/// stable so future binding lands without an HD-tree migration. See
+/// `SPEC.md §2 Role 0` for the placeholder status and migration plan.
 pub const ROLE_INTENT: u32 = 0;
 
 /// Role 1 — receiving / payout address.

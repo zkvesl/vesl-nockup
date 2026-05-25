@@ -21,8 +21,8 @@ hoonc --new hoon/app/app.hoon hoon/
 3. Build and run:
 
 ```bash
-cargo +nightly build --release
-cargo +nightly run --release
+cargo +nightly build
+cargo +nightly run
 ```
 
 ## Customize

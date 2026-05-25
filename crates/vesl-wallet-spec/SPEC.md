@@ -40,7 +40,9 @@ A user running two separate agents (e.g., trading + research) derives them at `m
 
 > Scheme: Schnorr over Cheetah, per substrate. Usage: signs the `RawTransaction` that carries the intent publication. This is the canonical "agent authority" key — every published intent traces back to this signer. Lifetime: long — rotated only on compromise or periodic hygiene rotation (multi-month cadence). Storage: user-held.
 
-**Domain separator:** Role-0 intent signatures MUST use `vesl_signing::domain::domain_separators::VESL_INTENT` (= `"vesl-intent-v1"`). The same role-0 key may also sign x402 payments (`X402` = `"x402-nockchain-v2"`) and SIWN messages (`SIWN` = `"siwn-v1"`); non-overlapping separators are the only thing preventing cross-protocol signature reuse. See §3.
+**Status (2026-05-25): placeholder passthrough.** Upstream intent scripting has not landed yet. The vesl-wallet `sign_intent` accessor is currently a raw Schnorr signer over the role-0 key — it does NOT apply the `VESL_INTENT` domain separator internally. Callers that need cross-protocol separation today MUST hash their payload under `VESL_INTENT` themselves (via `vesl_signing::domain::hash_canonical` or equivalent) before calling `sign_intent`. The path slot is reserved; the binding will become enforceable once the upstream verifier ships.
+
+**Domain separator (reserved):** When upstream intent scripting lands, role-0 intent signatures will use `vesl_signing::domain::domain_separators::VESL_INTENT` (= `"vesl-intent-v1"`). The same role-0 key may also sign x402 payments (`X402` = `"x402-nockchain-v2"`) and SIWN messages (`SIWN` = `"siwn-v1"`); non-overlapping separators are the only thing preventing cross-protocol signature reuse. See §3.
 
 **Rust constant:** `vesl_wallet_spec::ROLE_INTENT = 0`
 

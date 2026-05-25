@@ -101,11 +101,31 @@ impl VeslWallet {
         })
     }
 
-    /// Sign a 5-Belt message under the [`vesl-intent-v1`] separator with
-    /// the key at `m/44'/coin'/account'/ROLE_INTENT/0`. The default
-    /// entry point for intent-signing flows.
+    /// Schnorr-sign a 5-Belt message with the key at
+    /// `m/44'/coin'/account'/ROLE_INTENT/0`.
     ///
-    /// [`vesl-intent-v1`]: vesl_signing::domain::domain_separators::VESL_INTENT
+    /// **Audit 2026-05-25 H-26 — placeholder status.** Upstream intent
+    /// scripting has not landed yet: there is no verifier on the other
+    /// side to negotiate a canonical binding against, so this function is
+    /// a raw passthrough — it signs the 5-Belt input verbatim and does
+    /// **not** apply the [`VESL_INTENT`] domain separator internally.
+    /// The role-0 key slot is reserved; callers that need strict
+    /// cross-protocol separation today MUST hash their payload under
+    /// [`VESL_INTENT`] themselves (e.g. via
+    /// `vesl_signing::domain::hash_canonical`) before calling
+    /// `sign_intent`, or use a role whose binding is already wired
+    /// (`ROLE_X402` for x402 payments, etc.). The
+    /// `sign_intent_round_trip_via_schnorr` test in
+    /// `tests/round_trip.rs` shows the caller-side pre-hashing
+    /// convention this API expects today.
+    ///
+    /// When upstream intent scripting ships, this function will gain an
+    /// internal `tip5_with_domain(VESL_INTENT, ...)` step and accept the
+    /// raw payload bytes rather than the pre-hashed 5-Belt digest. The
+    /// signature shape will become spec-binding at that point — until
+    /// then, treat `sign_intent` as a thin role-0 Schnorr accessor.
+    ///
+    /// [`VESL_INTENT`]: vesl_signing::domain::domain_separators::VESL_INTENT
     pub fn sign_intent(
         &self,
         account: u32,
