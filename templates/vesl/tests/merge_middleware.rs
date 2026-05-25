@@ -13,6 +13,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Once};
 
 use axum::body::Body;
@@ -79,6 +80,10 @@ async fn boot_state() -> (SharedState, tempfile::TempDir) {
         manifest: ManifestSummary::empty(),
         settle_builder: Arc::new(DefaultHashPayloadBuilder),
         rbac: RbacConfig::default(),
+        // Boot is synchronous in this helper; tests want post-boot
+        // behavior, so flip the readiness gate true up front. The
+        // health-gate test below builds its own state with false.
+        kernel_ready: AtomicBool::new(true),
     }));
     (state, tmp)
 }
@@ -173,6 +178,59 @@ async fn health_remains_unauthenticated_after_merge() {
     let body = read_body(resp).await;
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(parsed["status"], "ok");
+}
+
+/// The /health gate. K8s readiness probes / load-balancer health
+/// checks rely on the 503-while-booting → 200-when-ready contract
+/// to hold traffic out during the boot window. This test exercises
+/// both states by flipping `AppState::kernel_ready` directly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn health_503s_while_kernel_not_ready() {
+    let (state, _tmp) = boot_state().await;
+    // Force the gate back to "not ready" — boot_state flips it true
+    // for the post-boot tests; here we want the booting branch.
+    state.lock().await.kernel_ready.store(false, Ordering::Relaxed);
+
+    let app = router_with_extra(state.clone(), extra_routes());
+
+    // The fresh oneshot for the 503 path. Once axum's oneshot
+    // consumes the Router, we rebuild it for the 200 path below.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = read_body(resp).await;
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(parsed["status"], "booting");
+    assert_eq!(parsed["stage"], "initializing");
+
+    // Flip back to ready and confirm the same /health route now
+    // returns 200 with the legacy `{"status":"ok"}` shape.
+    state.lock().await.kernel_ready.store(true, Ordering::Relaxed);
+    let app = router_with_extra(state, extra_routes());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("oneshot");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = read_body(resp).await;
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(parsed["status"], "ok");
+    // The booting-only `stage` field is omitted on the ready response.
+    assert!(parsed.get("stage").is_none() || parsed["stage"].is_null());
 }
 
 /// Tower's `Buffer + rate_limit` composition with axum's `HandleErrorLayer`

@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
@@ -64,6 +65,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             vesl_hull::check_auth_config_with_bind(no_auth, &bind_addr)
                 .map_err(|e| -> Box<dyn Error> { e.into() })?;
             let state = build_app_state(app)?;
+            // Hull is fully constructed: flip the readiness flag so
+            // /health returns 200 instead of 503. Any post-boot warmup
+            // (cache priming, RPC handshake, schema fetch) should run
+            // BEFORE this line — k8s readiness probes hold traffic out
+            // until the flag flips.
+            state.lock().await.kernel_ready.store(true, Ordering::Relaxed);
             vesl_hull::serve(state, port, &bind_addr).await
         }
     }
@@ -166,6 +173,10 @@ fn build_app_state(app: NockApp) -> Result<vesl_hull::SharedState, Box<dyn Error
         manifest,
         settle_builder,
         rbac: vesl_hull::RbacConfig::default(),
+        // Initial state: not ready. The serve arm flips this true
+        // after any post-boot warmup; /health returns 503 with
+        // `{"status":"booting"}` until it does.
+        kernel_ready: AtomicBool::new(false),
     })))
 }
 

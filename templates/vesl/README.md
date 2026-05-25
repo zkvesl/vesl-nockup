@@ -43,7 +43,7 @@ The Serve arm wires `vesl_hull::serve(...)` which mounts:
 - `POST /verify` — verify a field's Merkle proof
 - `GET  /tx/:tx_id` — fetch a chain-attested receipt (requires fakenet/dumbnet settlement mode)
 - `GET  /status`   — current state snapshot (fields, tree, hull-id, note counter, settlement mode, active gate, composed grafts, per-graft manifest sha256s)
-- `GET  /health`   — liveness probe (always unauthenticated)
+- `GET  /health`   — readiness probe (always unauthenticated). Returns 200 + `{"status":"ok"}` once the hull finishes booting; 503 + `{"status":"booting","stage":"<stage>"}` until then. Wire to k8s `readinessProbe` or a load-balancer health check to hold traffic out during the boot window.
 
 `/status` reads `hoon/lib/` once at boot to surface `gate` / `grafts` / `manifest_shas`. After swapping a gate (`[graft.gates]` in a graft TOML) + re-running `nockup graft inject --apply` + restart, `curl .../status | jq .gate` confirms the new selection.
 

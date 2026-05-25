@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use nockapp::NockApp;
@@ -58,6 +59,18 @@ pub struct AppState {
     /// pubkey is taken from the `X-Hull-Pubkey` request header. Default
     /// is disabled — see `RbacConfig::from_toml`.
     pub rbac: RbacConfig,
+    /// Readiness flag for the `/health` gate. False while the hull is
+    /// still booting (PMA snapshot verify, post-boot warmup, cache
+    /// priming, etc.); true once it can serve real traffic. A k8s
+    /// readiness probe or load-balancer hitting `/health` during the
+    /// boot window gets 503 with a `{"status":"booting"}` body and
+    /// does NOT route traffic; flipping this to true is what lets
+    /// traffic in.
+    ///
+    /// Construction sites set this false and the orchestrator (the
+    /// binary's serve arm) flips it true after any post-boot warmup —
+    /// see `templates/vesl/src/main.rs` for the canonical pattern.
+    pub kernel_ready: AtomicBool,
 }
 
 pub type SharedState = Arc<Mutex<AppState>>;
@@ -148,7 +161,16 @@ pub struct StatusResponse {
 
 #[derive(Serialize)]
 pub struct HealthResponse {
+    /// `"ok"` when the hull is ready to serve traffic; `"booting"`
+    /// when [`AppState::kernel_ready`] is still false. The HTTP
+    /// status code (200 / 503) tracks the same gate.
     pub status: String,
+    /// Coarse stage label for the booting state — surfaced so an
+    /// operator scraping `/health` knows whether the hull is mid-PMA
+    /// verify, mid-warmup, etc. `None` (omitted from the JSON) when
+    /// `status == "ok"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
 }
 
 #[derive(Serialize)]

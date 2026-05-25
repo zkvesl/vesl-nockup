@@ -22,6 +22,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -78,6 +79,9 @@ async fn boot_state() -> (Arc<Mutex<AppState>>, tempfile::TempDir) {
         manifest: ManifestSummary::empty(),
         settle_builder: Arc::new(DefaultHashPayloadBuilder),
         rbac: RbacConfig::default(),
+        // Tests want post-boot behavior — flip the /health gate true
+        // up front so handlers under test aren't behind a 503.
+        kernel_ready: AtomicBool::new(true),
     }));
     (state, tmp)
 }
