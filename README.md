@@ -131,7 +131,7 @@ You now have a grafted NockApp with on-kernel Merkle verification and replay-pro
 
 ### Cause-builder reference
 
-`vesl-core` ships a `build_*_poke` helper for every primary cause across all 12 graft families. The full per-graft tables — including refinement variants (`_with_data` closures, `_from_noun` payload builders, gate-specific settle forms) — live in the [zkVesl SDK reference](https://docs.zkvesl.dev/reference/sdk.html#graft-poke-builders). The table below is the visual quick-reference for the primary builders so you don't have to scroll back through Step 6 prose to recall a signature.
+`vesl-core` ships a `build_*_poke` helper for every primary cause across all 13 graft families. The full per-graft tables — including refinement variants (`_with_data` closures, `_from_noun` payload builders, gate-specific settle forms) — live in the [zkVesl SDK reference](https://docs.zkvesl.dev/reference/sdk.html#graft-poke-builders). The table below is the visual quick-reference for the primary builders so you don't have to scroll back through Step 6 prose to recall a signature.
 
 > **Long-tag rule.** Cause tags >8 bytes panic at compile time under `tas!()` (e.g. `submit-artifact`, `register-thing`). Use `Atom::from_bytes(slab, &Bytes::copy_from_slice(b"<tag>"))` for any tag from `settle-register` upward. Wide `u64` values (hashes, IDs where the top bit is set) panic under `D(value)` with `Number is greater than DIRECT_MAX` — route them through `nock_noun_rs::atom_from_u64(slab, value)`.
 
@@ -586,7 +586,7 @@ Seven lines of custom Hoon total for the 1-arg example, eleven for the 3-arg. Tw
 
 The vesl arms stay put. You're adding arms, not replacing them.
 
-Future direction: `nockup graft` is being rearchitected (see `.dev/PARAMETIZATION.md`) so that user-defined domains can ship as their own grafts with a TOML manifest — which will mechanize the state-field and cause-variant declarations. The arm body is the part that stays yours.
+Future direction: `nockup graft` is being rearchitected (see `.dev/00_PARAMETIZATION.md`) so that user-defined domains can ship as their own grafts with a TOML manifest — which will mechanize the state-field and cause-variant declarations. The arm body is the part that stays yours.
 
 ### Coordinating multiple grafts in one arm
 
