@@ -16,7 +16,8 @@
 //! flags (`--json`, `--apply`, etc.) that drive them.
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -329,6 +330,20 @@ pub(crate) enum Command {
         #[arg(long)]
         apply: bool,
     },
+
+    /// Emit a shell-completion script to stdout. Source the output to
+    /// get tab-completion for subcommands + flag names. The script
+    /// names the binary `nockup-graft` (the published install name);
+    /// run it through `sed 's/nockup-graft/graft-inject/g'` if you
+    /// invoke the legacy alias.
+    ///
+    /// Bash:  `nockup-graft completions bash > ~/.local/share/bash-completion/completions/nockup-graft`
+    /// Zsh:   `nockup-graft completions zsh  > "${fpath[1]}/_nockup-graft"`
+    /// Fish:  `nockup-graft completions fish > ~/.config/fish/completions/nockup-graft.fish`
+    Completions {
+        /// Target shell (bash / zsh / fish / elvish / powershell).
+        shell: Shell,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -535,6 +550,15 @@ pub(crate) fn dispatch(cli: Cli) -> Result<()> {
             from,
             apply,
         }) => run_rename_kernel(&new_name, from.as_deref(), apply),
+        Some(Command::Completions { shell }) => {
+            // Stream the script to stdout. Bin name is hard-coded to
+            // the published install name so a default invocation
+            // produces a working script; sed-rename to `graft-inject`
+            // covers the legacy-alias case.
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "nockup-graft", &mut std::io::stdout());
+            Ok(())
+        }
         None => {
             // Legacy bare-invocation back-compat. The user typed
             // `graft-inject <PATH> ...` or `graft-inject --list ...`

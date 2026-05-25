@@ -46,6 +46,22 @@ Verify:
 hoonc --version && nockup --help >/dev/null && cargo +nightly --version && nockup-graft --version
 ```
 
+Optional — shell tab-completion. `nockup-graft` and `vesl-test` both ship a `completions <shell>` subcommand (bash / zsh / fish / elvish / powershell). One-line install per shell:
+
+```bash
+# bash
+nockup-graft completions bash > ~/.local/share/bash-completion/completions/nockup-graft
+vesl-test    completions bash > ~/.local/share/bash-completion/completions/vesl-test
+# zsh
+nockup-graft completions zsh  > "${fpath[1]}/_nockup-graft"
+vesl-test    completions zsh  > "${fpath[1]}/_vesl-test"
+# fish
+nockup-graft completions fish > ~/.config/fish/completions/nockup-graft.fish
+vesl-test    completions fish > ~/.config/fish/completions/vesl-test.fish
+```
+
+Re-run after a `cargo install --force` so the script tracks any new subcommand or flag.
+
 ## Three-command setup
 
 Write `nockapp.toml` declaring the package and the `vesl` template source:

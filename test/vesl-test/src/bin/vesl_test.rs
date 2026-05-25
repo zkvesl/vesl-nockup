@@ -1,8 +1,8 @@
 //! `vesl-test` — runtime kernel introspection + build-provenance bin.
 //!
-//! Two subcommand families:
+//! Four subcommand families:
 //!
-//!   * `inspect peek` (Tool 4) — boots a compiled out.jam through the
+//!   * `inspect peek` — boots a compiled out.jam through the
 //!     standard `GraftTestHarness`, runs a peek against the kernel's
 //!     `++peek` arm, and prints the result. The CLI wraps the three
 //!     peek-path families that already ship with vesl-core
@@ -13,6 +13,13 @@
 //!     check. Reads `.out-jam-source-fingerprint` (a `sha256sum`
 //!     sidecar listing app.hoon + manifests), recomputes current
 //!     hashes, exits 0 (fresh) / 1 (stale) / 2 (no fingerprint).
+//!   * `watch` — REPL-style live-trace tool; boots a kernel in the
+//!     background, taps its effect_broadcast, and renders one
+//!     structured row per event while reading poke/peek commands
+//!     from stdin.
+//!   * `completions <shell>` — emits a clap-generated shell-completion
+//!     script to stdout. Pipe into the shell's completion dir to get
+//!     tab-completion for subcommands + flag names.
 //!
 //! Examples:
 //!   vesl-test inspect peek out.jam --path-tag log-len
@@ -23,13 +30,15 @@
 //!   vesl-test verify-jam path/to/project --json
 //!   vesl-test watch out.jam
 //!   vesl-test watch out.jam --json --filter cause=settle-register
+//!   vesl-test completions bash > ~/.local/share/bash-completion/completions/vesl-test
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 use nock_noun_rs::NounSlab;
 use nockvm::noun::{NounAllocator, NounHandle};
 use serde_json::{json, Value};
@@ -93,6 +102,16 @@ enum Cmd {
         #[arg(long, default_value_t = DEFAULT_EFFECT_WINDOW_MS)]
         effect_window_ms: u64,
     },
+    /// Emit a shell-completion script to stdout. Source the output to
+    /// get tab-completion for subcommands + flag names.
+    ///
+    /// Bash:  `vesl-test completions bash > ~/.local/share/bash-completion/completions/vesl-test`
+    /// Zsh:   `vesl-test completions zsh  > "${fpath[1]}/_vesl-test"`
+    /// Fish:  `vesl-test completions fish > ~/.config/fish/completions/vesl-test.fish`
+    Completions {
+        /// Target shell (bash / zsh / fish / elvish / powershell).
+        shell: Shell,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -151,6 +170,11 @@ async fn main() -> ExitCode {
         } => run_watch(jam, filter, json, effect_window_ms)
             .await
             .map(|()| 0),
+        Cmd::Completions { shell } => {
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "vesl-test", &mut std::io::stdout());
+            Ok(0)
+        }
     };
     match result {
         Ok(code) => ExitCode::from(code),
