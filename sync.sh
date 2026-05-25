@@ -40,13 +40,13 @@ NOCK_PIN="${NOCK_PIN:-fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f}"
 # synced from. sync.sh aborts when the sibling vesl-core's HEAD does
 # not match this — bump the pin deliberately (edit this line) before
 # re-running. Overridable via env: VESL_CORE_PIN=<sha> ./sync.sh
-VESL_CORE_PIN="${VESL_CORE_PIN:-6abfe31a94a26536ce5a13d63e36730b9d5eb83d}"
+VESL_CORE_PIN="${VESL_CORE_PIN:-805dfa6b6909eaa8203fed401b55d6a2b72a6ef1}"
 
 # vesl-wallet rev that the bundled vesl-signing / vesl-wallet-spec /
 # vesl-wallet crates were last synced from. Symmetric to VESL_CORE_PIN
 # above — same tripwire shape, same bump discipline. Overridable via
 # env: VESL_WALLET_PIN=<sha> ./sync.sh
-VESL_WALLET_PIN="${VESL_WALLET_PIN:-0d76f00f5d8fd736e8bda04a160dec52248b7c23}"
+VESL_WALLET_PIN="${VESL_WALLET_PIN:-f19904e61dc085ed96dede6c354ecee3a53c6d63}"
 
 # AUDIT 2026-05-19 H-16: every pin must be a 40-char lowercase hex SHA
 # before it reaches the sed rewrite below. An override such as
@@ -464,6 +464,11 @@ if [[ $SYNC_VERIFY -eq 1 ]]; then
     #   templates/app.hoon — the canonical scaffold marker reference.
     #   hoon/lib/lib.hoon — placeholder `/+  lib` import target for the
     #     BARE_SCAFFOLD test fixture; not a sync-derived graft.
+    #   hoon/lib/harness-bindings.toml — vesl-nockup-only sidecar
+    #     consumed by `nockup-graft codegen harness-methods` (declares
+    #     per-graft Rust signatures + outcome enums). Not in vesl-core's
+    #     canonical manifests; lives only here. See the file's header
+    #     for migration notes.
     #   templates/WALLET_CONFIG.md — vesl-nockup-local TOML-toggle doc
     #     for the per-role wallet config pattern.
     #   templates/vesl/ — vesl-nockup canonical (depends on
@@ -474,6 +479,8 @@ if [[ $SYNC_VERIFY -eq 1 ]]; then
         cp "$real_here/templates/app.hoon" "$here/templates/app.hoon"
     [[ -f "$real_here/hoon/lib/lib.hoon" ]] && \
         cp "$real_here/hoon/lib/lib.hoon" "$here/hoon/lib/lib.hoon"
+    [[ -f "$real_here/hoon/lib/harness-bindings.toml" ]] && \
+        cp "$real_here/hoon/lib/harness-bindings.toml" "$here/hoon/lib/harness-bindings.toml"
     [[ -f "$real_here/templates/WALLET_CONFIG.md" ]] && \
         cp "$real_here/templates/WALLET_CONFIG.md" "$here/templates/WALLET_CONFIG.md"
     [[ -d "$real_here/templates/vesl" ]] && \
