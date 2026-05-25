@@ -56,8 +56,10 @@ The Serve arm wires `vesl_hull::serve(...)` which mounts:
 
 Adding a new catalog-gate impl (schnorr, ed25519, membership, bounded) is a `SettlePayloadBuilder` impl in `crates/vesl-hull/src/settle_builder.rs` plus a `payload_builder_for_gate` match arm. Unknown gates warn and fall back to default-hash.
 
-Source: `vesl-nockup/crates/vesl-hull/src/api.rs`. Mount your own
-endpoints by passing them to `vesl_hull::serve_with_extra_routes` (or
+Source: `vesl-nockup/crates/vesl-hull/src/api/` — `mod.rs` carries
+the router builders + serve entry points; per-endpoint handlers
+sit in `api/handlers/`. Mount your own endpoints by passing them
+to `vesl_hull::serve_with_extra_routes` (or
 `vesl_hull::router_with_extra` if you need the assembled `axum::Router`):
 
 ```rust
