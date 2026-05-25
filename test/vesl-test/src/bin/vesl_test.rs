@@ -677,7 +677,7 @@ mod tests {
     #[test]
     fn format_decimal_handles_small_atom() {
         // little-endian "g-mint" = 0x67_2d_6d_69_6e_74
-        let bytes = [b'g', b'-', b'm', b'i', b'n', b't'];
+        let bytes = *b"g-mint";
         let expected = (0x74_6e_69_6d_2d_67u64).to_string();
         let dotted = add_dotted_thousands(&expected);
         assert_eq!(format_decimal_dotted(&bytes), dotted);

@@ -132,6 +132,13 @@ jobs:
         if: steps.hoonc-cache-test.outputs.cache-hit != 'true'
         run: cargo install --locked --path nockchain/crates/hoonc --force --bin hoonc
 
+      - name: Build counter template fixture
+        # vesl-checkpoint's end_to_end::snapshot_then_resume_round_trip
+        # test loads templates/counter/out.jam as a fixture. out.jam is
+        # a gitignored build artifact — recompile it before cargo test.
+        working-directory: vesl-nockup/templates/counter
+        run: hoonc --ephemeral hoon/app/app.hoon hoon/
+
       - name: cargo test (workspace)
         working-directory: vesl-nockup
         run: cargo test --workspace
@@ -349,6 +356,8 @@ jobs:
           cp vesl-nockup/templates/app.hoon "$META_DIR/meta-evolving-app/hoon/app/app.hoon"
           graft-inject inject \
             --grafts settle-graft,mint-graft,guard-graft,registry-graft,rbac-graft,log-graft,validate-graft,counter-graft,clock-graft,batch-graft,queue-graft,kv-graft \
+            --lib-dir "$META_DIR/meta-evolving-app/hoon/lib" \
+            --accept-untrusted-libs \
             --apply "$META_DIR/meta-evolving-app/hoon/app/app.hoon"
 
       - name: Run spot-check across profiles A B F G J
