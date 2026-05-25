@@ -1,6 +1,12 @@
 # vesl-nockup
 
-Add vesl to a nockup project in three commands.
+**Primitives and tooling for verifiable apps.**
+
+14 cryptographic and state primitives splice into your Hoon kernel one TOML manifest at a time. The current set: Merkle commitments, STARK proving, replay-protected settlement, key-value and structured state, RBAC, audit logging, deterministic clocking, settlement batching, and signing helpers. A typed Rust SDK turns each cause into a poke. A test harness boots the same kernel binary your app does. An HTTP server with auth, rate-limit, and operational introspection mounts out of the box. `nockup graft inject` composes any subset.
+
+> Built for **Nockchain**. Nock, JAM, tip5, STARK proving, and the deterministic interpreter are nockchain's primitives. vesl runs a Hoon kernel inside nockchain's `NockApp` and ships a graft library plus Rust SDK on top.
+
+## Three Commands to a Running Verifiable Kernel
 
 ```bash
 nockup project init                                  # fetches vesl template + zkvesl/vesl-graft
