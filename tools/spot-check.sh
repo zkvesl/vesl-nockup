@@ -76,10 +76,13 @@ graft-inject inject \
   --accept-untrusted-libs \
   --apply hoon/app/app.hoon \
   > /tmp/spot-check-direct-grafts.txt 2>&1
-hoonc --new hoon/app/app.hoon hoon/ > /dev/null 2>&1
+hoonc --ephemeral hoon/app/app.hoon hoon/ > /tmp/hoonc-spot-$PROFILE.log 2>&1 || true
 
 if [[ ! -s out.jam ]]; then
   echo "spot-check.sh: hoonc produced empty out.jam (direct-compose failure)" >&2
+  echo "spot-check.sh: hoonc log follows ----------------------------" >&2
+  cat /tmp/hoonc-spot-$PROFILE.log >&2
+  echo "spot-check.sh: --------------------------------------------- end" >&2
   exit 1
 fi
 
