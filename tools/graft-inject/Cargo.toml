@@ -1,13 +1,48 @@
 [package]
 name = "graft-inject"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 edition = "2021"
 description = "Inject Vesl graft wiring into a nockup app.hoon kernel"
-license = "MIT"
+license = "MIT OR Apache-2.0"
+
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "graft-inject"
 path = "src/main.rs"
 
+[[bin]]
+name = "nockup-graft"
+path = "src/bin/nockup-graft.rs"
+
 [dependencies]
 anyhow = "1.0"
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+toml = "0.8"
+toml_edit = "0.22"
+
+[build-dependencies]
+# build.rs computes a content-hash of src/ at build time so runtime
+# staleness detection compares actual source bytes rather than a git
+# rev that drifts on every commit (RH1 step 3 / HARD-FRICTION-1).
+sha2 = "0.10"
+
+[dev-dependencies]
+# Integration tests (mint_lifecycle etc.) boot a graft-composed kernel
+# and drive it via vesl-test's harness. vesl-core crates come from the
+# bundled copy in vesl-nockup/crates/ (synced from upstream via sync.sh);
+# nockchain is the one legitimate external sibling.
+vesl-core       = { path = "../../crates/vesl-core" }
+vesl-test       = { path = "../../test/vesl-test" }
+vesl-checkpoint = { path = "../../crates/vesl-checkpoint" }
+nock-noun-rs    = { path = "../../crates/nock-noun-rs" }
+nockapp         = { path = "../../../nockchain/crates/nockapp", default-features = false }
+nockvm          = { path = "../../../nockchain/crates/nockvm/rust/nockvm" }
+nockchain-math  = { path = "../../../nockchain/crates/nockchain-math" }
+tempfile        = "3"
+tokio           = { version = "1", features = ["rt-multi-thread", "macros"] }

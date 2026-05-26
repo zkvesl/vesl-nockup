@@ -38,6 +38,10 @@ use nockvm::noun::{Noun, D, T};
 #[derive(Debug, Clone)]
 pub struct WalletConfig {
     /// Private gRPC endpoint of the wallet instance.
+    ///
+    /// Security-critical: carries signing requests. A non-loopback host
+    /// must use `https://` — `connect` rejects plaintext to a remote
+    /// host (AUDIT 2026-05-19 H-11).
     pub endpoint: String,
 }
 
@@ -84,12 +88,13 @@ impl std::fmt::Display for WalletBalance {
 pub struct WalletClient {
     client: nockapp_grpc::private_nockapp::PrivateNockAppGrpcClient,
     config: WalletConfig,
-    pid_counter: i32,
+    pid_counter: u32,
 }
 
 impl WalletClient {
     /// Connect to a wallet's private gRPC endpoint.
     pub async fn connect(config: WalletConfig) -> Result<Self> {
+        crate::reject_insecure_endpoint(&config.endpoint)?;
         let client =
             nockapp_grpc::private_nockapp::PrivateNockAppGrpcClient::connect(&config.endpoint)
                 .await
@@ -106,10 +111,17 @@ impl WalletClient {
         })
     }
 
+    /// Monotonic request id for gRPC peek/poke correlation.
+    ///
+    /// AUDIT 2026-05-21 L-20: the counter is `u32`, not `i32`, so it
+    /// cycles the full 2^32 range cleanly instead of `wrapping_add`-ing
+    /// into negative values that the old code patched with an ad-hoc
+    /// reset. The gRPC `pid` field is int32, so the reinterpret cast is
+    /// the wire encoding — a negative correlation id is a valid distinct
+    /// value (it indexes nothing; the wallet only matches on it).
     fn next_pid(&mut self) -> i32 {
         self.pid_counter = self.pid_counter.wrapping_add(1);
-        if self.pid_counter < 0 { self.pid_counter = 1; }
-        self.pid_counter
+        self.pid_counter as i32
     }
 
     /// Check if the wallet is running and responsive.
@@ -122,7 +134,7 @@ impl WalletClient {
         match self.client.peek(pid, path).await {
             Ok(_) => Ok(true),
             Err(nockapp_grpc::NockAppGrpcError::Internal(_)) => {
-                // Wallet responded with an error — gRPC server is alive
+                // Wallet returned an app-level error — gRPC server is alive.
                 Ok(true)
             }
             Err(e) => Err(anyhow::anyhow!("wallet not responsive: {e:?}")),
@@ -226,14 +238,26 @@ pub fn build_peek_path(segments: &[&str]) -> Vec<u8> {
     slab.jam().to_vec()
 }
 
+/// Build a plain cord atom from a string's bytes.
+///
+/// AUDIT 2026-05-20 M-17: `make_tas` is byte-identical to this — it is
+/// just `Atom::from_bytes` — but its name implies a Hoon `@tas` term.
+/// base58 hashes and addresses are not valid `@tas` (they contain
+/// uppercase), so build those through this honestly-named constructor.
+fn make_cord(slab: &mut NounSlab<NockJammer>, s: &str) -> Noun {
+    make_tas(slab, s).as_noun()
+}
+
 /// Build a JAM-encoded `sign-hash` poke payload.
 ///
 /// Noun format: `[%sign-hash hash-cord index-atom hardened-loobean]`
 pub fn build_sign_hash_poke(hash_b58: &str, key_index: u64, hardened: bool) -> Vec<u8> {
     let mut slab: NounSlab<NockJammer> = NounSlab::new();
     let tag = make_tas(&mut slab, "sign-hash").as_noun();
-    let hash = make_tas(&mut slab, hash_b58).as_noun();
-    let index = D(key_index);
+    let hash = make_cord(&mut slab, hash_b58);
+    // AUDIT 2026-05-19 H-09: u64_to_noun picks D() vs indirect atom by
+    // size; a bare D() panics the process on key_index >= 2^63.
+    let index = crate::note_data::u64_to_noun(&mut slab, key_index);
     let hard: Noun = if hardened { D(0) } else { D(1) };
     let cmd = T(&mut slab, &[tag, hash, index, hard]);
     slab.set_root(cmd);
@@ -268,18 +292,20 @@ pub fn build_create_tx_poke(
     let tag = make_tas(&mut slab, "create-tx").as_noun();
 
     // names: list of [first last] pairs
-    let first = make_tas(&mut slab, input_first).as_noun();
-    let last = make_tas(&mut slab, input_last).as_noun();
+    let first = make_cord(&mut slab, input_first);
+    let last = make_cord(&mut slab, input_last);
     let name_pair = T(&mut slab, &[first, last]);
     let names = T(&mut slab, &[name_pair, D(0)]);
 
     // order: list of [amount address] pairs
-    let amt = D(amount_nicks);
-    let addr = make_tas(&mut slab, recipient_address).as_noun();
+    // AUDIT 2026-05-19 H-09: u64_to_noun picks D() vs indirect atom by
+    // size; a bare D() panics the process on a tx amount / fee >= 2^63.
+    let amt = crate::note_data::u64_to_noun(&mut slab, amount_nicks);
+    let addr = make_cord(&mut slab, recipient_address);
     let recipient_pair = T(&mut slab, &[amt, addr]);
     let order = T(&mut slab, &[recipient_pair, D(0)]);
 
-    let fee = D(fee_nicks);
+    let fee = crate::note_data::u64_to_noun(&mut slab, fee_nicks);
     let allow_low_fee = D(1); // %.n
     let refund = D(0); // ~
     let key_pair = T(&mut slab, &[D(0), D(1)]); // [0 %.n]

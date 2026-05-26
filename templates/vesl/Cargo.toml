@@ -1,0 +1,53 @@
+# ci: skip-template-check (Jinja substitution at scaffold time)
+[package]
+name = "{{project_name}}"
+version = "0.1.0"
+edition = "2021"
+description = "{{description}}"
+
+[[bin]]
+name = "{{project_name}}"
+path = "src/main.rs"
+
+[dependencies]
+nockapp       = { git = "https://github.com/nockchain/nockchain.git", rev = "fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f", default-features = false }
+nockvm        = { git = "https://github.com/nockchain/nockchain.git", rev = "fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f" }
+nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f" }
+
+vesl-core    = { path = "../../crates/vesl-core", features = ["clap"] }
+nock-noun-rs = { path = "../../crates/nock-noun-rs" }
+vesl-hull    = { path = "../../crates/vesl-hull" }
+
+clap   = { version = "4", features = ["derive"] }
+tokio  = { version = "1", features = ["full"] }
+anyhow = "1.0"
+sha2   = "0.10"
+
+[dev-dependencies]
+vesl-test      = { git = "https://github.com/zkvesl/vesl-nockup" }
+anyhow         = "1.0"
+axum           = "0.8"
+http-body-util = "0.1"
+tower          = "0.5"
+serde_json     = "1"
+tempfile       = "3"
+
+# Collapse the nockchain source diamond: the dependencies above use
+# git-deps, the bundled vesl-core uses path-deps to the same crates, and
+# Cargo treats path-source and git-source as distinct (two `ibig::UBig`
+# types in the graph -> E0308). These patches redirect the git-deps back
+# to the sibling `../nockchain/` clone so both routes resolve to one
+# source. The end-user scaffold convention is `<parent>/nockchain/` +
+# `<parent>/<project>/`, which matches `../nockchain/...` from the
+# project's Cargo.toml.
+[patch."https://github.com/nockchain/nockchain.git"]
+nockapp         = { path = "../nockchain/crates/nockapp" }
+nockvm          = { path = "../nockchain/crates/nockvm/rust/nockvm" }
+nockvm_macros   = { path = "../nockchain/crates/nockvm/rust/nockvm_macros" }
+ibig            = { path = "../nockchain/crates/nockvm/rust/ibig" }
+nockchain-math  = { path = "../nockchain/crates/nockchain-math" }
+nockchain-types = { path = "../nockchain/crates/nockchain-types" }
+noun-serde      = { path = "../nockchain/crates/noun-serde" }
+
+[patch.crates-io]
+ibig = { path = "../nockchain/crates/nockvm/rust/ibig" }

@@ -1,0 +1,192 @@
+name: PR synced-path early warning
+
+# Posts an advisory comment on PRs that touch paths mirrored into
+# vesl-nockup from vesl-core or vesl-wallet via ./sync.sh. The
+# sync-verify job in ci.yml is the hard gate that fails the PR; this
+# job is the friendlier signal that surfaces before the contributor
+# waits through a full CI run.
+#
+# Uses pull_request_target (not pull_request) so the default
+# GITHUB_TOKEN has write access to issue comments even when the PR
+# is opened from a fork. Safe because this job only calls the GitHub
+# REST API (pulls.listFiles, issues.{createComment,updateComment});
+# it never checks out or executes PR code.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  warn-on-synced-paths:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Check changed files + post/update advisory comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // ----------------------------------------------------------
+            // Canonical-path policy. Mirrors CONTRIBUTING.md's table.
+            // Update both surfaces when sync.sh's sync set changes.
+            // ----------------------------------------------------------
+
+            // Path prefixes synced from vesl-core. Match by `path === p`
+            // or `path.startsWith(p)`.
+            const VESL_CORE = [
+              'crates/vesl-core/',
+              'crates/vesl-checkpoint/',
+              'crates/nock-noun-rs/',
+              'crates/nockchain-tip5-rs/',
+              'crates/nockchain-client-rs/',
+              'hoon/common/',
+              'hoon/dat/',
+              'hoon/jams/',
+              'hoon/sur/',
+              'hoon/apps/',
+              'hoon/test-jams/',
+              'templates/counter/',
+              'templates/data-registry/',
+              'templates/graft-hash-gate/',
+              'templates/graft-intent/',
+              'templates/graft-mint/',
+              'templates/graft-settle/',
+              'templates/graft-scaffold/',
+              'templates/settle-report/',
+              'docs/graft-manifest.md',
+            ];
+
+            const VESL_WALLET = [
+              'crates/vesl-signing/',
+              'crates/vesl-wallet/',
+              'crates/vesl-wallet-spec/',
+            ];
+
+            // Files inside synced subtrees that vesl-nockup deliberately
+            // keeps canonical (see sync.sh's "kept-canonical files"
+            // carve-out block). Edits here do NOT trigger the warning.
+            const CARVE_OUTS = [
+              'templates/vesl/',     // factored post-hull-removal
+              'templates/app.hoon',  // scaffold marker reference
+              'hoon/lib/lib.hoon',   // BARE_SCAFFOLD fixture
+            ];
+
+            // hoon/lib/ is synced *except* for lib.hoon (above carve-out).
+            const HOON_LIB_RE = /^hoon\/lib\/(?!lib\.hoon$)/;
+
+            // Templates root .md files are synced (GRAFTING/README/
+            // WALLET_CONFIG). All other top-level .md files in templates/
+            // belong to per-template directories and are matched by their
+            // directory prefix above.
+            const TEMPLATES_ROOT_MD_RE =
+              /^templates\/(GRAFTING|README|WALLET_CONFIG)\.md$/;
+
+            const matchUpstream = (path) => {
+              if (CARVE_OUTS.some(c => path === c || path.startsWith(c))) {
+                return null;
+              }
+              for (const p of VESL_CORE) {
+                if (path === p.replace(/\/$/, '') || path.startsWith(p)) {
+                  return 'vesl-core';
+                }
+              }
+              for (const p of VESL_WALLET) {
+                if (path === p.replace(/\/$/, '') || path.startsWith(p)) {
+                  return 'vesl-wallet';
+                }
+              }
+              if (HOON_LIB_RE.test(path)) return 'vesl-core';
+              if (TEMPLATES_ROOT_MD_RE.test(path)) return 'vesl-core';
+              return null;
+            };
+
+            // ----------------------------------------------------------
+            // Walk the PR's changed files.
+            // ----------------------------------------------------------
+
+            const pr    = context.payload.pull_request;
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner, repo, pull_number: pr.number,
+            });
+
+            const byUpstream = { 'vesl-core': [], 'vesl-wallet': [] };
+            for (const f of files) {
+              if (f.status === 'removed') continue;
+              const upstream = matchUpstream(f.filename);
+              if (upstream) byUpstream[upstream].push(f.filename);
+            }
+            const total = byUpstream['vesl-core'].length +
+                          byUpstream['vesl-wallet'].length;
+
+            // ----------------------------------------------------------
+            // Find any prior bot comment so we can update in place.
+            // ----------------------------------------------------------
+
+            const MARKER = '<!-- pr-synced-path-warning -->';
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              { owner, repo, issue_number: pr.number },
+            );
+            const existing = comments.find(
+              c => c.body && c.body.startsWith(MARKER),
+            );
+
+            if (total === 0) {
+              if (existing) {
+                const body = `${MARKER}\n` +
+                  ':white_check_mark: All synced-path edits resolved. ' +
+                  'This PR no longer touches files owned by vesl-core ' +
+                  'or vesl-wallet.\n';
+                await github.rest.issues.updateComment({
+                  owner, repo, comment_id: existing.id, body,
+                });
+              }
+              return;
+            }
+
+            // ----------------------------------------------------------
+            // Build the advisory body.
+            // ----------------------------------------------------------
+
+            let body = `${MARKER}\n`;
+            body += '## :warning: This PR touches synced paths\n\n';
+            body += 'The files below are mirrored into vesl-nockup from ' +
+                    'their canonical upstreams via `./sync.sh`. ' +
+                    'Hand-edits here will be reverted on the next sync ' +
+                    'run and will fail the `sync-verify` CI job.\n\n';
+            body += '**Land these fixes upstream first**, then a ' +
+                    'vesl-nockup maintainer bumps the corresponding pin ' +
+                    'in `sync.sh` and re-runs sync.\n\n';
+
+            const repoUrl = {
+              'vesl-core':   'https://github.com/zkvesl/vesl-core',
+              'vesl-wallet': 'https://github.com/zkvesl/vesl-wallet',
+            };
+            for (const u of ['vesl-core', 'vesl-wallet']) {
+              if (byUpstream[u].length === 0) continue;
+              body += `### ${u} — [open a PR there](${repoUrl[u]})\n\n`;
+              for (const p of byUpstream[u]) body += `- \`${p}\`\n`;
+              body += '\n';
+            }
+            body += 'See [CONTRIBUTING.md](' +
+                    `https://github.com/${owner}/${repo}/blob/main/CONTRIBUTING.md` +
+                    ') for the full canonical-path table and edit ' +
+                    'discipline.\n';
+
+            // ----------------------------------------------------------
+            // Post (or update in place).
+            // ----------------------------------------------------------
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner, repo, comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: pr.number, body,
+              });
+            }

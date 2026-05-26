@@ -1,0 +1,420 @@
+name: CI
+
+# vesl-nockup bundles a synced copy of vesl-core's crates/ (maintained by
+# ./sync.sh). CI verifies the workspace builds and that the shipped templates
+# scaffold standalone via their git-deps.
+#
+# Bump NOCK_PIN in sync.sh when the sibling nockchain moves.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+env:
+  NOCK_PIN: fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f
+  VESL_CORE_PIN: a1918c73563a92c9e979295f5105164869261fe6
+  VESL_WALLET_PIN: 21d5697a0f860f531ddadcc144121493bca2f7e8
+
+jobs:
+  check-pins:
+    # Validates that sync.sh canonical defaults agree with ci.yml env
+    # for all 3 pin streams (NOCK, VESL_CORE, VESL_WALLET), that every
+    # SHA is reachable upstream (catches ghost SHAs), and that templates
+    # don't drift from canonical NOCK_PIN. Runs in <1s.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: scripts/check-pins.sh
+        run: ./scripts/check-pins.sh
+
+  sync-verify:
+    # Detects drift between the bundled crates/templates and what
+    # sync.sh would produce given VESL_CORE_PIN. Catches hand-edits
+    # to bundled files and sync.sh logic changes that weren't re-run.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout vesl-nockup
+        uses: actions/checkout@v4
+        with:
+          path: vesl-nockup
+
+      - name: Checkout vesl-core (sibling, at pinned rev)
+        uses: actions/checkout@v4
+        with:
+          repository: zkvesl/vesl-core
+          ref: ${{ env.VESL_CORE_PIN }}
+          path: vesl-core
+
+      - name: Checkout vesl-wallet (sibling, at pinned rev)
+        uses: actions/checkout@v4
+        with:
+          repository: zkvesl/vesl-wallet
+          ref: ${{ env.VESL_WALLET_PIN }}
+          path: vesl-wallet
+
+      - name: Checkout nockchain (sibling, at NOCK_PIN)
+        # sync.sh copies vesl-core/hoon/common via `cp -rL` — the file
+        # in vesl-core is a symlink into nockchain/hoon/common. Without
+        # nockchain checked out, the symlink is broken and sync.sh
+        # aborts with "hoon/common does not resolve into a nockchain
+        # tree".
+        uses: actions/checkout@v4
+        with:
+          repository: nockchain/nockchain
+          ref: ${{ env.NOCK_PIN }}
+          path: nockchain
+
+      - name: Materialize vesl-core's hoon symlinks
+        # vesl-core's hoon/{common,dat,apps,jams} are gitignored
+        # symlinks that scripts/setup-hoon-tree.sh creates against
+        # $NOCK_HOME. Without this step a fresh vesl-core checkout has
+        # no hoon/common at all, and sync.sh's cp -rL fails.
+        env:
+          NOCK_HOME: ${{ github.workspace }}/nockchain
+        run: |
+          cd "$GITHUB_WORKSPACE/vesl-core"
+          ./scripts/setup-hoon-tree.sh
+
+      - name: Run sync.sh --verify
+        working-directory: vesl-nockup
+        run: ./sync.sh --verify "$GITHUB_WORKSPACE/vesl-core" "$GITHUB_WORKSPACE/vesl-wallet"
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout vesl-nockup
+        uses: actions/checkout@v4
+        with:
+          path: vesl-nockup
+
+      - name: Checkout nockchain (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: nockchain/nockchain
+          ref: ${{ env.NOCK_PIN }}
+          path: nockchain
+
+      - name: Checkout vesl-wallet (sibling)
+        # vesl-nockup's bundled vesl-core has a path-dep
+        # `../../../vesl-wallet/crates/vesl-signing/` — so any workspace
+        # build needs vesl-wallet at sibling depth, not just nockchain.
+        uses: actions/checkout@v4
+        with:
+          repository: zkvesl/vesl-wallet
+          ref: ${{ env.VESL_WALLET_PIN }}
+          path: vesl-wallet
+
+      - name: Install protoc
+        # nockchain's nockapp-grpc-proto crate needs the protobuf
+        # compiler at build-time; the runner image doesn't ship it.
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vesl-nockup
+
+      - name: Cache hoonc binary
+        id: hoonc-cache-test
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/hoonc
+          key: hoonc-${{ env.NOCK_PIN }}
+
+      - name: Install hoonc (cache miss only)
+        # Integration tests under tools/graft-inject/tests/ spawn hoonc
+        # as a subprocess; without it on PATH, batch_lifecycle and the
+        # other lifecycle tests fail with "spawn hoonc: No such file or
+        # directory".
+        if: steps.hoonc-cache-test.outputs.cache-hit != 'true'
+        run: cargo install --locked --path nockchain/crates/hoonc --force --bin hoonc
+
+      - name: Build counter template fixture
+        # vesl-checkpoint's end_to_end::snapshot_then_resume_round_trip
+        # test loads templates/counter/out.jam as a fixture. out.jam is
+        # a gitignored build artifact — recompile it before cargo test.
+        working-directory: vesl-nockup/templates/counter
+        run: hoonc --ephemeral hoon/app/app.hoon hoon/
+
+      - name: cargo test (workspace)
+        working-directory: vesl-nockup
+        run: cargo test --workspace
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout vesl-nockup
+        uses: actions/checkout@v4
+        with:
+          path: vesl-nockup
+
+      - name: Checkout nockchain (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: nockchain/nockchain
+          ref: ${{ env.NOCK_PIN }}
+          path: nockchain
+
+      - name: Checkout vesl-wallet (sibling)
+        # vesl-nockup's bundled vesl-core has a path-dep
+        # `../../../vesl-wallet/crates/vesl-signing/` — so any workspace
+        # build needs vesl-wallet at sibling depth, not just nockchain.
+        uses: actions/checkout@v4
+        with:
+          repository: zkvesl/vesl-wallet
+          ref: ${{ env.VESL_WALLET_PIN }}
+          path: vesl-wallet
+
+      - name: Install protoc
+        # nockchain's nockapp-grpc-proto crate needs the protobuf
+        # compiler at build-time; the runner image doesn't ship it.
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vesl-nockup
+
+      - name: cargo clippy (workspace)
+        working-directory: vesl-nockup
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  templates-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout vesl-nockup
+        uses: actions/checkout@v4
+        with:
+          path: vesl-nockup
+
+      - name: Checkout nockchain (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: nockchain/nockchain
+          ref: ${{ env.NOCK_PIN }}
+          path: nockchain
+
+      - name: Checkout vesl-wallet (sibling)
+        # vesl-nockup's bundled vesl-core has a path-dep
+        # `../../../vesl-wallet/crates/vesl-signing/` — so any workspace
+        # build needs vesl-wallet at sibling depth, not just nockchain.
+        uses: actions/checkout@v4
+        with:
+          repository: zkvesl/vesl-wallet
+          ref: ${{ env.VESL_WALLET_PIN }}
+          path: vesl-wallet
+
+      - name: Install protoc
+        # nockchain's nockapp-grpc-proto crate needs the protobuf
+        # compiler at build-time; the runner image doesn't ship it.
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vesl-nockup/templates
+
+      - name: cargo check each template
+        working-directory: vesl-nockup
+        run: |
+          # Templates post-sync carry git-deps for nockchain and local path-deps
+          # for vesl-core crates bundled under vesl-nockup/crates. `cargo check`
+          # per template confirms they wire up without needing a full build.
+          # Skip dirs whose Cargo.toml begins with `# ci: skip-template-check`
+          # — Jinja-substituted templates and user-fixup scaffolds opt out
+          # declaratively via that marker.
+          set -e
+          for dir in templates/*/; do
+            if [ -f "$dir/Cargo.toml" ]; then
+              if grep -q '^# ci: skip-template-check' "$dir/Cargo.toml"; then
+                reason=$(grep '^# ci: skip-template-check' "$dir/Cargo.toml" | head -1)
+                echo "::group::$dir (skipped — $reason)"
+                echo "  template opt-out marker present; skipping cargo check"
+                echo "::endgroup::"
+                continue
+              fi
+              echo "::group::$dir"
+              (cd "$dir" && cargo check)
+              echo "::endgroup::"
+            fi
+          done
+
+  graft-inject-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout vesl-nockup
+        uses: actions/checkout@v4
+        with:
+          path: vesl-nockup
+
+      - name: Checkout nockchain (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: nockchain/nockchain
+          ref: ${{ env.NOCK_PIN }}
+          path: nockchain
+
+      - name: Checkout vesl-wallet (sibling)
+        # vesl-nockup's bundled vesl-core has a path-dep
+        # `../../../vesl-wallet/crates/vesl-signing/` — so any workspace
+        # build needs vesl-wallet at sibling depth, not just nockchain.
+        uses: actions/checkout@v4
+        with:
+          repository: zkvesl/vesl-wallet
+          ref: ${{ env.VESL_WALLET_PIN }}
+          path: vesl-wallet
+
+      - name: Install protoc
+        # nockchain's nockapp-grpc-proto crate needs the protobuf
+        # compiler at build-time; the runner image doesn't ship it.
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vesl-nockup/tools/graft-inject
+
+      - name: Install graft-inject from current src/
+        working-directory: vesl-nockup
+        run: cargo install --path tools/graft-inject --force
+
+      - name: Verify staleness warning is silent post-rebuild
+        run: |
+          # warn_if_stale() prints a one-line stderr warning when the
+          # installed binary's build-time src/ hash diverges from the
+          # current src/ tree. After a forced rebuild the hashes must
+          # match — if the warning persists, the staleness check itself
+          # has regressed (build.rs hash and runtime hash drifted).
+          if graft-inject --version 2>&1 | grep -q "binary built from src/ hash"; then
+            echo "::error::graft-inject staleness warning persists post-rebuild — build.rs hash and runtime hash check have diverged" >&2
+            exit 1
+          fi
+
+  spot-check-path-independence:
+    runs-on: ubuntu-latest
+    needs: graft-inject-check
+    steps:
+      - name: Checkout vesl-nockup
+        uses: actions/checkout@v4
+        with:
+          path: vesl-nockup
+
+      - name: Checkout nockchain (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: nockchain/nockchain
+          ref: ${{ env.NOCK_PIN }}
+          path: nockchain
+
+      - name: Checkout vesl-wallet (sibling)
+        # vesl-nockup's bundled vesl-core has a path-dep
+        # `../../../vesl-wallet/crates/vesl-signing/` — so any workspace
+        # build needs vesl-wallet at sibling depth, not just nockchain.
+        uses: actions/checkout@v4
+        with:
+          repository: zkvesl/vesl-wallet
+          ref: ${{ env.VESL_WALLET_PIN }}
+          path: vesl-wallet
+
+      - name: Install protoc
+        # nockchain's nockapp-grpc-proto crate needs the protobuf
+        # compiler at build-time; the runner image doesn't ship it.
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: vesl-nockup
+
+      - name: Install hoonc
+        # nockchain layout puts hoonc under crates/hoonc, not at repo root.
+        run: cargo install --locked --path nockchain/crates/hoonc --force --bin hoonc
+
+      - name: Install graft-inject
+        working-directory: vesl-nockup
+        run: cargo install --path tools/graft-inject --force
+
+      - name: Pre-stage cumulative meta sandbox at depth J
+        run: |
+          # spot-check.sh assumes a meta sandbox already swept through
+          # the deepest profile in scope. We stage one at depth J (12
+          # grafts, the cumulative union for H/I/J) so the script's
+          # subsequent skip-profile spot-checks have a reference tree.
+          export META_DIR=/tmp/spot-check-meta
+          mkdir -p "$META_DIR/meta-evolving-app/hoon/app"
+          cp -r vesl-nockup/templates/graft-scaffold "$META_DIR/meta-evolving-app/scaffold"
+          cp -r vesl-nockup/hoon "$META_DIR/meta-evolving-app/"
+          cp vesl-nockup/templates/app.hoon "$META_DIR/meta-evolving-app/hoon/app/app.hoon"
+          graft-inject inject \
+            --grafts settle-graft,mint-graft,guard-graft,registry-graft,rbac-graft,log-graft,validate-graft,counter-graft,clock-graft,batch-graft,queue-graft,kv-graft \
+            --lib-dir "$META_DIR/meta-evolving-app/hoon/lib" \
+            --accept-untrusted-libs \
+            --apply "$META_DIR/meta-evolving-app/hoon/app/app.hoon"
+
+      - name: Run spot-check across profiles A B F G J
+        working-directory: vesl-nockup
+        run: |
+          export NOCKUP_DIR=$PWD
+          export META_DIR=/tmp/spot-check-meta
+          export SKIP_DIR=/tmp/spot-check-skip
+          for P in A B F G J; do
+            echo "::group::profile $P"
+            tools/spot-check.sh "$P" || exit 1
+            echo "::endgroup::"
+          done
+
+  e2e-init-simulation:
+    # End-to-end smoke test of `nockup project init` against the local
+    # vesl template + a file:// registry fixture. Verifies the three
+    # extension hooks (template_git, plugin discovery, registry
+    # override) compose into a no-fixup scaffold. Runs before the
+    # zkvesl/vesl-graft package is published to typhoon, which is why
+    # we depend on a fixture rather than the upstream registry.
+    #
+    # NOCKUP_PIN tracks the nockchain branch carrying the extension-hooks
+    # PR. That branch is not yet upstream on github.com/nockchain/nockchain
+    # (it lives in the local merge tree only), so this job cannot run in
+    # GitHub Actions. Re-enable (drop `if: false`) once the extension-hooks
+    # PR lands upstream and update NOCKUP_PIN to its merge SHA.
+    if: false
+    runs-on: ubuntu-latest
+    env:
+      NOCKUP_PIN: extension-hooks
+    steps:
+      - name: Checkout vesl-nockup
+        uses: actions/checkout@v4
+        with:
+          path: vesl-nockup
+          fetch-depth: 0  # the harness pins template_commit to HEAD
+
+      - name: Checkout nockchain (extension-hooks branch)
+        uses: actions/checkout@v4
+        with:
+          repository: nockchain/nockchain
+          ref: ${{ env.NOCKUP_PIN }}
+          path: nockchain
+
+      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: nockchain
+
+      - name: Build nockup with extension hooks
+        working-directory: nockchain
+        run: cargo build -p nockup --release
+
+      - name: Run init-simulation harness
+        working-directory: vesl-nockup
+        env:
+          NOCKUP_BIN: ${{ github.workspace }}/nockchain/target/release/nockup
+        run: tools/test-registry/run-init.sh

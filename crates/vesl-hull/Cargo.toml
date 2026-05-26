@@ -1,0 +1,38 @@
+[package]
+name = "vesl-hull"
+version = "0.1.0"
+edition = "2024"
+description = "HTTP API surface (commit/settle/verify) over a Nock kernel — factored from vesl-core/hull as a vesl-nockup-native lib"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "vesl_hull"
+path = "src/lib.rs"
+
+[dependencies]
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+axum = "0.8"
+tower-http = { version = "0.6", features = ["limit"] }
+tower = { version = "0.5", features = ["limit", "buffer"] }
+toml = "0.8"
+sha2 = "0.10"
+zeroize = "1"
+bytes = "1"
+tracing = "0.1"
+
+# Sibling vesl-nockup-bundled crates (refreshed by sync.sh from vesl-core).
+nock-noun-rs      = { path = "../nock-noun-rs" }
+nockchain-tip5-rs = { path = "../nockchain-tip5-rs", features = ["serde"] }
+vesl-core         = { path = "../vesl-core", features = ["clap"] }
+
+# Nockchain monorepo crates — sibling path-deps. Matches the depth used
+# by the bundled vesl-core/Cargo.toml (../../../nockchain/...).
+nockapp         = { path = "../../../nockchain/crates/nockapp", default-features = false }
+nockvm          = { path = "../../../nockchain/crates/nockvm/rust/nockvm" }
+nockchain-types = { path = "../../../nockchain/crates/nockchain-types" }
+nockchain-math  = { path = "../../../nockchain/crates/nockchain-math" }
+noun-serde      = { path = "../../../nockchain/crates/noun-serde" }

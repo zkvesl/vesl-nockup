@@ -1,10 +1,48 @@
 [workspace]
 resolver = "2"
+# vesl-nockup is self-contained post-sync: the vesl-core crate stack
+# (vesl-core, nock-noun-rs, nockchain-tip5-rs, nockchain-client-rs) and
+# the vesl-wallet workspace (vesl-signing + vesl-wallet-spec + vesl-wallet)
+# live under crates/ as bundled copies refreshed by sync.sh. Workspace
+# members (tools/, test/) path-dep into that local crates/ directory;
+# nockchain is the only legitimate external sibling. Templates are
+# independent projects under templates/, not workspace members.
 members = [
-    "crates/vesl-core",
-    "crates/nock-noun-rs",
-    "crates/nockchain-tip5-rs",
-    "crates/nockchain-client-rs",
+    "crates/vesl-hull",
     "tools/graft-inject",
     "test/vesl-test",
 ]
+exclude = ["templates"]
+
+# Workspace members path-dep a handful of nockchain crates, and the bundled
+# vesl-core in crates/ path-deps the rest. Any stale git-dep references
+# to nockchain.git that slip in get redirected here so the type graph
+# stays single (NounAllocator trait impls must share one nockvm source).
+[patch."https://github.com/nockchain/nockchain.git"]
+nockapp         = { path = "../nockchain/crates/nockapp" }
+nockvm          = { path = "../nockchain/crates/nockvm/rust/nockvm" }
+nockvm_macros   = { path = "../nockchain/crates/nockvm/rust/nockvm_macros" }
+ibig            = { path = "../nockchain/crates/nockvm/rust/ibig" }
+nockchain-math  = { path = "../nockchain/crates/nockchain-math" }
+nockchain-types = { path = "../nockchain/crates/nockchain-types" }
+noun-serde      = { path = "../nockchain/crates/noun-serde" }
+
+# vesl-signing (workspace member of github.com/zkvesl/vesl-wallet) declares
+# `ibig = "0.3"` from crates.io. vesl-core uses the nockchain-vendored
+# ibig at ../nockchain/crates/nockvm/rust/ibig — same upstream
+# (tczajka/ibig-rs v0.3.6), but Cargo treats path-dep and crates.io as
+# distinct UBig types. Patching crates.io to the vendored path matches
+# what vesl-core itself does in its workspace; required so any future
+# vesl-nockup workspace member or template that depends on both
+# vesl-signing and vesl-core resolves to a single UBig type.
+[patch.crates-io]
+ibig = { path = "../nockchain/crates/nockvm/rust/ibig" }
+
+# Bypass the `is_in_frame` debug_assert! that fires on PMA-resolved pointers
+# post-PMA (upstream nockchain issue #121). Function logic returns false
+# correctly when the asserts are skipped; release mode is already clean.
+[profile.dev.package.nockvm]
+debug-assertions = false
+
+[profile.test.package.nockvm]
+debug-assertions = false

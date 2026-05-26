@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/zkvesl/vesl-nockup/security/advisories/new
+    about: Report security issues privately via GitHub Security Advisories.
+  - name: Bug in unmodified vesl-core code
+    url: https://github.com/zkvesl/vesl-core/issues/new/choose
+    about: vesl-core crates are mirrored here; source-of-truth bugs go in vesl-core.
+  - name: Bug in unmodified vesl-wallet code
+    url: https://github.com/zkvesl/vesl-wallet/issues/new/choose
+    about: vesl-wallet crates are mirrored here; source-of-truth bugs go in vesl-wallet.
+  - name: General question / discussion
+    url: https://github.com/zkvesl/vesl-nockup/discussions
+    about: Use Discussions for open-ended questions and design feedback.

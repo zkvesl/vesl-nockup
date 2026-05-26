@@ -30,12 +30,24 @@
 
 use anyhow::{Context, Result};
 use nockapp::noun::slab::{NockJammer, NounSlab};
-use nockchain_tip5_rs::Tip5Hash;
+use nockchain_tip5_rs::{check_tip5_limbs, Tip5Hash};
 use nockchain_types::tx_engine::v1::note::{NoteData, NoteDataEntry};
-use nockvm::noun::{IndirectAtom, Noun, D, T};
+use nockvm::noun::{IndirectAtom, Noun, NounAllocator, D, T};
 
-/// Dereference a NounSlab's root noun (C-001).
+/// Dereference a NounSlab's root noun (C-001 / AUDIT H-06).
+///
+/// Centralized local helper so the `unsafe` block lives in one place
+/// per crate. The caller must ensure `slab.set_root(..)` was called —
+/// or the slab was populated via `cue_into` / `NockApp::poke`, both of
+/// which set the root internally. The returned `Noun` may contain raw
+/// pointers into the slab's arena and must not outlive it.
+///
+/// This crate doesn't depend on `nock-noun-rs` (avoids a cycle with
+/// the rest of the vesl stack); the identical helper there is the
+/// canonical one for nock-noun-rs consumers.
 fn slab_root(slab: &NounSlab) -> Noun {
+    // SAFETY: copied out by value; never stored as `&Noun` past this
+    // call. See the doc comment for the set_root contract.
     unsafe { *slab.root() }
 }
 
@@ -46,7 +58,8 @@ fn slab_root(slab: &NounSlab) -> Noun {
 /// Create a NoteDataEntry with a jammed u64 atom value.
 pub fn jam_u64_entry(key: &str, value: u64) -> NoteDataEntry {
     let mut slab: NounSlab<NockJammer> = NounSlab::new();
-    let noun = D(value);
+    // D() panics on values > DIRECT_MAX; u64_to_noun (below) handles both.
+    let noun = u64_to_noun(&mut slab, value);
     slab.set_root(noun);
     let jammed = slab.jam();
     NoteDataEntry::new(key.to_string(), jammed)
@@ -80,7 +93,8 @@ pub fn jam_opaque_bytes_entry(key: &str, raw_bytes: &[u8]) -> NoteDataEntry {
     } else {
         unsafe {
             let mut indirect = IndirectAtom::new_raw_bytes_ref(&mut slab, raw_bytes);
-            indirect.normalize_as_atom().as_noun()
+            let space = slab.noun_space();
+            indirect.normalize_as_atom(&space).as_noun()
         }
     };
     slab.set_root(noun);
@@ -100,7 +114,8 @@ pub fn u64_to_noun(slab: &mut NounSlab<NockJammer>, val: u64) -> Noun {
         let bytes = val.to_le_bytes();
         unsafe {
             let mut indirect = IndirectAtom::new_raw_bytes_ref(slab, &bytes);
-            indirect.normalize_as_atom().as_noun()
+            let space = slab.noun_space();
+            indirect.normalize_as_atom(&space).as_noun()
         }
     }
 }
@@ -109,14 +124,34 @@ pub fn u64_to_noun(slab: &mut NounSlab<NockJammer>, val: u64) -> Noun {
 // Decoding — jammed NoteDataEntry to Rust values
 // ---------------------------------------------------------------------------
 
-/// Find a NoteDataEntry by key and decode its jammed value as a u64.
-pub fn find_u64_entry(data: &NoteData, key: &str) -> Result<u64> {
-    let entry = find_entry(data, key)?;
+/// Upper bound on a `NoteDataEntry` blob before `cue` (AUDIT 2026-05-19
+/// H-10). `cue` grows its slab by doubling; an attacker-crafted blob can
+/// otherwise drive allocator overhead well past the input byte length.
+const MAX_BLOB_LEN: usize = 1 << 20;
+
+/// Cue a `NoteDataEntry` blob into a fresh slab, rejecting an oversized
+/// blob before the allocation-amplifying `cue` runs.
+fn cue_entry_blob(entry: &NoteDataEntry) -> Result<NounSlab<NockJammer>> {
+    anyhow::ensure!(
+        entry.blob.len() <= MAX_BLOB_LEN,
+        "NoteDataEntry blob for key '{}' is {} bytes (cap {MAX_BLOB_LEN})",
+        entry.key,
+        entry.blob.len(),
+    );
     let mut slab: NounSlab<NockJammer> = NounSlab::new();
     slab.cue_into(entry.blob.clone())
         .context("failed to cue NoteDataEntry blob")?;
+    Ok(slab)
+}
+
+/// Find a NoteDataEntry by key and decode its jammed value as a u64.
+pub fn find_u64_entry(data: &NoteData, key: &str) -> Result<u64> {
+    let entry = find_entry(data, key)?;
+    let slab = cue_entry_blob(entry)?;
     let noun = slab_root(&slab);
+    let space = slab.noun_space();
     let atom = noun
+        .in_space(&space)
         .as_atom()
         .map_err(|_| anyhow::anyhow!("expected atom for key '{key}', got cell"))?;
     atom.as_u64()
@@ -129,13 +164,13 @@ pub fn find_u64_entry(data: &NoteData, key: &str) -> Result<u64> {
 /// reconstructs the `[u64; 5]` digest.
 pub fn find_hash_entry(data: &NoteData, key: &str) -> Result<Tip5Hash> {
     let entry = find_entry(data, key)?;
-    let mut slab: NounSlab<NockJammer> = NounSlab::new();
-    slab.cue_into(entry.blob.clone())
-        .context("failed to cue NoteDataEntry blob")?;
-    let mut noun = slab_root(&slab);
+    let slab = cue_entry_blob(entry)?;
+    let noun = slab_root(&slab);
+    let space = slab.noun_space();
+    let mut handle = noun.in_space(&space);
     let mut limbs = [0u64; 5];
     for (i, limb) in limbs.iter_mut().enumerate() {
-        let cell = noun.as_cell().map_err(|_| {
+        let cell = handle.as_cell().map_err(|_| {
             anyhow::anyhow!("tip5 hash list too short at index {i} for key '{key}'")
         })?;
         let atom = cell.head().as_atom().map_err(|_| {
@@ -144,8 +179,13 @@ pub fn find_hash_entry(data: &NoteData, key: &str) -> Result<Tip5Hash> {
         *limb = atom
             .as_u64()
             .map_err(|_| anyhow::anyhow!("tip5 limb {i} exceeds u64 for key '{key}'"))?;
-        noun = cell.tail();
+        handle = cell.tail();
     }
+    // AUDIT 2026-05-19 C-04: a digest read off the wire must be in-field
+    // before it reaches Tip5 hashing, or release-build arithmetic diverges
+    // from the Hoon verifier.
+    check_tip5_limbs(&limbs)
+        .map_err(|e| anyhow::anyhow!("tip5 hash for key '{key}' has off-field limb: {e}"))?;
     Ok(limbs)
 }
 
@@ -155,11 +195,11 @@ pub fn find_hash_entry(data: &NoteData, key: &str) -> Result<Tip5Hash> {
 /// and returns the original byte content. The zero atom decodes to an empty vec.
 pub fn find_opaque_bytes_entry(data: &NoteData, key: &str) -> Result<Vec<u8>> {
     let entry = find_entry(data, key)?;
-    let mut slab: NounSlab<NockJammer> = NounSlab::new();
-    slab.cue_into(entry.blob.clone())
-        .context("failed to cue NoteDataEntry blob")?;
+    let slab = cue_entry_blob(entry)?;
     let noun = slab_root(&slab);
+    let space = slab.noun_space();
     let atom = noun
+        .in_space(&space)
         .as_atom()
         .map_err(|_| anyhow::anyhow!("expected atom for key '{key}', got cell"))?;
     let bytes = atom.as_ne_bytes();

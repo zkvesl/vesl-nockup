@@ -25,11 +25,11 @@
 //! use nockchain_tip5_rs::*;
 //!
 //! let leaves: Vec<&[u8]> = vec![b"chunk A", b"chunk B", b"chunk C", b"chunk D"];
-//! let tree = MerkleTree::build(&leaves);
+//! let tree = MerkleTree::build(&leaves).unwrap();
 //! let root = tree.root();
 //!
 //! // Generate and verify a proof for leaf 0
-//! let proof = tree.proof(0);
+//! let proof = tree.proof(0).unwrap();
 //! assert!(verify_proof(b"chunk A", &proof, &root));
 //!
 //! // Tampered data fails verification
@@ -49,6 +49,44 @@ pub type Tip5Hash = [u64; 5];
 
 /// The zero digest (all limbs zero).
 pub const TIP5_ZERO: Tip5Hash = [0u64; 5];
+
+/// A digest limb that is not a canonical Goldilocks field element.
+///
+/// `nockchain-math` range-checks limbs only under `debug_assert!`, so a
+/// release build hashes an off-field limb unreduced and reaches a digest
+/// that disagrees with the Hoon verifier — a chainsplit primitive. Every
+/// `Tip5Hash` materialized from external bytes must be screened with
+/// [`check_tip5_limbs`] first (audit C-04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FieldRangeError {
+    /// The offending limb (`>= PRIME`).
+    pub limb: u64,
+}
+
+impl std::fmt::Display for FieldRangeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "digest limb {} is not below the Goldilocks prime",
+            self.limb
+        )
+    }
+}
+
+impl std::error::Error for FieldRangeError {}
+
+/// Reject a digest whose limbs are not canonical Goldilocks field
+/// elements (`>= PRIME`). MUST be called on every `Tip5Hash` built from
+/// external bytes — wire reads, protobuf, `serde` deserialization —
+/// before it is fed to any hash or comparison (audit C-04).
+pub fn check_tip5_limbs(hash: &Tip5Hash) -> Result<(), FieldRangeError> {
+    for &limb in hash {
+        if limb >= PRIME {
+            return Err(FieldRangeError { limb });
+        }
+    }
+    Ok(())
+}
 
 /// A node in a Merkle inclusion proof.
 ///
@@ -113,10 +151,9 @@ pub fn tip5_to_atom_le_bytes(hash: &Tip5Hash) -> Vec<u8> {
         }
     }
 
+    // AUDIT 2026-05-21 L-22: an all-zero digest yields `vec![]` — the
+    // canonical little-endian encoding of atom 0 — not `vec![0]`.
     let len = result.iter().rposition(|&b| b != 0).map_or(0, |p| p + 1);
-    if len == 0 {
-        return vec![0];
-    }
     result[..len].to_vec()
 }
 
@@ -128,13 +165,28 @@ pub fn tip5_to_atom_le_bytes(hash: &Tip5Hash) -> Vec<u8> {
 ///
 /// Mirrors Hoon's `+split-to-belts`: `(end [3 7] a)` / `(rsh [3 7] a)` loop.
 /// 7 bytes = 56 bits -> max value 2^56 - 1 ~ 7.2e16 < PRIME ~ 1.8e19.
+///
+/// # Trailing-zero normalization (AUDIT 2026-04-17 L-07)
+///
+/// Input bytes are the little-endian form of a Hoon atom (bignum).
+/// Trailing zero bytes are **stripped** via `rposition` before
+/// chunking — matching Hoon's bignum form, where `0x05` and
+/// `0x05 00 00` are the same value. Both sides of the cross-VM
+/// boundary (this function and the Hoon `split-to-belts` in
+/// `protocol/lib/vesl-merkle.hoon`) normalize identically, so the hash
+/// of `"x"`, `"x\0"`, and `"x\0\0\0"` are all equal.
+///
+/// Callers that treat byte-length as distinguishing between
+/// logically-distinct payloads **will see hash collisions**. Fix:
+/// encode length into the payload explicitly — e.g. prepend a 4-byte
+/// length field, or add a domain-separating prefix before hashing.
 fn atom_bytes_to_belts(bytes: &[u8]) -> Vec<Belt> {
     let len = bytes.iter().rposition(|&b| b != 0).map_or(0, |p| p + 1);
     if len == 0 {
         return vec![Belt(0)];
     }
     let bytes = &bytes[..len];
-    let mut belts = Vec::with_capacity((len + 6) / 7);
+    let mut belts = Vec::with_capacity(len.div_ceil(7));
     for chunk in bytes.chunks(7) {
         let mut val: u64 = 0;
         for (i, &b) in chunk.iter().enumerate() {
@@ -173,9 +225,31 @@ pub fn hash_pair(l: &Tip5Hash, r: &Tip5Hash) -> Tip5Hash {
 ///   `side=true`  -> sibling is LEFT  -> `hash_pair(sibling, current)`
 ///   `side=false` -> sibling is RIGHT -> `hash_pair(current, sibling)`
 pub fn verify_proof(leaf_data: &[u8], proof: &[ProofNode], expected_root: &Tip5Hash) -> bool {
-    // Depth guard: match Hoon's 64-node limit
+    // Depth guard: match Hoon's 64-node limit.
+    // AUDIT 2026-04-17 L-01: a silent `false` here is indistinguishable
+    // from "wrong proof" at the caller — warn so oversize proofs
+    // surface in logs instead of looking like generic failures.
     if proof.len() > 64 {
+        tracing::warn!(
+            proof_depth = proof.len(),
+            "verify_proof: proof exceeds 64-node cap (matches Hoon's verify-chunk), rejecting"
+        );
         return false;
+    }
+
+    // AUDIT 2026-05-19 C-04: reject off-field limbs in caller-supplied
+    // digests. nockchain-math range-checks only under debug_assert!, so a
+    // release build would otherwise hash unreduced limbs and reach a
+    // different digest than the Hoon verifier.
+    if let Err(e) = check_tip5_limbs(expected_root) {
+        tracing::warn!(limb = e.limb, "verify_proof: expected_root limb off-field, rejecting");
+        return false;
+    }
+    for node in proof {
+        if let Err(e) = check_tip5_limbs(&node.hash) {
+            tracing::warn!(limb = e.limb, "verify_proof: proof node limb off-field, rejecting");
+            return false;
+        }
     }
 
     let mut cur = hash_leaf(leaf_data);
@@ -188,7 +262,11 @@ pub fn verify_proof(leaf_data: &[u8], proof: &[ProofNode], expected_root: &Tip5H
         };
     }
 
-    // Constant-time comparison to prevent timing side-channels
+    // AUDIT 2026-05-20 M-19: the final digest compare below is constant-time
+    // over the digest bytes — but the hash_pair recompute loop above is NOT
+    // (it branches on node.side). Merkle proof contents are public, so that
+    // is acceptable; ct_eq here only avoids leaking expected_root through
+    // compare timing. This does not make verify_proof constant-time overall.
     let cur_bytes: Vec<u8> = cur.iter().flat_map(|x| x.to_le_bytes()).collect();
     let exp_bytes: Vec<u8> = expected_root.iter().flat_map(|x| x.to_le_bytes()).collect();
     cur_bytes.ct_eq(&exp_bytes).into()
@@ -197,6 +275,34 @@ pub fn verify_proof(leaf_data: &[u8], proof: &[ProofNode], expected_root: &Tip5H
 // ---------------------------------------------------------------------------
 // Merkle tree
 // ---------------------------------------------------------------------------
+
+/// Error from [`MerkleTree::build`] / [`MerkleTree::proof`].
+///
+/// AUDIT 2026-05-21 L-21: those constructors used `assert!` panics on a
+/// misuse — an empty leaf set, or a proof index past the last leaf. They
+/// now surface a typed error so a direct `MerkleTree` consumer can handle
+/// the case instead of crashing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MerkleTreeError {
+    /// `build` was called with an empty leaf slice.
+    EmptyLeaves,
+    /// `proof` was called with `index` at or past the leaf count.
+    IndexOutOfBounds { index: usize, leaf_count: usize },
+}
+
+impl std::fmt::Display for MerkleTreeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyLeaves => f.write_str("cannot build a Merkle tree from zero leaves"),
+            Self::IndexOutOfBounds { index, leaf_count } => write!(
+                f,
+                "Merkle proof index {index} out of bounds (tree has {leaf_count} leaves)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MerkleTreeError {}
 
 /// A complete Merkle tree built from leaf data.
 ///
@@ -210,15 +316,18 @@ pub struct MerkleTree {
 impl MerkleTree {
     /// Build a Merkle tree from raw leaf byte slices.
     ///
-    /// Panics if `leaves` is empty.
-    pub fn build(leaves: &[&[u8]]) -> Self {
-        assert!(!leaves.is_empty(), "cannot build tree from zero leaves");
+    /// AUDIT 2026-05-21 L-21: returns [`MerkleTreeError::EmptyLeaves`]
+    /// instead of panicking when `leaves` is empty.
+    pub fn build(leaves: &[&[u8]]) -> Result<Self, MerkleTreeError> {
+        if leaves.is_empty() {
+            return Err(MerkleTreeError::EmptyLeaves);
+        }
 
         let mut current: Vec<Tip5Hash> = leaves.iter().map(|l| hash_leaf(l)).collect();
         let mut levels = vec![current.clone()];
 
         while current.len() > 1 {
-            if current.len() % 2 != 0 {
+            if !current.len().is_multiple_of(2) {
                 let last = *current.last().unwrap();
                 current.push(last);
             }
@@ -232,7 +341,7 @@ impl MerkleTree {
             current = next;
         }
 
-        MerkleTree { levels }
+        Ok(MerkleTree { levels })
     }
 
     /// The Merkle root hash.
@@ -250,14 +359,20 @@ impl MerkleTree {
     /// Side convention (mirrors Hoon's `verify-chunk`):
     ///   Even index (left child)  -> sibling is RIGHT -> `side=false`
     ///   Odd index  (right child) -> sibling is LEFT  -> `side=true`
-    pub fn proof(&self, index: usize) -> Vec<ProofNode> {
-        assert!(index < self.levels[0].len(), "leaf index out of bounds");
+    ///
+    /// AUDIT 2026-05-21 L-21: returns [`MerkleTreeError::IndexOutOfBounds`]
+    /// instead of panicking on an out-of-range `index`.
+    pub fn proof(&self, index: usize) -> Result<Vec<ProofNode>, MerkleTreeError> {
+        let leaf_count = self.levels[0].len();
+        if index >= leaf_count {
+            return Err(MerkleTreeError::IndexOutOfBounds { index, leaf_count });
+        }
 
         let mut path = Vec::new();
         let mut idx = index;
 
         for level in &self.levels[..self.levels.len() - 1] {
-            let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
+            let sibling_idx = if idx.is_multiple_of(2) { idx + 1 } else { idx - 1 };
 
             let sibling_hash = if sibling_idx < level.len() {
                 level[sibling_idx]
@@ -273,7 +388,7 @@ impl MerkleTree {
             idx /= 2;
         }
 
-        path
+        Ok(path)
     }
 }
 
@@ -339,7 +454,7 @@ mod tests {
 
     #[test]
     fn build_4_leaf_tree_structure() {
-        let tree = MerkleTree::build(&enterprise_leaves());
+        let tree = MerkleTree::build(&enterprise_leaves()).unwrap();
         assert_eq!(tree.levels.len(), 3);
         assert_eq!(tree.levels[0].len(), 4);
         assert_eq!(tree.levels[1].len(), 2);
@@ -349,8 +464,8 @@ mod tests {
     #[test]
     fn tree_is_deterministic() {
         let leaves = enterprise_leaves();
-        let root1 = MerkleTree::build(&leaves).root();
-        let root2 = MerkleTree::build(&leaves).root();
+        let root1 = MerkleTree::build(&leaves).unwrap().root();
+        let root2 = MerkleTree::build(&leaves).unwrap().root();
         assert_eq!(root1, root2);
     }
 
@@ -359,11 +474,11 @@ mod tests {
     #[test]
     fn verify_all_leaves() {
         let leaves = enterprise_leaves();
-        let tree = MerkleTree::build(&leaves);
+        let tree = MerkleTree::build(&leaves).unwrap();
         let root = tree.root();
 
         for (i, leaf) in leaves.iter().enumerate() {
-            let proof = tree.proof(i);
+            let proof = tree.proof(i).unwrap();
             assert!(
                 verify_proof(leaf, &proof, &root),
                 "valid proof for leaf {} rejected",
@@ -375,9 +490,9 @@ mod tests {
     #[test]
     fn reject_tampered_leaf() {
         let leaves = enterprise_leaves();
-        let tree = MerkleTree::build(&leaves);
+        let tree = MerkleTree::build(&leaves).unwrap();
         let root = tree.root();
-        let proof = tree.proof(0);
+        let proof = tree.proof(0).unwrap();
 
         assert!(
             !verify_proof(b"TAMPERED DATA", &proof, &root),
@@ -388,8 +503,8 @@ mod tests {
     #[test]
     fn reject_wrong_root() {
         let leaves = enterprise_leaves();
-        let tree = MerkleTree::build(&leaves);
-        let proof = tree.proof(0);
+        let tree = MerkleTree::build(&leaves).unwrap();
+        let proof = tree.proof(0).unwrap();
         let wrong_root = [0xFFu64; 5];
 
         assert!(
@@ -416,12 +531,12 @@ mod tests {
     #[test]
     fn single_leaf_tree() {
         let leaves: Vec<&[u8]> = vec![b"only leaf"];
-        let tree = MerkleTree::build(&leaves);
+        let tree = MerkleTree::build(&leaves).unwrap();
 
         assert_eq!(tree.levels.len(), 1);
         assert_eq!(tree.root(), hash_leaf(b"only leaf"));
 
-        let proof = tree.proof(0);
+        let proof = tree.proof(0).unwrap();
         assert!(proof.is_empty());
         assert!(verify_proof(b"only leaf", &proof, &tree.root()));
     }
@@ -429,7 +544,7 @@ mod tests {
     #[test]
     fn three_leaf_tree_padding() {
         let leaves: Vec<&[u8]> = vec![b"a", b"b", b"c"];
-        let tree = MerkleTree::build(&leaves);
+        let tree = MerkleTree::build(&leaves).unwrap();
 
         // 3 leaves -> padded to 4 at level 0, then 2, then 1
         assert_eq!(tree.leaf_count(), 3);
@@ -437,17 +552,40 @@ mod tests {
 
         // All proofs verify
         for (i, leaf) in leaves.iter().enumerate() {
-            let proof = tree.proof(i);
+            let proof = tree.proof(i).unwrap();
             assert!(verify_proof(leaf, &proof, &tree.root()));
         }
+    }
+
+    // -- L-21 error paths --------------------------------------------------
+
+    #[test]
+    fn build_rejects_empty_leaves() {
+        let empty: Vec<&[u8]> = vec![];
+        assert!(matches!(
+            MerkleTree::build(&empty),
+            Err(MerkleTreeError::EmptyLeaves)
+        ));
+    }
+
+    #[test]
+    fn proof_rejects_out_of_bounds_index() {
+        let leaves: Vec<&[u8]> = vec![b"a", b"b"];
+        let tree = MerkleTree::build(&leaves).unwrap();
+        assert!(matches!(
+            tree.proof(2),
+            Err(MerkleTreeError::IndexOutOfBounds { index: 2, leaf_count: 2 })
+        ));
+        assert!(tree.proof(1).is_ok());
     }
 
     // -- tip5-to-atom encoding --------------------------------------------
 
     #[test]
     fn tip5_zero_encodes_to_zero() {
+        // AUDIT 2026-05-21 L-22: atom 0 is the empty LE byte string.
         let bytes = tip5_to_atom_le_bytes(&TIP5_ZERO);
-        assert_eq!(bytes, vec![0]);
+        assert!(bytes.is_empty());
     }
 
     #[test]
@@ -466,8 +604,31 @@ mod tests {
         // If this test fails after a nockchain-math update, cross-runtime
         // alignment is broken and needs investigation.
         let leaves = enterprise_leaves();
-        let root1 = MerkleTree::build(&leaves).root();
-        let root2 = MerkleTree::build(&leaves).root();
+        let root1 = MerkleTree::build(&leaves).unwrap().root();
+        let root2 = MerkleTree::build(&leaves).unwrap().root();
         assert_eq!(root1, root2, "root must be deterministic across builds");
+    }
+
+    // -- Field-range validation (C-04) ------------------------------------
+
+    #[test]
+    fn off_field_limbs_rejected() {
+        // PRIME is the smallest off-field value.
+        let off_field: Tip5Hash = [PRIME, 0, 0, 0, 0];
+        assert!(check_tip5_limbs(&off_field).is_err());
+        assert!(check_tip5_limbs(&[0, 0, 0, 0, u64::MAX]).is_err());
+        assert!(check_tip5_limbs(&[PRIME - 1, 0, 0, 0, 0]).is_ok());
+
+        // verify_proof must reject an off-field root or proof node rather
+        // than hashing it — a release build would otherwise compute a
+        // wrong-but-deterministic digest (debug_assert! is a no-op there).
+        let leaves: Vec<&[u8]> = vec![b"a", b"b"];
+        let tree = MerkleTree::build(&leaves).unwrap();
+        let proof = tree.proof(0).unwrap();
+        assert!(!verify_proof(b"a", &proof, &off_field));
+
+        let mut bad_proof = proof.clone();
+        bad_proof[0].hash = off_field;
+        assert!(!verify_proof(b"a", &bad_proof, &tree.root()));
     }
 }

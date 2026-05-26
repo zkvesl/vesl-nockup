@@ -1,11 +1,11 @@
 //! Generic Nock noun construction helpers for settlement payloads.
 //!
 //! These helpers build domain-agnostic noun structures (hashes, proof nodes,
-//! chunks, notes, register pokes) used by any hull. Domain-specific builders
+//! notes, register pokes) used by any hull. Domain-specific builders
 //! (manifest, settlement payload, settle/prove pokes) stay in the domain hull.
 
 use nock_noun_rs::{
-    make_atom, make_atom_in, make_cord, make_loobean,
+    atom_from_u64, make_atom, make_atom_in, make_loobean,
     Cell, D, NounSlab, NockStack, Noun, NounAllocator, T,
 };
 use nockchain_tip5_rs::tip5_to_atom_le_bytes;
@@ -52,31 +52,6 @@ pub fn proof_list_to_noun(stack: &mut NockStack, proof: &[ProofNode]) -> Noun {
     list
 }
 
-/// `+$chunk  [id=chunk-id dat=@t]`
-pub fn chunk_to_noun(stack: &mut NockStack, chunk: &Chunk) -> Noun {
-    let id = D(chunk.id);
-    let dat = make_cord(stack, &chunk.dat);
-    T(stack, &[id, dat])
-}
-
-/// `+$retrieval  [=chunk proof=merkle-proof score=@ud]`
-pub fn retrieval_to_noun(stack: &mut NockStack, r: &Retrieval) -> Noun {
-    let c = chunk_to_noun(stack, &r.chunk);
-    let p = proof_list_to_noun(stack, &r.proof);
-    let s = D(r.score);
-    T(stack, &[c, p, s])
-}
-
-/// `(list retrieval)` -> null-terminated right-leaning.
-pub fn retrieval_list_to_noun(stack: &mut NockStack, results: &[Retrieval]) -> Noun {
-    let mut list = D(0);
-    for r in results.iter().rev() {
-        let item = retrieval_to_noun(stack, r);
-        list = Cell::new(stack, item, list).as_noun();
-    }
-    list
-}
-
 /// `note=[id=@ hull=@ root=@ state=[%pending ~]]`
 ///
 /// In Nock: `[id [hull [root [%pending 0]]]]`
@@ -85,8 +60,9 @@ pub fn pending_note_to_noun(stack: &mut NockStack, note: &Note) -> Noun {
         matches!(note.state, NoteState::Pending),
         "settlement payload requires %pending note"
     );
-    let id = D(note.id);
-    let hull = D(note.hull);
+    // id/hull can exceed DIRECT_MAX (hash-derived for replay protection).
+    let id = atom_from_u64(stack, note.id);
+    let hull = atom_from_u64(stack, note.hull);
     let root = hash_to_noun(stack, &note.root);
     let tag = make_atom(stack, b"pending");
     let state = Cell::new(stack, tag, D(0)).as_noun(); // [%pending ~]
@@ -103,7 +79,8 @@ pub fn pending_note_to_noun(stack: &mut NockStack, note: &Note) -> Noun {
 pub fn build_register_poke(hull_id: u64, root: &Tip5Hash) -> NounSlab {
     let mut slab = NounSlab::new();
     let tag = make_atom_in(&mut slab, b"register");
-    let id = D(hull_id);
+    // Public API: callers may pass hash-derived hull IDs above DIRECT_MAX.
+    let id = atom_from_u64(&mut slab, hull_id);
     let root_noun = hash_to_noun_generic(&mut slab, root);
     let cause = T(&mut slab, &[tag, id, root_noun]);
     slab.set_root(cause);
@@ -117,19 +94,28 @@ pub fn build_register_poke(hull_id: u64, root: &Tip5Hash) -> NounSlab {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nock_noun_rs::new_stack;
+    use nock_noun_rs::{make_cord, new_stack};
 
     #[test]
     fn loobean_encoding() {
-        assert_eq!(make_loobean(true).as_atom().unwrap().as_u64().unwrap(), 0);
-        assert_eq!(make_loobean(false).as_atom().unwrap().as_u64().unwrap(), 1);
+        let stack = new_stack();
+        let space = stack.noun_space();
+        assert_eq!(
+            make_loobean(true).in_space(&space).as_atom().unwrap().as_u64().unwrap(),
+            0,
+        );
+        assert_eq!(
+            make_loobean(false).in_space(&space).as_atom().unwrap().as_u64().unwrap(),
+            1,
+        );
     }
 
     #[test]
     fn cord_encoding() {
         let mut stack = new_stack();
         let abc = make_cord(&mut stack, "abc");
-        let val = abc.as_atom().unwrap().as_u64().unwrap();
+        let space = stack.noun_space();
+        let val = abc.in_space(&space).as_atom().unwrap().as_u64().unwrap();
         assert_eq!(val, 97 + 98 * 256 + 99 * 65536);
     }
 
@@ -142,7 +128,8 @@ mod tests {
             .enumerate()
             .map(|(i, &b)| (b as u64) << (i * 8))
             .sum();
-        let val = tag.as_atom().unwrap().as_u64().unwrap();
+        let space = stack.noun_space();
+        let val = tag.in_space(&space).as_atom().unwrap().as_u64().unwrap();
         assert_eq!(val, expected);
     }
 
@@ -161,9 +148,10 @@ mod tests {
             },
         ];
         let list = proof_list_to_noun(&mut stack, &proof);
+        let space = stack.noun_space();
 
         assert!(list.is_cell(), "list must be a cell");
-        let first = list.as_cell().unwrap();
+        let first = list.in_space(&space).as_cell().unwrap();
         assert!(
             first.head().is_cell(),
             "first element must be a cell [hash side]"
@@ -183,8 +171,7 @@ mod tests {
     fn register_poke_is_cell() {
         let root: Tip5Hash = [1, 2, 3, 4, 5];
         let slab = build_register_poke(7, &root);
-        // C-001: centralized dereference
-        let root = unsafe { *slab.root() };
+        let root = nock_noun_rs::slab_root(&slab);
         assert!(root.is_cell(), "register poke must be a cell");
     }
 }

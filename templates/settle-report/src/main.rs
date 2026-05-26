@@ -1,0 +1,153 @@
+use std::error::Error;
+use std::fs;
+
+use nockapp::kernel::boot;
+use nockapp::noun::slab::NounSlab;
+use nockapp::wire::{SystemWire, Wire};
+use nockapp::NockApp;
+use nockvm::noun::{D, T, NounAllocator};
+use nockvm_macros::tas;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let cli = boot::default_boot_cli(false);
+    boot::init_default_tracing(&cli);
+
+    let kernel = load_kernel()?;
+
+    let mut app: NockApp =
+        boot::setup(&kernel, cli, &[], "settle-report", None).await?;
+
+    // Step 1: Commit data for ID 1; the kernel stores shax(data) as the commitment.
+    let mut slab = NounSlab::new();
+    let poke = T(&mut slab, &[
+        D(tas!(b"commit")),
+        D(1),                // id
+        D(42),               // data (kernel stores shax(42))
+    ]);
+    slab.set_root(poke);
+
+    println!("--- step 1: commit data for id=1 ---");
+    let effects = app.poke(SystemWire.to_wire(), slab).await?;
+    print_effects(&effects);
+
+    // Step 2: Settle with the same data — shax(42) matches the commitment (should succeed)
+    let mut slab = NounSlab::new();
+    let poke = T(&mut slab, &[
+        D(tas!(b"settle")),
+        D(1),                // same id
+        D(42),               // same data — hash matches
+    ]);
+    slab.set_root(poke);
+
+    println!("\n--- step 2: settle id=1 with correct data ---");
+    let effects = app.poke(SystemWire.to_wire(), slab).await?;
+    print_effects(&effects);
+
+    // Step 3: Try to settle again (replay — should reject)
+    let mut slab = NounSlab::new();
+    let poke = T(&mut slab, &[
+        D(tas!(b"settle")),
+        D(1),                // same id again
+        D(42),
+    ]);
+    slab.set_root(poke);
+
+    println!("\n--- step 3: replay settle id=1 (should reject) ---");
+    let effects = app.poke(SystemWire.to_wire(), slab).await?;
+    print_effects(&effects);
+
+    // Step 4: Try to settle uncommitted ID (should reject)
+    let mut slab = NounSlab::new();
+    let poke = T(&mut slab, &[
+        D(tas!(b"settle")),
+        D(999),              // no commitment for this id
+        D(42),
+    ]);
+    slab.set_root(poke);
+
+    println!("\n--- step 4: settle id=999 (no commitment) ---");
+    let effects = app.poke(SystemWire.to_wire(), slab).await?;
+    print_effects(&effects);
+
+    // Step 5: Commit + settle with wrong data (should reject)
+    let mut slab = NounSlab::new();
+    let poke = T(&mut slab, &[
+        D(tas!(b"commit")),
+        D(2),                // new id
+        D(100),              // commit hash of 100
+    ]);
+    slab.set_root(poke);
+
+    println!("\n--- step 5a: commit id=2 with data=100 ---");
+    let effects = app.poke(SystemWire.to_wire(), slab).await?;
+    print_effects(&effects);
+
+    let mut slab = NounSlab::new();
+    let poke = T(&mut slab, &[
+        D(tas!(b"settle")),
+        D(2),                // same id
+        D(999),              // wrong data — shax(999) != shax(100)
+    ]);
+    slab.set_root(poke);
+
+    println!("--- step 5b: settle id=2 with wrong data (should reject) ---");
+    let effects = app.poke(SystemWire.to_wire(), slab).await?;
+    print_effects(&effects);
+
+    Ok(())
+}
+
+/// Read `out.jam` and verify its integrity before boot.
+///
+/// When `VESL_KERNEL_SHA256` is set, the kernel's sha256 must match it or
+/// boot is refused; when unset, boot proceeds with a warning. This keeps
+/// the edit-Hoon / recompile / rerun loop fast while letting a production
+/// deploy pin the kernel hash (audit C-01).
+fn load_kernel() -> Result<Vec<u8>, Box<dyn Error>> {
+    use sha2::{Digest, Sha256};
+
+    let kernel =
+        fs::read("out.jam").map_err(|e| format!("Failed to read out.jam: {e}"))?;
+    match std::env::var("VESL_KERNEL_SHA256") {
+        Ok(expected) => {
+            let expected = expected.trim();
+            let actual: String = Sha256::digest(&kernel)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            if actual != expected {
+                return Err(format!(
+                    "out.jam sha256 mismatch: expected {expected}, got {actual} \
+                     — refusing to boot"
+                )
+                .into());
+            }
+        }
+        Err(_) => eprintln!(
+            "warning: out.jam integrity unverified — \
+             set VESL_KERNEL_SHA256 to pin the kernel hash"
+        ),
+    }
+    Ok(kernel)
+}
+
+fn print_effects(effects: &[NounSlab]) {
+    if effects.is_empty() {
+        println!("  (no effects — kernel nacked)");
+        return;
+    }
+    for effect in effects.iter() {
+        let noun = unsafe { effect.root() };
+        let space = effect.noun_space();
+        if let Ok(cell) = noun.in_space(&space).as_cell() {
+            if let Ok(tag) = cell.head().as_atom() {
+                let tag_bytes = tag.as_ne_bytes();
+                let tag_str = std::str::from_utf8(tag_bytes)
+                    .unwrap_or("?")
+                    .trim_end_matches('\0');
+                println!("  effect: %{}", tag_str);
+            }
+        }
+    }
+}

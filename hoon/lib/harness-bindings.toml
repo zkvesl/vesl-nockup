@@ -1,0 +1,436 @@
+# harness-bindings.toml — sidecar metadata for `nockup-graft codegen
+# harness-methods`. Declares the Rust signature of every shipped poke
+# arm so the codegen can emit typed methods on `GraftTestHarness`, plus
+# the per-graft error / rejected / denied effect shapes so the codegen
+# can emit typed outcome enums.
+#
+# Scope: vesl-nockup-only sidecar (not in vesl-core's canonical
+# manifests). Eliminates cross-repo coupling for the first cut of
+# manifest-driven Rust codegen — see .dev/vesl-nockup-v2.0.md for the
+# planned migration into the per-graft `*-graft.toml` files.
+#
+# Schema per graft block:
+#
+#   [[graft]]
+#   name = "<graft>"            # base name without "-graft" suffix
+#
+#   [[graft.pokes]]
+#   tag     = "<cause-tag>"     # the %<cause-tag> the kernel accepts;
+#                               # asserted via assert_kernel_cause_tag!
+#   method  = "<snake_case>"    # method name on GraftTestHarness
+#   builder = "build_<...>_poke" # function in vesl_core:: to delegate to
+#   args    = [{ name = "<n>", rust = "<rust-type>" }, ...]
+#                               # arg names + Rust types as text;
+#                               # substituted into the method signature
+#                               # and forwarded positionally to the
+#                               # builder
+#
+#   [[graft.errors]]            # [%<graft>-error msg=@t] effects
+#   tag = "<graft>-error"
+#
+#   [[graft.rejected]]          # typed rejection effects beyond the
+#                               # generic %<graft>-error cord
+#   tag    = "<graft>-...-rejected"
+#   fields = [{ name = "<n>", rust = "<rust-type>", decode = "<helper>" }, ...]
+#
+#   [[graft.denied]]            # %<graft>-denied reason=@t effects
+#   tag = "<graft>-denied"
+#
+# Excluded from this sidecar:
+#   - intent-graft  — placeholder; every arm crashes with
+#                     %intent-graft-placeholder, no point in generating
+#                     typed methods that always return Crashed.
+#   - settle convenience builders (schnorr / ed25519 / membership /
+#                     bounded / manifest) — take types from
+#                     nockchain-types that aren't re-exported through
+#                     vesl-core, would add a new dep to vesl-test.
+#                     The `poke_slab(build_..._poke(...))` escape hatch
+#                     stays available.
+#   - Deprecated `build_vesl_*_poke` aliases — already shimmed.
+#   - Closure-based `*_poke_with_data` variants — generic callers,
+#                     don't fit the typed-args codegen shape.
+
+schema_version = 1
+
+# -- batch-graft (priority 130) -------------------------------------------
+
+[[graft]]
+name = "batch"
+
+[[graft.pokes]]
+tag     = "batch-init"
+method  = "batch_init"
+builder = "build_batch_init_poke"
+args    = [{ name = "threshold", rust = "u64" }]
+
+[[graft.pokes]]
+tag     = "batch-add"
+method  = "batch_add"
+builder = "build_batch_add_poke"
+args    = [{ name = "intent_jammed", rust = "&[u8]" }]
+
+[[graft.pokes]]
+tag     = "batch-add"
+method  = "batch_add_from_noun"
+builder = "build_batch_add_poke_from_noun"
+args    = [{ name = "payload", rust = "&NounSlab" }]
+
+[[graft.pokes]]
+tag     = "batch-flush"
+method  = "batch_flush"
+builder = "build_batch_flush_poke"
+args    = []
+
+[[graft.errors]]
+tag = "batch-error"
+
+# -- clock-graft (priority 90) -------------------------------------------
+
+[[graft]]
+name = "clock"
+
+[[graft.pokes]]
+tag     = "clock-tick"
+method  = "clock_tick"
+builder = "build_clock_tick_poke"
+args    = []
+
+[[graft.errors]]
+tag = "clock-error"
+
+# -- counter-graft (priority 60) -----------------------------------------
+
+[[graft]]
+name = "counter"
+
+[[graft.pokes]]
+tag     = "counter-increment"
+method  = "counter_increment"
+builder = "build_counter_increment_poke"
+args    = [{ name = "name", rust = "&str" }]
+
+[[graft.pokes]]
+tag     = "counter-reset"
+method  = "counter_reset"
+builder = "build_counter_reset_poke"
+args    = [{ name = "name", rust = "&str" }]
+
+[[graft.pokes]]
+tag     = "counter-set"
+method  = "counter_set"
+builder = "build_counter_set_poke"
+args    = [{ name = "name", rust = "&str" }, { name = "value", rust = "u64" }]
+
+[[graft.errors]]
+tag = "counter-error"
+
+# -- forge-graft (priority 40) -------------------------------------------
+
+[[graft]]
+name = "forge"
+
+[[graft.pokes]]
+tag     = "forge-prove"
+method  = "forge_prove"
+builder = "build_forge_prove_poke"
+args    = [
+    { name = "hull",    rust = "u64"   },
+    { name = "note_id", rust = "u64"   },
+    { name = "data",    rust = "&[u8]" },
+]
+
+[[graft.errors]]
+tag = "forge-error"
+
+# -- guard-graft (priority 30) -------------------------------------------
+
+[[graft]]
+name = "guard"
+
+[[graft.pokes]]
+tag     = "guard-register"
+method  = "guard_register"
+builder = "build_guard_register_poke"
+args    = [
+    { name = "hull", rust = "u64"        },
+    { name = "root", rust = "&Tip5Hash"  },
+]
+
+[[graft.pokes]]
+tag     = "guard-check"
+method  = "guard_check"
+builder = "build_guard_check_poke"
+args    = [
+    { name = "hull", rust = "u64"   },
+    { name = "data", rust = "&[u8]" },
+]
+
+[[graft.errors]]
+tag = "guard-error"
+
+# -- kv-graft (priority 50) ----------------------------------------------
+
+[[graft]]
+name = "kv"
+
+[[graft.pokes]]
+tag     = "kv-set"
+method  = "kv_set"
+builder = "build_kv_set_poke"
+args    = [{ name = "key", rust = "&str" }, { name = "value", rust = "&[u8]" }]
+
+[[graft.pokes]]
+tag     = "kv-delete"
+method  = "kv_delete"
+builder = "build_kv_delete_poke"
+args    = [{ name = "key", rust = "&str" }]
+
+[[graft.errors]]
+tag = "kv-error"
+
+# -- log-graft (priority 110) --------------------------------------------
+
+[[graft]]
+name = "log"
+
+[[graft.pokes]]
+tag     = "log-append"
+method  = "log_append"
+builder = "build_log_append_poke"
+args    = [
+    { name = "tag",         rust = "&str"  },
+    { name = "data_jammed", rust = "&[u8]" },
+]
+
+[[graft.pokes]]
+tag     = "log-append"
+method  = "log_append_from_noun"
+builder = "build_log_append_poke_from_noun"
+args    = [
+    { name = "tag",     rust = "&str"      },
+    { name = "payload", rust = "&NounSlab" },
+]
+
+[[graft.errors]]
+tag = "log-error"
+
+# -- mint-graft (priority 20) --------------------------------------------
+
+[[graft]]
+name = "mint"
+
+[[graft.pokes]]
+tag     = "mint-commit"
+method  = "mint_commit"
+builder = "build_mint_commit_poke"
+args    = [
+    { name = "hull", rust = "u64"        },
+    { name = "root", rust = "&Tip5Hash"  },
+]
+
+[[graft.errors]]
+tag = "mint-error"
+
+# -- queue-graft (priority 70) -------------------------------------------
+
+[[graft]]
+name = "queue"
+
+[[graft.pokes]]
+tag     = "queue-push"
+method  = "queue_push"
+builder = "build_queue_push_poke"
+args    = [{ name = "body_jammed", rust = "&[u8]" }]
+
+[[graft.pokes]]
+tag     = "queue-push"
+method  = "queue_push_from_noun"
+builder = "build_queue_push_poke_from_noun"
+args    = [{ name = "payload", rust = "&NounSlab" }]
+
+[[graft.pokes]]
+tag     = "queue-pop"
+method  = "queue_pop"
+builder = "build_queue_pop_poke"
+args    = []
+
+[[graft.pokes]]
+tag     = "queue-clear"
+method  = "queue_clear"
+builder = "build_queue_clear_poke"
+args    = []
+
+[[graft.errors]]
+tag = "queue-error"
+
+# -- rbac-graft (priority 80) --------------------------------------------
+
+[[graft]]
+name = "rbac"
+
+[[graft.pokes]]
+tag     = "rbac-grant"
+method  = "rbac_grant"
+builder = "build_rbac_grant_poke"
+args    = [
+    { name = "pubkey", rust = "u64"      },
+    { name = "perms",  rust = "&[&str]"  },
+]
+
+[[graft.pokes]]
+tag     = "rbac-revoke"
+method  = "rbac_revoke"
+builder = "build_rbac_revoke_poke"
+args    = [
+    { name = "pubkey", rust = "u64"      },
+    { name = "perms",  rust = "&[&str]"  },
+]
+
+[[graft.errors]]
+tag = "rbac-error"
+
+# -- registry-graft (priority 100) ---------------------------------------
+
+[[graft]]
+name = "registry"
+
+[[graft.pokes]]
+tag     = "registry-put"
+method  = "registry_put"
+builder = "build_registry_put_poke"
+args    = [
+    { name = "key",            rust = "u64"   },
+    { name = "record_jammed",  rust = "&[u8]" },
+]
+
+[[graft.pokes]]
+tag     = "registry-put"
+method  = "registry_put_from_noun"
+builder = "build_registry_put_poke_from_noun"
+args    = [
+    { name = "key",    rust = "u64"       },
+    { name = "record", rust = "&NounSlab" },
+]
+
+[[graft.pokes]]
+tag     = "registry-update"
+method  = "registry_update"
+builder = "build_registry_update_poke"
+args    = [
+    { name = "key",            rust = "u64"   },
+    { name = "record_jammed",  rust = "&[u8]" },
+]
+
+[[graft.pokes]]
+tag     = "registry-update"
+method  = "registry_update_from_noun"
+builder = "build_registry_update_poke_from_noun"
+args    = [
+    { name = "key",    rust = "u64"       },
+    { name = "record", rust = "&NounSlab" },
+]
+
+[[graft.pokes]]
+tag     = "registry-del"
+method  = "registry_del"
+builder = "build_registry_del_poke"
+args    = [{ name = "key", rust = "u64" }]
+
+[[graft.errors]]
+tag = "registry-error"
+
+# -- settle-graft (priority 10) ------------------------------------------
+#
+# Only the core register / verify / note are bound. The convenience
+# builders for schnorr / ed25519 / membership / bounded / manifest gates
+# take types from nockchain-types that aren't re-exported from
+# vesl-core; binding them would force a new dep on vesl-test. Use
+# `poke_slab(build_settle_note_schnorr_poke(...))` for those.
+
+[[graft]]
+name = "settle"
+
+[[graft.pokes]]
+tag     = "settle-register"
+method  = "settle_register"
+builder = "build_settle_register_poke"
+args    = [
+    { name = "hull", rust = "u64"        },
+    { name = "root", rust = "&Tip5Hash"  },
+]
+
+[[graft.pokes]]
+tag     = "settle-verify"
+method  = "settle_verify"
+builder = "build_settle_verify_poke"
+args    = [
+    { name = "note_id", rust = "u64"        },
+    { name = "hull",    rust = "u64"        },
+    { name = "root",    rust = "&Tip5Hash"  },
+    { name = "data",    rust = "&[u8]"      },
+]
+
+[[graft.pokes]]
+tag     = "settle-note"
+method  = "settle_note"
+builder = "build_settle_note_poke"
+args    = [
+    { name = "note_id", rust = "u64"        },
+    { name = "hull",    rust = "u64"        },
+    { name = "root",    rust = "&Tip5Hash"  },
+    { name = "data",    rust = "&[u8]"      },
+]
+
+[[graft.errors]]
+tag = "settle-error"
+
+# [%settle-register-rejected hull=@ existing-root=@] — typed kernel
+# rejection when a hull is already registered with a different root.
+# `existing_root` is the registered Tip5 hash; decoded as raw bytes for
+# now (the @ may exceed Tip5Hash's 5-felt layout in pathological cases).
+[[graft.rejected]]
+tag    = "settle-register-rejected"
+fields = [
+    { name = "hull",          rust = "u64"     },
+    { name = "existing_root", rust = "Vec<u8>" },
+]
+
+# [%settle-denied reason=@t] — gate-clean-deny. The verify gate returned
+# `%.n` and the kernel emitted a typed denied effect with the human-
+# readable reason cord.
+[[graft.denied]]
+tag = "settle-denied"
+
+# -- validate-graft (priority 120) ---------------------------------------
+
+[[graft]]
+name = "validate"
+
+[[graft.pokes]]
+tag     = "validate-init"
+method  = "validate_init"
+builder = "build_validate_init_poke"
+args    = [
+    { name = "cause_tag", rust = "&str"          },
+    { name = "rules",     rust = "&[ValidateRule]" },
+]
+
+[[graft.pokes]]
+tag     = "validate-clear"
+method  = "validate_clear"
+builder = "build_validate_clear_poke"
+args    = [{ name = "cause_tag", rust = "&str" }]
+
+[[graft.errors]]
+tag = "validate-error"
+
+# [%validate-rejected cause-tag=@ta reason=@t] — validate-graft's
+# poke-prelude short-circuits a downstream cause whose validation rules
+# failed; the rejected effect carries the cause-tag that was blocked
+# and a free-text reason cord.
+[[graft.rejected]]
+tag    = "validate-rejected"
+fields = [
+    { name = "cause_tag", rust = "String" },
+    { name = "reason",    rust = "String" },
+]

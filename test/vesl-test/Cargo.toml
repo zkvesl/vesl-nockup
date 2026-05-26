@@ -1,18 +1,63 @@
 [package]
 name = "vesl-test"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 edition = "2024"
 description = "Test harness for grafted NockApp kernels — boot, poke, assert effects"
-license = "MIT"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "vesl-test"
+path = "src/bin/vesl_test.rs"
 
 [dependencies]
-vesl-core = { path = "../../crates/vesl-core" }
+# vesl-core crates live inside vesl-nockup/crates/ (bundled copy synced
+# from upstream by sync.sh). Tip5Hash + tip5_to_atom_le_bytes flow through
+# vesl-core's re-exports — no direct nockchain-tip5-rs dep needed.
+vesl-core    = { path = "../../crates/vesl-core" }
 nock-noun-rs = { path = "../../crates/nock-noun-rs" }
-nockchain-tip5-rs = { path = "../../crates/nockchain-tip5-rs" }
 
-nockapp = { git = "https://github.com/nockchain/nockchain.git", default-features = false }
-nockvm = { git = "https://github.com/nockchain/nockchain.git" }
-nockvm_macros = { git = "https://github.com/nockchain/nockchain.git" }
+# nockchain monorepo crates: must use the same source as vesl-core's
+# transitive deps or we get duplicate `nockvm`/`nockapp` versions in the
+# graph and `nock_noun_rs::Noun` stops type-equating to `nockapp::Noun`.
+# vesl-core uses path = "../../../nockchain/crates/...", so we mirror.
+#
+# slog-tracing routes Hoon `~> %slog.[pri text]` through tracing macros
+# (priority 1 → warn, priority 0 → info, etc.) so PokeReport's capture
+# layer can scoop them. Without this feature the slogs go straight to
+# stderr and our Layer never sees them.
+nockapp        = { path = "../../../nockchain/crates/nockapp", default-features = false, features = ["slog-tracing"] }
+nockvm         = { path = "../../../nockchain/crates/nockvm/rust/nockvm" }
+nockvm_macros  = { path = "../../../nockchain/crates/nockvm/rust/nockvm_macros" }
 
 anyhow = "1.0"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+serde_json = "1"
+# verify-jam subcommand recomputes sha256s of source files listed in
+# the .out-jam-source-fingerprint sidecar.
+sha2 = "0.10"
+# Read [project].kernel_name from a project's nockapp.toml so the
+# verify-jam hint strings reference the user's actual kernel filename
+# rather than the default `app.hoon`.
+toml = "0.8"
+# The `vesl-test watch` subcommand reads stdin (io-std),
+# spawns the run loop and a render task (rt-multi-thread), uses
+# `tokio::sync::broadcast` to subscribe to the kernel's
+# effect_broadcast (sync), and bounds per-event effect drains with
+# `tokio::time::sleep` (time). `select!` + the `tokio::main` macro need
+# `macros`. The other subcommands don't depend on the additional
+# features — they're additive.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Per-instance data dir for GraftTestHarness — keeps lifecycle tests
+# isolated from each other's event-log / pma state. Without this, every
+# harness boot writes into cwd-rooted `./.data.vesl-test/` and replays
+# prior tests' events.
+tempfile = "3"
+
+[dev-dependencies]
+# vesl-checkpoint is the synced bundle from vesl-core; harness-level
+# integration tests use snapshot/resume to verify state-equivalence
+# across composition changes.
+vesl-checkpoint = { path = "../../crates/vesl-checkpoint" }

@@ -5,6 +5,38 @@
 ::  Import this for Merkle commitment, leaf hashing, and proof
 ::  verification in any verification gate.
 ::
+::  Shared-merkle surface — the following arms are the stable
+::  primitives every graft (mint, guard, settle, forge) reuses.
+::  Do not rename or reshape without coordinating across all
+::  four primitives; the graft-inject manifest imports block
+::  pastes `/+  *vesl-merkle` into composed kernels under the
+::  assumption that these arms exist by these names.
+::
+::    hash-leaf       tip5 hash of raw atom data.  Used by mint
+::                    for commitment, by guard for leaf check,
+::                    by settle's default verify-gate, by forge
+::                    for Fiat-Shamir leaf binding.
+::    hash-leaf-digest  same hash as hash-leaf, but returned as a
+::                    noun-digest:tip5 instead of a flat atom.  Used
+::                    where a downstream sponge consumer wants the
+::                    5-belt shape directly (e.g. schnorr verify's
+::                    message digest).
+::    hash-pair       tip5 pair hash of two digest atoms.  Used
+::                    inside verify-chunk and by any graft that
+::                    folds up an internal Merkle node.
+::    verify-chunk    prove a chunk is bound to a Merkle root via
+::                    a sibling-hash proof.  Depth-capped at 64.
+::    verify-payload  generic Merkle-inclusion check over parallel
+::                    lists of leaves and proofs against an expected
+::                    root.  Domain-agnostic; used by guard/settle
+::                    kernels in place of any RAG-specific manifest
+::                    verifier.
+::    split-to-belts  atom -> 7-byte field-element list.  Used by
+::                    forge's belt-digest fold and by any gate that
+::                    wants to hash cell-shaped data as a flat atom.
+::    belts-to-atom   inverse of split-to-belts.  Used by Rust-side
+::                    reconstruction paths that consume belt lists.
+::
 /=  *  /common/zeke
 ::
 |%
@@ -47,6 +79,20 @@
   =/  n=@  (lent belts)
   (digest-to-atom:tip5 (hash-belts-list:tip5 [n belts]))
 ::
+::  +hash-leaf-digest: tip5 hash of raw leaf data, as a digest
+::
+::  Same chunking + sponge as hash-leaf, returned as the 5-belt
+::  noun-digest:tip5 without the digest-to-atom step.  Use when the
+::  consumer is itself a sponge (schnorr verify's message digest,
+::  for instance) instead of a flat-atom commitment.
+::
+++  hash-leaf-digest
+  |=  dat=@
+  ^-  noun-digest:tip5
+  =/  belts=(list @)  (split-to-belts dat)
+  =/  n=@  (lent belts)
+  (hash-belts-list:tip5 [n belts])
+::
 ::  +hash-pair: tip5 pair hash of two digest atoms
 ::
 ::  Converts each flat atom back to a 5-limb noun-digest,
@@ -59,6 +105,18 @@
   =/  rd=noun-digest:tip5  (atom-to-digest:tip5 r)
   (digest-to-atom:tip5 (hash-ten-cell:tip5 [ld rd]))
 ::
+::  +max-tip5-atom: largest atom that decodes to an in-field tip5 digest
+::
+::  atom-to-digest:tip5 decomposes an atom base-p into five belts but
+::  leaves the fifth limb as the final quotient — an atom >= p^5 yields
+::  a limb >= p, which crashes the field arithmetic inside hash-ten-cell.
+::  verify-chunk guards attacker-supplied sibling hashes against this
+::  ceiling so an out-of-range proof fails soft instead of panicking.
+::
+++  max-tip5-atom
+  ^~  ^-  @
+  (dec (pow p 5))
+::
 ::  +verify-chunk: prove a chunk is mathematically bound to a Merkle root
 ::
 ::  Strictly tail-recursive (|-) for efficient ZKVM circuit translation.
@@ -69,14 +127,64 @@
 ++  verify-chunk
   |=  [chunk=@ proof=(list [hash=@ side=?]) expected-root=@]
   ^-  ?
-  ?:  (gth (lent proof) 64)  %.n
+  ::  AUDIT 2026-04-19 M-13: slog on depth-cap overflow so operators
+  ::  can distinguish "proof too deep" from "proof hashes mismatch."
+  ::  Kept as soft %.n (not a crash) to preserve the loobean contract
+  ::  callers depend on in %verify arms. 64 supports 2^64 leaves, so
+  ::  a legitimate caller will never trip this.
+  ::
+  ?:  (gth (lent proof) 64)
+    ~>  %slog.[3 'vesl-merkle: proof exceeds 64-node cap']
+    %.n
   =/  cur=@  (hash-leaf chunk)
   |-
   ?~  proof
     =(cur expected-root)
+  ::  AUDIT 2026-05-20 M-03: a sibling hash >= p^5 decodes to an
+  ::  out-of-field tip5 limb and crashes hash-pair.  Reject as soft
+  ::  %.n so an attacker-crafted proof fails verification rather than
+  ::  panicking the kernel poke (mirrors the depth-cap contract above).
+  ::
+  ?:  (gth hash.i.proof max-tip5-atom)
+    ~>  %slog.[3 'vesl-merkle: sibling hash exceeds tip5 field range']
+    %.n
   =/  nex=@
     ?:  side.i.proof
       (hash-pair hash.i.proof cur)
     (hash-pair cur hash.i.proof)
   $(cur nex, proof t.proof)
+::
+::  +verify-payload: generic Merkle-inclusion check over parallel lists
+::
+::  Walks (leaves, proofs) in lock-step.  Each leaf must hash to a leaf
+::  position whose sibling chain resolves to expected-root.  Returns
+::  %.y iff lists are equal-length, non-empty, AND every (leaf, proof)
+::  pair verifies against expected-root.
+::
+::  AUDIT 2026-05-25 H-24: an empty leaves list is rejected at the API
+::  edge.  Without that guard the inner `?~ leaves %.y` trap fires
+::  vacuously for any caller submitting `[leaves=~ proofs=~]`, and
+::  guard-kernel / settle-kernel — both of which call this directly
+::  with attacker-supplied lists from the cued payload — would mark
+::  arbitrary (note, root) tuples as verified, settling without data.
+::  An empty payload is not a valid commitment to expected-root for
+::  any expected-root; callers must hold at least one leaf.
+::
+::  Domain-agnostic.  guard-kernel and settle-kernel call this in place
+::  of any RAG-specific verifier.  RAG manifest verification (prompt
+::  reconstruction etc.) lives outside this primitive — wrap it.
+::
+++  verify-payload
+  |=  $:  leaves=(list @t)
+          proofs=(list (list [hash=@ side=?]))
+          expected-root=@
+      ==
+  ^-  ?
+  ?:  =(~ leaves)  %.n
+  ?.  =((lent leaves) (lent proofs))  %.n
+  |-
+  ?~  leaves  %.y
+  ?~  proofs  %.n
+  ?.  (verify-chunk i.leaves i.proofs expected-root)  %.n
+  $(leaves t.leaves, proofs t.proofs)
 --

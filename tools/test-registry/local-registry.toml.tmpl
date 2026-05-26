@@ -1,0 +1,24 @@
+# Local-registry fixture for end-to-end testing of nockup project init
+# against vesl-nockup (the templates + the zkvesl/vesl-graft package).
+#
+# `__VESL_NOCKUP_PATH__` is replaced with the absolute path of the local
+# vesl-nockup checkout by tools/test-registry/run-init.sh, then written
+# to a tempdir as `registry.toml` and pointed at via NOCKUP_REGISTRY_URL.
+#
+# Once `zkvesl/vesl-graft` lands in the upstream typhoon registry, this
+# fixture is no longer required for `nockup project init` — but it stays
+# useful as a CI gate so registry-side breakage is caught before
+# publishing changes to typhoon.
+
+[workspace.zkvesl]
+git_url = "file://__VESL_NOCKUP_PATH__"
+ref = "vesl-nockup-integration"
+description = "Vesl graft library distribution"
+root_path = "hoon"
+
+[[package]]
+name = "zkvesl/vesl-graft"
+workspace = "zkvesl"
+path = "lib"
+file = ""
+dependencies = []

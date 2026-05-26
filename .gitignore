@@ -1,5 +1,9 @@
 target/
 .vesl-target/
+# Cargo.lock — untracked repo-wide; templates ship lock-free (they
+# resolve nockchain via git-deps) and the workspace lock is regenerated.
+# (audit M-27: sync.sh --verify's Cargo.lock exclusion is intentional,
+# not a drift gap — no template Cargo.lock is tracked.)
 Cargo.lock
 **/*.rs.bk
 .vscode/
@@ -8,3 +12,12 @@ Cargo.lock
 .DS_Store
 out.jam
 .dev/
+CLAUDE.md
+*.nock
+.data.*/
+sync.sh
+.claude/
+
+# Release tooling (maintainer-local; release.yml workflow stays tracked)
+/scripts/release.sh
+/scripts/release-notes.template.md

@@ -1,0 +1,60 @@
+name: Bug report
+description: A behavior in nockup-graft, vesl-test, sync.sh, vesl-hull, or a shipped template that doesn't match what the code or docs say it should do.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug.
+
+        **Security issues do not belong here.** Anything that lets a malicious
+        binary hijack `cargo build`, breaks the supply-chain mirror, or
+        compromises the vesl-hull HTTP surface — report privately via
+        [GitHub Security Advisories](https://github.com/zkvesl/vesl-nockup/security/advisories/new).
+
+        If the bug is in unmodified vesl-core or vesl-wallet code mirrored
+        under `crates/`, please file it against the source repo instead.
+  - type: input
+    id: surface
+    attributes:
+      label: Surface
+      description: nockup-graft / vesl-test / sync.sh / vesl-hull / a specific template?
+      placeholder: e.g. "nockup-graft doctor" or "templates/graft-mint/build.rs"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you observe? What did you expect?
+      placeholder: |
+        I ran `nockup graft inject [...]` and it [...].
+        I expected [...].
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Shortest path to trigger the bug. Include commands, project layout, relevant nockapp.toml fragments.
+      render: shell
+    validations:
+      required: false
+  - type: input
+    id: commit
+    attributes:
+      label: Commit / version
+      description: vesl-nockup SHA on `dev`, release tag, or a downstream installation.
+      placeholder: e.g. "dev@b11f3bf" or "v0.2.0-beta.1"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, rustc nightly date, hoonc version, NOCKUP_GRAFT_BIN / HOONC_BIN if set.
+      placeholder: |
+        Linux 6.18; rustc nightly-2026-01-15; hoonc 0.2.0
+    validations:
+      required: false

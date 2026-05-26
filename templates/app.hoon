@@ -16,9 +16,19 @@
       ::  nockup:state
   ==
 ::
-::  effect is `*` so grafted vesl-effects pass through without molding.
-::  constrain this yourself once you know your domain's effect shape.
+::  domain-effect is your app's effect union. Add variants here as
+::  your app emits them. The codegen-generated `+$ effect` below
+::  splats domain-effect into a typed union with all graft effects.
 ::
+::  nockup:domain-effect
++$  domain-effect
+  $%  [%domain-placeholder ~]
+  ==
+::
+::  graft-inject codegen replaces the open `+$ effect *` below with a
+::  typed union. Do not edit the codegen banner block by hand.
+::
+::  nockup:effect-union
 +$  effect  *
 ::
 +$  cause
@@ -35,8 +45,14 @@
   ++  load
     |=  old-state=versioned-state
     ^-  _state
-    ?:  =(-.old-state %v1)
-      old-state
+    ::  graft-inject codegen replaces the placeholder below with a
+    ::  `=/  defaults  ^*(versioned-state)` + `%_  defaults  ...  ==`
+    ::  overlay so resumed snapshots with a smaller noun shape get the
+    ::  current kernel's per-graft defaults instead of garbage at the
+    ::  new axes. See README "State checkpoints" for the schema-extension
+    ::  migration semantics.
+    ::
+    ::  nockup:load-defaults
     old-state
   ::
   ++  peek
@@ -50,16 +66,24 @@
     ^-  [(list effect) _state]
     =/  act  ((soft cause) cause.input.ovum)
     ?~  act
-      ~>  %slog.[3 (crip "invalid cause {<cause.input.ovum>}")]
-      :_  state
-      ^-  (list effect)
-      ~[[%effect 'Invalid cause format']]
-    ?-    -.u.act
-        %cause
-      ~>  %slog.[1 'poked']
+      ::  Soft-cast can fail on atom-typed input as well as cells with
+      ::  unknown heads, so guard both before reading the tag.
+      =/  tag=@tas
+        ?@  cause.input.ovum  `@tas`cause.input.ovum
+        ?@  -.cause.input.ovum  `@tas`-.cause.input.ovum
+        %unknown
+      ~>  %slog.[1 (crip "invalid cause [{<tag>} ...] (full: {<cause.input.ovum>})")]
       [~ state]
-      ::  nockup:poke
-    ==
+    ::  nockup:poke-prelude
+    =/  out=[efx=(list effect) new=_state]
+      ?-    -.u.act
+          %cause
+        ~>  %slog.[1 'poked']
+        [~ state]
+        ::  nockup:poke
+      ==
+    ::  nockup:poke-postlude
+    out
   --
 --
 ((moat |) inner)
