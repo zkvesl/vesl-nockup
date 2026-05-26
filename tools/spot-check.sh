@@ -71,7 +71,11 @@ cp -r "$NOCKUP_DIR/hoon" "$SKIP_DIR/skip-direct-$PROFILE/"
 cp "$NOCKUP_DIR/templates/app.hoon" "$SKIP_DIR/skip-direct-$PROFILE/hoon/app/app.hoon"
 
 cd "$SKIP_DIR/skip-direct-$PROFILE"
-graft-inject inject --grafts "$GRAFTS" --apply hoon/app/app.hoon > /tmp/spot-check-direct-grafts.txt 2>&1
+graft-inject inject \
+  --grafts "$GRAFTS" \
+  --accept-untrusted-libs \
+  --apply hoon/app/app.hoon \
+  > /tmp/spot-check-direct-grafts.txt 2>&1
 hoonc --new hoon/app/app.hoon hoon/ > /dev/null 2>&1
 
 if [[ ! -s out.jam ]]; then
