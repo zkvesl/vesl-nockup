@@ -7,7 +7,7 @@
 
 [vesl-core]
 repo = "https://github.com/zkvesl/vesl-core"
-pin  = "0e74e06050248fb98bcd22b7ed28654907103434"
+pin  = "bbb1c3cc748d58ddff0fc169ef3f68d89b255b4c"
 
 [vesl-wallet]
 repo = "https://github.com/zkvesl/vesl-wallet"

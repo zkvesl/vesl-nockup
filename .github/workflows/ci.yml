@@ -14,7 +14,7 @@ on:
 
 env:
   NOCK_PIN: dfc97ecc877687fc7ca972ebc71877df6e80d92b
-  VESL_CORE_PIN: 0e74e06050248fb98bcd22b7ed28654907103434
+  VESL_CORE_PIN: bbb1c3cc748d58ddff0fc169ef3f68d89b255b4c
   VESL_WALLET_PIN: 75db6077bfa02c5b6d05a081b61c1ee3dc8dc1f4
   # honk (the fleet's primary Hoon compiler) is built from HONK_REV:
   # NOCK_PIN plus fixes staged on the sobchek fork pending upstream
@@ -121,7 +121,10 @@ jobs:
         # compiler at build-time; the runner image doesn't ship it.
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          # Pinned, not floating — see the clippy job's note.
+          toolchain: nightly-2026-04-03
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -185,8 +188,12 @@ jobs:
         # compiler at build-time; the runner image doesn't ship it.
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
         with:
+          # Pinned, not floating: the newest nightly deprecates
+          # Atomic::fetch_update, which nockapp still calls — under
+          # -D warnings that is a hard error. Track nockchain's pin.
+          toolchain: nightly-2026-04-03
           components: clippy
 
       - uses: Swatinem/rust-cache@v2
@@ -227,7 +234,10 @@ jobs:
         # compiler at build-time; the runner image doesn't ship it.
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          # Pinned, not floating — see the clippy job's note.
+          toolchain: nightly-2026-04-03
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -288,7 +298,10 @@ jobs:
         # compiler at build-time; the runner image doesn't ship it.
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          # Pinned, not floating — see the clippy job's note.
+          toolchain: nightly-2026-04-03
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -343,7 +356,10 @@ jobs:
         # compiler at build-time; the runner image doesn't ship it.
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          # Pinned, not floating — see the clippy job's note.
+          toolchain: nightly-2026-04-03
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -417,7 +433,10 @@ jobs:
           ref: ${{ env.NOCKUP_PIN }}
           path: nockchain
 
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          # Pinned, not floating — see the clippy job's note.
+          toolchain: nightly-2026-04-03
 
       - uses: Swatinem/rust-cache@v2
         with:
