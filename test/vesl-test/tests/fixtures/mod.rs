@@ -106,24 +106,26 @@ pub fn compose_and_compile(scratch_subdir: &str, grafts: &[&str]) -> Result<Path
         bail!("graft-inject exited with status {status}");
     }
 
-    // --ephemeral, not --new: --new boots hoonc against the shared
-    // ~/.nockapp/hoonc data dir and refuses a non-empty one, so
-    // parallel tests collide. Mirror graft-inject's own fixture pattern
-    // (997fa2c).
-    let hoonc_status = Command::new("hoonc")
-        .arg("--ephemeral")
+    // honk, the primary Hoon compiler: no shared data dir, so parallel
+    // tests cannot collide on it. Mirrors graft-inject's fixture.
+    let honk_status = Command::new("honk")
+        .arg("--new")
+        .arg("--output")
+        .arg("out.jam")
+        .arg("--prelude")
+        .arg("hoon/common/hoon.hoon")
         .arg("hoon/app/app.hoon")
-        .arg("hoon/")
+        .arg("hoon")
         .current_dir(&scratch)
         .status()
-        .context("spawn hoonc")?;
-    if !hoonc_status.success() {
-        bail!("hoonc exited with status {hoonc_status}");
+        .context("spawn honk")?;
+    if !honk_status.success() {
+        bail!("honk exited with status {honk_status}");
     }
 
     let jam = scratch.join("out.jam");
     if !jam.exists() {
-        bail!("hoonc succeeded but {} is missing", jam.display());
+        bail!("honk succeeded but {} is missing", jam.display());
     }
     Ok(jam)
 }

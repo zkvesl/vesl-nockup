@@ -728,7 +728,8 @@ pub(crate) fn run_inject(cli: Cli) -> Result<()> {
             );
             eprintln!("  `cargo build`, or the build links the previous kernel:");
             eprintln!(
-                "    hoonc {} hoon/ && [ -s out.jam ] || (echo 'hoonc produced no out.jam' >&2; exit 1)",
+                "    honk --new --output out.jam --prelude hoon/common/hoon.hoon {} hoon \
+      && [ -s out.jam ] || (echo 'honk produced no out.jam' >&2; exit 1)",
                 path.display(),
             );
         }
