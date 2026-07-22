@@ -4,7 +4,7 @@
 //! dance: (1) build a scratch project under `target/<name>/` with the
 //! repo's `hoon/lib`, `hoon/common`, `hoon/dat`, `hoon/jams`, and the
 //! scaffold `templates/app.hoon` copied in; (2) run `graft-inject`
-//! against the scratch app with a chosen graft set; (3) run `hoonc`
+//! against the scratch app with a chosen graft set; (3) run `honk`
 //! and return the path to the produced `out.jam`. This module
 //! packages that sequence as [`compose_and_compile`], plus a handful
 //! of helpers that were once duplicated across the lifecycle tests.
@@ -73,12 +73,12 @@ pub struct ComposedArtifacts {
     pub lib_dir: PathBuf,
 }
 
-/// Compose a graft-injected kernel and hoonc-compile it.
+/// Compose a graft-injected kernel and honk-compile it.
 ///
 /// Creates (and destroys) a scratch tree at `target/<scratch_subdir>/`
 /// populated from the repo's canonical `templates/app.hoon` and
 /// `hoon/{lib,common,dat,jams}` trees, runs `graft-inject --grafts
-/// <csv> …`, then shells to `hoonc --ephemeral …`. Returns the produced
+/// <csv> …`, then shells to `honk --new …`. Returns the produced
 /// `out.jam` path.
 ///
 /// `grafts` selects which manifests graft-inject consumes. Pass
@@ -86,7 +86,7 @@ pub struct ComposedArtifacts {
 /// graft dropping into `hoon/lib/` doesn't silently join the test's
 /// composed kernel via auto-discovery.
 ///
-/// `hoonc` must be on `PATH` — same pre-req as every other build
+/// `honk` must be on `PATH` — same pre-req as every other build
 /// route in this repo.
 pub fn compose_and_compile(scratch_subdir: &str, grafts: &[&str]) -> Result<PathBuf> {
     Ok(compose_and_compile_inner(scratch_subdir, grafts, &[], &[])?.jam_path)
@@ -121,7 +121,7 @@ pub struct ManifestOverride<'a> {
 }
 
 /// Compose a graft-injected kernel with extra synthetic grafts written
-/// into the scratch's `hoon/lib/`, then hoonc-compile it.
+/// into the scratch's `hoon/lib/`, then honk-compile it.
 ///
 /// Use this when a test needs a graft that doesn't (and shouldn't)
 /// live in the shared discovery tree — e.g. the prelude / postlude
@@ -179,7 +179,7 @@ fn compose_and_compile_inner(
     fs::create_dir_all(&hoon_jams)?;
 
     // hoon/dat + hoon/jams are mandatory even on grafts that don't
-    // touch the prover: hoonc eager-parses files in common/, some of
+    // touch the prover: the compiler eager-parses files in common/, some of
     // which transitively `/#` softed-constraints.jam. Dropping the
     // tree turns forge compositions into "missing dependency
     // /jams/constraints-0-1.jam".
@@ -223,26 +223,28 @@ fn compose_and_compile_inner(
         bail!("graft-inject exited with status {status}");
     }
 
-    // Compile with `--ephemeral`, not `--new`: `--new` boots hoonc's
-    // NockApp against the shared ~/.nockapp/hoonc data dir and requires it
-    // empty, so a second lifecycle test in the same run collides on
-    // leftover durability state. `--ephemeral` uses a throwaway data dir —
-    // parallel-safe, no shared state, the post-PMA mode for compile-only
-    // hoonc use.
-    let hoonc_status = Command::new("hoonc")
-        .arg("--ephemeral")
+    // Compile with honk, the fleet's primary Hoon compiler: no shared
+    // data dir (parallel-safe), and output bytes independent of the
+    // scratch directory's location. The prelude is the scratch's own
+    // vendored hoon/common/hoon.hoon, so the compile is self-contained.
+    let honk_status = Command::new("honk")
+        .arg("--new")
+        .arg("--output")
+        .arg("out.jam")
+        .arg("--prelude")
+        .arg("hoon/common/hoon.hoon")
         .arg("hoon/app/app.hoon")
-        .arg("hoon/")
+        .arg("hoon")
         .current_dir(&scratch)
         .status()
-        .with_context(|| "spawn hoonc")?;
-    if !hoonc_status.success() {
-        bail!("hoonc exited with status {hoonc_status}");
+        .with_context(|| "spawn honk")?;
+    if !honk_status.success() {
+        bail!("honk exited with status {honk_status}");
     }
 
     let jam = scratch.join("out.jam");
     if !jam.exists() {
-        bail!("hoonc succeeded but {} is missing", jam.display());
+        bail!("honk succeeded but {} is missing", jam.display());
     }
     Ok(ComposedArtifacts {
         jam_path: jam,

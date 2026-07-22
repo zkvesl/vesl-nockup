@@ -13,9 +13,16 @@ on:
     branches: [main]
 
 env:
-  NOCK_PIN: fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f
-  VESL_CORE_PIN: a1918c73563a92c9e979295f5105164869261fe6
-  VESL_WALLET_PIN: 21d5697a0f860f531ddadcc144121493bca2f7e8
+  NOCK_PIN: dfc97ecc877687fc7ca972ebc71877df6e80d92b
+  VESL_CORE_PIN: 0e74e06050248fb98bcd22b7ed28654907103434
+  VESL_WALLET_PIN: eb28bbed1a78f3c0e55e1f8170015eea18c75538
+  # honk (the fleet's primary Hoon compiler) is built from HONK_REV:
+  # NOCK_PIN plus fixes staged on the sobchek fork pending upstream
+  # review (nockchain/nockchain PR #146 + cwd-relative spot paths).
+  # The extra commits touch only compiler crates — the Rust path-dep
+  # surface is identical to NOCK_PIN. Fold back into NOCK_PIN and
+  # repoint at nockchain/nockchain when they land upstream.
+  HONK_REV: 82ab7bffdba28dfcbd04a7006a9d3244db3c2d7c
 
 jobs:
   check-pins:
@@ -89,11 +96,14 @@ jobs:
         with:
           path: vesl-nockup
 
-      - name: Checkout nockchain (sibling)
+      - name: Checkout nockchain (sibling, at honk compiler rev)
+        # HONK_REV, not NOCK_PIN: this job compiles Hoon with honk, so
+        # the checkout must carry the compiler crates. Its tree and Rust
+        # path-dep surface are identical to NOCK_PIN (see env comment).
         uses: actions/checkout@v4
         with:
-          repository: nockchain/nockchain
-          ref: ${{ env.NOCK_PIN }}
+          repository: sobchek/nockchain
+          ref: ${{ env.HONK_REV }}
           path: nockchain
 
       - name: Checkout vesl-wallet (sibling)
@@ -117,27 +127,29 @@ jobs:
         with:
           workspaces: vesl-nockup
 
-      - name: Cache hoonc binary
-        id: hoonc-cache-test
+      - name: Cache honk binary
+        id: honk-cache-test
         uses: actions/cache@v4
         with:
-          path: ~/.cargo/bin/hoonc
-          key: hoonc-${{ env.NOCK_PIN }}
+          path: ~/.cargo/bin/honk
+          key: honk-${{ env.HONK_REV }}
 
-      - name: Install hoonc (cache miss only)
-        # Integration tests under tools/graft-inject/tests/ spawn hoonc
+      - name: Install honk (cache miss only)
+        # Integration tests under tools/graft-inject/tests/ spawn honk
         # as a subprocess; without it on PATH, batch_lifecycle and the
-        # other lifecycle tests fail with "spawn hoonc: No such file or
+        # other lifecycle tests fail with "spawn honk: No such file or
         # directory".
-        if: steps.hoonc-cache-test.outputs.cache-hit != 'true'
-        run: cargo install --locked --path nockchain/crates/hoonc --force --bin hoonc
+        if: steps.honk-cache-test.outputs.cache-hit != 'true'
+        run: cargo install --locked --path nockchain/crates/honk --force --bin honk
 
       - name: Build counter template fixture
         # vesl-checkpoint's end_to_end::snapshot_then_resume_round_trip
         # test loads templates/counter/out.jam as a fixture. out.jam is
         # a gitignored build artifact — recompile it before cargo test.
+        # The prelude is the repo's vendored stdlib copy; the template's
+        # own hoon/common ships only wrapper.hoon.
         working-directory: vesl-nockup/templates/counter
-        run: hoonc --ephemeral hoon/app/app.hoon hoon/
+        run: honk --new --output out.jam --prelude ../../hoon/common/hoon.hoon hoon/app/app.hoon hoon
 
       - name: cargo test (workspace)
         working-directory: vesl-nockup
@@ -307,11 +319,13 @@ jobs:
         with:
           path: vesl-nockup
 
-      - name: Checkout nockchain (sibling)
+      - name: Checkout nockchain (sibling, at honk compiler rev)
+        # HONK_REV, not NOCK_PIN: this job compiles Hoon via
+        # spot-check.sh, so the checkout must carry the compiler crates.
         uses: actions/checkout@v4
         with:
-          repository: nockchain/nockchain
-          ref: ${{ env.NOCK_PIN }}
+          repository: sobchek/nockchain
+          ref: ${{ env.HONK_REV }}
           path: nockchain
 
       - name: Checkout vesl-wallet (sibling)
@@ -335,9 +349,9 @@ jobs:
         with:
           workspaces: vesl-nockup
 
-      - name: Install hoonc
-        # nockchain layout puts hoonc under crates/hoonc, not at repo root.
-        run: cargo install --locked --path nockchain/crates/hoonc --force --bin hoonc
+      - name: Install honk
+        # nockchain layout puts honk under crates/honk, not at repo root.
+        run: cargo install --locked --path nockchain/crates/honk --force --bin honk
 
       - name: Install graft-inject
         working-directory: vesl-nockup

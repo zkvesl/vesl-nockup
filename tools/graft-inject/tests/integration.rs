@@ -17,7 +17,7 @@
 //!   * template domain poke: `[%cause ~]` — confirms grafted causes
 //!     live alongside the placeholder domain cause without clashing.
 //!
-//! ~60-90s runtime, dominated by `hoonc` on a four-graft compose
+//! ~60-90s runtime, dominated by `honk` on a four-graft compose
 //! (which pulls in the STARK prover tree). Treat accordingly in CI.
 
 mod fixtures;

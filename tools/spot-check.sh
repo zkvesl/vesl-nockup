@@ -19,7 +19,7 @@
 #
 # Prerequisites:
 #   - graft-inject installed (`make graft-inject`)
-#   - hoonc available on PATH
+#   - honk available on PATH
 #   - The primary meta sandbox already exists at $META_DIR with the
 #     cumulative-domain sweep through at least <profile-letter>:
 #     `~/projects/nockchain/vesl-dogfood-meta/meta-evolving-app/hoon/app/app.hoon`
@@ -76,12 +76,12 @@ graft-inject inject \
   --accept-untrusted-libs \
   --apply hoon/app/app.hoon \
   > /tmp/spot-check-direct-grafts.txt 2>&1
-hoonc --ephemeral hoon/app/app.hoon hoon/ > /tmp/hoonc-spot-$PROFILE.log 2>&1 || true
+honk --new --output out.jam --prelude hoon/common/hoon.hoon hoon/app/app.hoon hoon > /tmp/honk-spot-$PROFILE.log 2>&1 || true
 
 if [[ ! -s out.jam ]]; then
-  echo "spot-check.sh: hoonc produced empty out.jam (direct-compose failure)" >&2
-  echo "spot-check.sh: hoonc log follows ----------------------------" >&2
-  cat /tmp/hoonc-spot-$PROFILE.log >&2
+  echo "spot-check.sh: honk produced empty out.jam (direct-compose failure)" >&2
+  echo "spot-check.sh: honk log follows -----------------------------" >&2
+  cat /tmp/honk-spot-$PROFILE.log >&2
   echo "spot-check.sh: --------------------------------------------- end" >&2
   exit 1
 fi
