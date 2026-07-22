@@ -180,10 +180,7 @@ impl VeslWallet {
     /// separator.
     pub fn derive_session(&self, account: u32, index: u32) -> Result<DerivedKey, WalletError> {
         self.derive(DerivationPath::new(
-            self.coin_type,
-            account,
-            ROLE_SESSION,
-            index,
+            self.coin_type, account, ROLE_SESSION, index,
         ))
     }
 

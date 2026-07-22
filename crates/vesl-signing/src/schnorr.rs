@@ -11,8 +11,6 @@ use thiserror::Error;
 
 use crate::math::belt::Belt;
 use crate::math::cheetah::{ch_add, ch_neg, ch_scal_big, A_GEN, F6_ZERO};
-use crate::math::tip5::hash_varlen;
-
 // Re-export the public-key types so downstream consumers (e.g.,
 // x402-nockchain-crypto's `signer.rs` / `verifier.rs`, vesl-core's
 // signing shim) can name them without reaching into `pub(crate) mod
@@ -25,6 +23,7 @@ use crate::math::tip5::hash_varlen;
 // hash transcript) can reduce arbitrary digest output into a valid
 // scalar without re-vendoring the curve constants.
 pub use crate::math::cheetah::{trunc_g_order, CheetahError, CheetahPoint, F6lt, G_ORDER};
+use crate::math::tip5::hash_varlen;
 
 // ---------------------------------------------------------------------------
 // Errors

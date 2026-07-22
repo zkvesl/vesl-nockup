@@ -68,15 +68,7 @@ pub fn f6_inv(f: &F6lt) -> Result<F6lt, CheetahError> {
     let mut v = [Belt(0); 6];
     bpegcd(
         &f.0,
-        &[
-            Belt(bneg(7)),
-            Belt(0),
-            Belt(0),
-            Belt(0),
-            Belt(0),
-            Belt(0),
-            Belt(1),
-        ],
+        &[Belt(bneg(7)), Belt(0), Belt(0), Belt(0), Belt(0), Belt(0), Belt(1)],
         &mut d,
         &mut u,
         &mut v,
@@ -105,14 +97,7 @@ fn f6_add(f1: &F6lt, f2: &F6lt) -> F6lt {
 
 #[inline(always)]
 fn f6_scal(s: Belt, f: &F6lt) -> F6lt {
-    F6lt([
-        f.0[0] * s,
-        f.0[1] * s,
-        f.0[2] * s,
-        f.0[3] * s,
-        f.0[4] * s,
-        f.0[5] * s,
-    ])
+    F6lt([f.0[0] * s, f.0[1] * s, f.0[2] * s, f.0[3] * s, f.0[4] * s, f.0[5] * s])
 }
 
 #[inline(always)]
@@ -136,8 +121,7 @@ fn f6_sub(f1: &F6lt, f2: &F6lt) -> F6lt {
 
 pub static G_ORDER: Lazy<UBig> = Lazy::new(|| {
     UBig::from_str_radix(
-        "7af2599b3b3f22d0563fbf0f990a37b5327aa72330157722d443623eaed4accf",
-        16,
+        "7af2599b3b3f22d0563fbf0f990a37b5327aa72330157722d443623eaed4accf", 16,
     )
     .expect("G_ORDER hex is valid")
 });

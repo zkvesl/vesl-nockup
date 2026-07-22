@@ -48,14 +48,13 @@ mod hd;
 mod wallet;
 
 pub use error::WalletError;
-pub use wallet::{DerivedKey, VeslWallet};
-
 // Re-export the path constants so callers can name everything via
 // `vesl_wallet::*` without a second `use vesl_wallet_spec::...` line.
 pub use vesl_wallet_spec::{
     DerivationPath, BIP44_PURPOSE, ROLE_ENCRYPTION, ROLE_INTENT, ROLE_RECEIVING, ROLE_SESSION,
     ROLE_X402,
 };
+pub use wallet::{DerivedKey, VeslWallet};
 
 /// Placeholder coin_type for the BIP-44 path's second hardened
 /// component. Pending upstream SLIP-44 registration of a Nockchain

@@ -15,7 +15,7 @@ on:
 env:
   NOCK_PIN: dfc97ecc877687fc7ca972ebc71877df6e80d92b
   VESL_CORE_PIN: 0e74e06050248fb98bcd22b7ed28654907103434
-  VESL_WALLET_PIN: eb28bbed1a78f3c0e55e1f8170015eea18c75538
+  VESL_WALLET_PIN: 75db6077bfa02c5b6d05a081b61c1ee3dc8dc1f4
   # honk (the fleet's primary Hoon compiler) is built from HONK_REV:
   # NOCK_PIN plus fixes staged on the sobchek fork pending upstream
   # review (nockchain/nockchain PR #146 + cwd-relative spot paths).

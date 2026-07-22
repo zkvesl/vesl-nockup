@@ -11,7 +11,7 @@ pin  = "0e74e06050248fb98bcd22b7ed28654907103434"
 
 [vesl-wallet]
 repo = "https://github.com/zkvesl/vesl-wallet"
-pin  = "eb28bbed1a78f3c0e55e1f8170015eea18c75538"
+pin  = "75db6077bfa02c5b6d05a081b61c1ee3dc8dc1f4"
 
 [nockchain]
 repo = "https://github.com/nockchain/nockchain"

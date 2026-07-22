@@ -71,14 +71,7 @@ pub mod domain_separators {
     /// that want to assert non-collision against every reserved tag
     /// can iterate this slice rather than hard-coding individual
     /// constants.
-    pub const ALL: &[&str] = &[
-        X402,
-        SIWN,
-        VESL_INTENT,
-        VESL_RECEIPT,
-        VESL_AUTHORITY,
-        VESL_HD,
-    ];
+    pub const ALL: &[&str] = &[X402, SIWN, VESL_INTENT, VESL_RECEIPT, VESL_AUTHORITY, VESL_HD];
 
     /// Returns `true` iff `s` matches one of the reserved separator
     /// strings in [`ALL`].
@@ -87,15 +80,14 @@ pub mod domain_separators {
     }
 }
 
-/// Re-export of [`domain_separators::X402`] under the pre-R1.2 name. Kept
-/// for x402-nockchain source-compat; new callers should import
-/// [`domain_separators::X402`] directly.
-pub use domain_separators::X402 as X402_DOMAIN_SEPARATOR;
-
 /// Re-export of [`domain_separators::SIWN`] under the pre-R1.2 name. Kept
 /// for x402-nockchain source-compat; new callers should import
 /// [`domain_separators::SIWN`] directly.
 pub use domain_separators::SIWN as SIWN_DOMAIN_SEPARATOR;
+/// Re-export of [`domain_separators::X402`] under the pre-R1.2 name. Kept
+/// for x402-nockchain source-compat; new callers should import
+/// [`domain_separators::X402`] directly.
+pub use domain_separators::X402 as X402_DOMAIN_SEPARATOR;
 
 /// Hash `domain || bytes` under Tip5 and return the 5-Belt digest.
 pub fn tip5_with_domain(domain: &str, bytes: &[u8]) -> [Belt; 5] {
@@ -144,8 +136,9 @@ fn bytes_to_belts(bytes: &[u8]) -> Vec<Belt> {
 
 #[cfg(all(test, feature = "json"))]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     #[test]
     fn stable_under_key_order() {

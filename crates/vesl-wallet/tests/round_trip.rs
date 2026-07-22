@@ -49,13 +49,7 @@ fn passphrase_changes_keys() {
 fn each_role_yields_a_distinct_key() {
     let w = wallet();
     let mut bytes = Vec::new();
-    for role in [
-        ROLE_INTENT,
-        ROLE_RECEIVING,
-        ROLE_ENCRYPTION,
-        ROLE_SESSION,
-        ROLE_X402,
-    ] {
+    for role in [ROLE_INTENT, ROLE_RECEIVING, ROLE_ENCRYPTION, ROLE_SESSION, ROLE_X402] {
         let dk = w
             .derive(DerivationPath::new(VESL_COIN_TYPE_PLACEHOLDER, 0, role, 0))
             .unwrap();
@@ -115,10 +109,7 @@ fn payment_signer_matches_x402_path() {
     let direct = w.payment_signer(0, 0).unwrap();
     let via_path = w
         .derive(DerivationPath::new(
-            VESL_COIN_TYPE_PLACEHOLDER,
-            0,
-            ROLE_X402,
-            0,
+            VESL_COIN_TYPE_PLACEHOLDER, 0, ROLE_X402, 0,
         ))
         .unwrap();
     assert_eq!(direct.to_belts(), via_path.private_key.to_belts());
@@ -130,10 +121,7 @@ fn intent_signer_matches_intent_path() {
     let direct = w.intent_signer(0, 0).unwrap();
     let via_path = w
         .derive(DerivationPath::new(
-            VESL_COIN_TYPE_PLACEHOLDER,
-            0,
-            ROLE_INTENT,
-            0,
+            VESL_COIN_TYPE_PLACEHOLDER, 0, ROLE_INTENT, 0,
         ))
         .unwrap();
     assert_eq!(direct.to_belts(), via_path.private_key.to_belts());

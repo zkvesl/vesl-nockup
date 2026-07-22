@@ -13,19 +13,20 @@
 
 use std::time::Duration;
 
-use crate::domain::{tip5_with_domain, SIWN_DOMAIN_SEPARATOR};
-use crate::math::cheetah::CheetahPoint;
-use crate::replay_cache::{domains as replay_domains, prefixed, ReplayCache};
-use crate::schnorr::SchnorrSignatureJson;
-use crate::schnorr::{
-    decode_signature, encode_signature, schnorr_sign, schnorr_verify, SchnorrError,
-    SchnorrPrivateKey,
-};
 use anyhow::{anyhow, Context, Result};
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::domain::{tip5_with_domain, SIWN_DOMAIN_SEPARATOR};
+use crate::math::cheetah::CheetahPoint;
+use crate::replay_cache::{domains as replay_domains, prefixed, ReplayCache};
+use crate::schnorr::{
+    decode_signature, encode_signature, schnorr_sign, schnorr_verify, SchnorrError,
+    SchnorrPrivateKey, SchnorrSignatureJson,
+};
 
 // ---------------------------------------------------------------------------
 // Parameters & errors
@@ -388,9 +389,10 @@ pub fn verify<C: ReplayCache>(
 
 #[cfg(test)]
 mod tests {
+    use ibig::UBig;
+
     use super::*;
     use crate::replay_cache::InMemoryReplayCache;
-    use ibig::UBig;
 
     fn signer() -> SiwnSigner {
         SiwnSigner::new(SchnorrPrivateKey::new(UBig::from(999_888_777u64)).unwrap()).unwrap()
