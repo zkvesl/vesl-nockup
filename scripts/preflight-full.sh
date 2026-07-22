@@ -27,6 +27,15 @@ step() { printf '\n=== %s ===\n' "$1"; }
 step "quick preflight (scripts/preflight.sh)"
 "$SCRIPT_DIR/preflight.sh"
 
+# vesl-checkpoint's end_to_end test loads templates/counter/out.jam as a
+# fixture. It is a gitignored build artifact, and ./sync.sh regenerates
+# templates/counter/ — so a sync (or a fresh clone) leaves the test with
+# no fixture. CI has the same step; without it here the local gate can
+# fail where CI passes, for a reason unrelated to the change under test.
+step "build counter template fixture (honk)"
+( cd templates/counter && honk --new --output out.jam \
+    --prelude ../../hoon/common/hoon.hoon hoon/app/app.hoon hoon >/dev/null )
+
 step "cargo test --workspace (full sweep, includes the integration suite)"
 cargo test --workspace
 
