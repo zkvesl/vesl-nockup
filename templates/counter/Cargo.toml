@@ -10,13 +10,13 @@ name = "counter"
 path = "src/main.rs"
 
 [dependencies]
-nockapp = { git = "https://github.com/nockchain/nockchain.git", rev = "fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f" }
-nockvm = { git = "https://github.com/nockchain/nockchain.git", rev = "fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f" }
-nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f" }
+nockapp = { git = "https://github.com/nockchain/nockchain.git", rev = "dfc97ecc877687fc7ca972ebc71877df6e80d92b" }
+nockvm = { git = "https://github.com/nockchain/nockchain.git", rev = "dfc97ecc877687fc7ca972ebc71877df6e80d92b" }
+nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "dfc97ecc877687fc7ca972ebc71877df6e80d92b" }
 
 tokio = { version = "1.32", features = ["rt-multi-thread", "macros"] }
 anyhow = "1.0"
 sha2 = "0.10"
 
 [patch.crates-io]
-ibig = { git = "https://github.com/nockchain/nockchain.git", rev = "fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f" }
+ibig = { git = "https://github.com/nockchain/nockchain.git", rev = "dfc97ecc877687fc7ca972ebc71877df6e80d92b" }

@@ -10,9 +10,9 @@ name = "graft-hash-gate"
 path = "src/main.rs"
 
 [dependencies]
-nockapp = { git = "https://github.com/nockchain/nockchain.git", rev = "fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f" }
-nockvm = { git = "https://github.com/nockchain/nockchain.git", rev = "fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f" }
-nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f" }
+nockapp = { git = "https://github.com/nockchain/nockchain.git", rev = "dfc97ecc877687fc7ca972ebc71877df6e80d92b" }
+nockvm = { git = "https://github.com/nockchain/nockchain.git", rev = "dfc97ecc877687fc7ca972ebc71877df6e80d92b" }
+nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "dfc97ecc877687fc7ca972ebc71877df6e80d92b" }
 
 # Vesl — Mint for commitment, no RAG dependencies needed
 vesl-core = { path = "../../crates/vesl-core" }

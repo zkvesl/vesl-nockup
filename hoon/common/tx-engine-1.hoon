@@ -1,6 +1,6 @@
 /=  v0  /common/tx-engine-0
 /=  *  /common/zeke
-/=  *  /common/zoon
+/=  *  /common/h-zoon
 |%
 ::  import
 ++  hash  hash:v0
@@ -36,6 +36,43 @@
 ++  fund-address
   ^-  hash
   (from-b58:hash '9EhcJiGhAPcWLYrR9DL4ZPjU2Z9XT6FT2ZFkEEwmSQv7ES2TMC7p6Up')
+::
+::  $fund-note-firstname: the on-chain first-name (-.name) shared by every
+::  protocol-fund coinbase note. +make-name:coinbase wraps the coinbase-split
+::  key (here +fund-address, itself a 3-of-4 multisig lock-root) as a single
+::  %pkh primitive plus the coinbase timelock, then takes the nname:
+::
+::    note-lock      = ~[[%pkh m=1 {fund-address}] coinbase-tim-lp]
+::    note-lock-root = (hash:lock note-lock)
+::    first-name     = (first:nname note-lock-root)
+::
+::  Because the wrapped %pkh value is a lock-root (not the hash of any pubkey),
+::  the literal lock is unsatisfiable. +check:check-context special-cases this
+::  first-name and routes spends to the real 3-of-4 multisig instead. The
+::  value is parent-block-independent, so it is the same constant for every
+::  fund note. Computed by /scripts/generate-fund-note-name.hoon; pinned by
+::  test-fund-note-firstname in /tests/dumb/mod/unit/coinbase-split.
+++  fund-note-firstname
+  ^-  hash
+  (from-b58:hash '8TvVfU7sbFoY8qV53ffUdBag7Kcqw8LXjsnYgY71nQ1biWE6giRYzkn')
+::
+::  $fund-multisig-lock: the real 3-of-4 multisig spend-condition that
+::  +fund-address is the lock-root of -- i.e. the preimage a fund spend must
+::  reveal so +check-multisig-lock's bind ((hash:lock sc) == fund-address)
+::  passes. Listed here as the single source of truth for the four
+::  participant pkhs so the wallet can construct the spend (it cannot recover
+::  the participant set from the +fund-address hash alone). Invariant:
+::  (hash:lock fund-multisig-lock) == fund-address, pinned by
+::  test-fund-multisig-lock-binds-fund-address in coinbase-split.
+++  fund-multisig-lock
+  ^-  spend-condition
+  =/  pkhs=(list hash)
+    :~  (from-b58:hash '7pGXggKU1AWk3d3wqX2kpKUatTqT68Cv8SQfGzGRQvJvYnQBvagSSjT')
+        (from-b58:hash '8Mc1U7kdujhPoEwog1BfNsFDtRp8St8UQCHk84iaLdhP4cX9a2CT1MU')
+        (from-b58:hash 'DAvp9ffoyNTBqAudZN29qc6s8GZfvvvAGvAfEFrqQsCVgSSSkg1SaSm')
+        (from-b58:hash '9LK7wEcQsmRpEot4qFaV9bwjSE9ZD6tB1kWbgNsFkDa2LEpvBV9WGY3')
+    ==
+  [%pkh [m=3 (z-silt pkhs)]]~
 ::
 ::  +post-asert-activation: 014-aletheia activation predicate, 2-arg form.
 ::    Returns %.y when `height` is at or past the asert-phase boundary.
@@ -134,7 +171,7 @@
   ++  hashable-tx-ids
     |=  tx-ids=(z-set tx-id)
     ^-  hashable:tip5
-    ?~  tx-ids  leaf+tx-ids
+    ?@  tx-ids  leaf+tx-ids
     :+  hash+n.tx-ids
       $(tx-ids l.tx-ids)
     $(tx-ids r.tx-ids)
@@ -166,10 +203,26 @@
   ++  compute-size-without-txs
     |=  pag=form
     ^-  size
+    ::  size the jam of the page WITHOUT the digest or the powork: both are
+    ::  variable-length but bounded, so they are accounted for by the
+    ::  +max-size constants below instead of being jammed here.
+    ::
+    ::  the v1 $page prepends a `version` head that v0 does not have, so the
+    ::  layout is [version digest pow parent ...]. that shifts every field by
+    ::  one axis versus v0's [digest pow parent ...]. v0 jams `+>.pag`
+    ::  (axis 7 = [parent ...]), which on a v1 page is [pow parent ...] --
+    ::  i.e. it wrongly folds the proof into the jam. because a candidate
+    ::  block carries `pow=~` while a mined block carries the full proof, the
+    ::  miner's +candidate-block-below-max-size guard (run on the candidate)
+    ::  then disagreed with consensus +check-size (run on the mined page),
+    ::  letting a miner produce a block it immediately self-rejected as
+    ::  %block-too-large -- wedging the chain. `+>+.pag` (axis 15 =
+    ::  [parent ...]) excludes version, digest, AND pow, matching v0's intent
+    ::  and making the two size checks agree.
     ;:  add
         max-size:block-id:v0
         max-size:proof:v0
-        (compute-size-jam `*`+>.pag)
+        (compute-size-jam `*`+>+.pag)
     ==
   --
 ::
@@ -357,7 +410,7 @@
     |=  =form
     |^
       ^-  ?
-      %-  ~(rep by form)
+      %-  ~(rep z-by form)
       |=  [[k=@tas v=*] a=?]
       ?&(a (^based k) (based-noun v))
     ++  based-noun
@@ -369,7 +422,7 @@
     |=  =form
     ^-  hashable:tip5
     |^
-      ?~  form  leaf+~
+      ?@  form  leaf+~
       :+  [leaf+p.n.form (hashable-noun q.n.form)]
         $(form l.form)
       $(form r.form)
@@ -423,6 +476,10 @@
       (based:^hash p.u.output-source.form)
     ?&  based-output-source
         (based:^hash lock-root.form)
+        ::  note-data values are hashed into the seed (and thus the tx id), so
+        ::  every value must be a valid field leaf or the id hash would assert.
+        ::  Reject deterministically here rather than crash during hashing.
+        (based:note-data note-data.form)
         (^based gift.form)
         (based:^hash parent-hash.form)
     ==
@@ -472,7 +529,7 @@
   ++  hashable
     |=  =form
     ^-  hashable:tip5
-    ?~  form  leaf+~
+    ?@  form  leaf+~
     :+  (hashable:seed n.form)
       $(form l.form)
     $(form r.form)
@@ -480,7 +537,7 @@
   ++  sig-hashable
     |=  =form
     ^-  hashable:tip5
-    ?~  form  leaf+form
+    ?@  form  leaf+form
     :+  (sig-hashable:seed n.form)
       $(form l.form)
     $(form r.form)
@@ -665,7 +722,7 @@
   ++  hashable
     |=  =form
     ^-  hashable:tip5
-    ?~  form  leaf+form
+    ?@  form  leaf+form
     :+  [hash+p.n.form leaf+q.n.form]
       $(form l.form)
     $(form r.form)
@@ -901,7 +958,7 @@
     |=  =form
     ^-  hashable:tip5
     |-
-    ?~  form  leaf+form
+    ?@  form  leaf+form
     :+  [(hashable:nname p.n.form) (hashable:spend q.n.form)]
       $(form l.form)
     $(form r.form)
@@ -949,7 +1006,7 @@
     (gth data-size max)
   ::
   ++  validate-with-context
-    |=  $:  balance=(z-map nname nnote)
+    |=  $:  balance=(h-map nname nnote)
             sps=form
             page-num=page-number
             max-size=@
@@ -961,7 +1018,7 @@
     %+  roll  ~(tap z-by sps)
     |=  [[nam=nname sp=spend] acc=(reason ~)]
     ?.  ?=(%.y -.acc)  acc
-    =/  mnote=(unit nnote)  (~(get z-by balance) nam)
+    =/  mnote=(unit nnote)  (~(get h-by balance) nam)
     ?~  mnote  [%.n %v1-input-missing]
     =/  note=nnote  u.mnote
     ?-    -.sp
@@ -1105,7 +1162,7 @@
   ++  hashable
     |=  =form
     ^-  hashable:tip5
-    ?~  form  leaf+form
+    ?@  form  leaf+form
     :+  [(hashable:nname p.n.form) (hashable:input q.n.form)]
       $(form l.form)
     $(form r.form)
@@ -1320,12 +1377,22 @@
   ++  based
     |=  =form
     ^-  ?
+    |^
     ?&  (based:lock-merkle-proof lmp.form)
         (based:pkh-signature pkh.form)
+        ::  hax preimage *values* are hashed into the witness (and thus the tx
+        ::  id), so every value's leaves must be valid field atoms or the id
+        ::  hash would assert. Validate values, not only keys, so a malformed
+        ::  preimage is rejected deterministically instead of crashing hashing.
         %-  ~(rep z-by hax.form)
         |=  [[k=^hash v=*] a=?]
-        &(a (based:^hash k))
+        ?&(a (based:^hash k) (based-noun v))
     ==
+    ++  based-noun
+      |=  n=*
+      ?^  n  ?&($(n -.n) $(n +.n))
+      (^based n)
+    --
   ::
   ++  hashable
     |=  =form
@@ -1339,7 +1406,7 @@
   ++  hashable-hax
     |=  m=(z-map ^hash *)
     ^-  hashable:tip5
-    ?~  m  leaf+m
+    ?@  m  leaf+m
     :+  [hash+p.n.m (hashable-noun q.n.m)]
         $(m l.m)
     $(m r.m)
@@ -1761,7 +1828,7 @@
     ++  hashable-hashes
       |=  hs=(z-set ^hash)
       ^-  hashable:tip5
-      ?~  hs  leaf+hs
+      ?@  hs  leaf+hs
       :+  hash+n.hs
         $(hs l.hs)
       $(hs r.hs)
@@ -1802,7 +1869,7 @@
     based:^hash
   ++  hashable
     |=  =form
-    ?~  form  leaf+~
+    ?@  form  leaf+~
     :*  hash+n.form
         $(form l.form)
         $(form r.form)
@@ -1892,7 +1959,7 @@
     |=  =form
     ^-  hashable:tip5
     |^
-    ?~  form  leaf+form
+    ?@  form  leaf+form
     :+  [hash+p.n.form (hashable-val q.n.form)]
       $(form l.form)
     $(form r.form)
@@ -1941,6 +2008,15 @@
   ++  check
     |=  [=form lock=hash]
     ^-  ?
+    ::  Protocol-fund notes (014-aletheia) committed an unsatisfiable lock:
+    ::  +make-name:coinbase wrapped +fund-address (itself the lock-root of a
+    ::  3-of-4 multisig) as a single %pkh value, so the literal on-chain lock
+    ::  demands a signature from a key whose hash equals a *lock-root* -- which
+    ::  no one holds. Every such note shares one first-name (+fund-note-
+    ::  firstname); recover spendability by routing it to the true multisig
+    ::  check. See /scripts/generate-fund-note-name.hoon.
+    ?:  =(lock fund-note-firstname)
+      (check-multisig-lock fund-address form)
     =/  bythos-ok=?
       ?:  ?=([%full * * *] lmp.witness.form)
         (gte now.form bythos-phase.form)
@@ -1964,6 +2040,41 @@
         %tim  (check:tim +.p form)
         %hax  (check:hax +.p form)
         %pkh  (check:pkh +.p form)
+        %brn  %|
+      ==
+    ==
+  ::
+  ::  +check-multisig-lock: spend rule for a note whose committed lock is an
+  ::  unsatisfiable %pkh wrapper around a lock-root (the protocol-fund case --
+  ::  see +fund-note-firstname). Rather than the note's own (broken) merkle
+  ::  root, trust is re-derived from `target`: the spender reveals, via the
+  ::  witness LMP's spend-condition field, the real spend-condition whose
+  ::  +hash:lock equals `target`. Collision resistance means only the exact
+  ::  intended spend-condition passes that bind; we then require its primitives
+  ::  (the m-of-n %pkh) to be satisfied by the witness over the spend's
+  ::  sig-hash. The merkle proof is deliberately bypassed. Generic over
+  ::  `target` so the spend mechanism is testable with non-production keys;
+  ::  production passes +fund-address.
+  ++  check-multisig-lock
+    |=  [target=hash =form]
+    ^-  ?
+    =/  sc=spend-condition
+      ?:  ?=([%full * * *] lmp.witness.form)
+        =+  [ver msc ax mp]=lmp.witness.form
+        msc
+      =+  [msc ax mp]=lmp.witness.form
+      msc
+    ?&
+    ::  the revealed spend-condition must BE the spend-condition `target` commits
+      =(target (hash:lock sc))
+    ::  ...and the witness must satisfy it (e.g. 3 of the 4 fund signatures)
+      %+  levy  sc
+      |=  p=lock-primitive
+      ^-  ?
+      ?-  -.p
+        %pkh  (check:pkh +.p form)
+        %tim  (check:tim +.p form)
+        %hax  (check:hax +.p form)
         %brn  %|
       ==
     ==

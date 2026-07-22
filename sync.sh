@@ -34,19 +34,19 @@ fi
 # synced vesl-core crate stack moves to a new nockchain rev — typically
 # whatever sibling ../nockchain/ HEAD was when the crates were last built.
 # Overridable via env: NOCK_PIN=<sha> ./sync.sh
-NOCK_PIN="${NOCK_PIN:-fe46f4e3a0ce9532288e9cf3a3fb7e94bf9cba1f}"
+NOCK_PIN="${NOCK_PIN:-dfc97ecc877687fc7ca972ebc71877df6e80d92b}"
 
 # vesl-core rev that the bundled crate stack + templates were last
 # synced from. sync.sh aborts when the sibling vesl-core's HEAD does
 # not match this — bump the pin deliberately (edit this line) before
 # re-running. Overridable via env: VESL_CORE_PIN=<sha> ./sync.sh
-VESL_CORE_PIN="${VESL_CORE_PIN:-a1918c73563a92c9e979295f5105164869261fe6}"
+VESL_CORE_PIN="${VESL_CORE_PIN:-0e74e06050248fb98bcd22b7ed28654907103434}"
 
 # vesl-wallet rev that the bundled vesl-signing / vesl-wallet-spec /
 # vesl-wallet crates were last synced from. Symmetric to VESL_CORE_PIN
 # above — same tripwire shape, same bump discipline. Overridable via
 # env: VESL_WALLET_PIN=<sha> ./sync.sh
-VESL_WALLET_PIN="${VESL_WALLET_PIN:-21d5697a0f860f531ddadcc144121493bca2f7e8}"
+VESL_WALLET_PIN="${VESL_WALLET_PIN:-eb28bbed1a78f3c0e55e1f8170015eea18c75538}"
 
 # AUDIT 2026-05-19 H-16: every pin must be a 40-char lowercase hex SHA
 # before it reaches the sed rewrite below. An override such as
@@ -239,10 +239,12 @@ cp "$vesl/protocol/lib/batch-graft.toml"    "$here/hoon/lib/"
 # into the sibling nockchain checkout. `cp -rL` dereferences them —
 # assert each resolves into a nockchain/hoon tree before copying, so a
 # rewritten symlink cannot redirect the copy at arbitrary files.
+# `nockchain*` also admits pinned worktrees of the same repo (e.g.
+# nockchain-honk-pin, the honk compiler rev vesl-core compiles against).
 for _hd in common dat jams; do
     _tgt="$(realpath "$vesl/hoon/$_hd" 2>/dev/null || echo "")"
     case "$_tgt" in
-        */nockchain/hoon/"$_hd") ;;
+        */nockchain*/hoon/"$_hd") ;;
         *)
             echo "error: $vesl/hoon/$_hd does not resolve into a nockchain/hoon tree" >&2
             echo "       resolved: ${_tgt:-<unresolved>}" >&2

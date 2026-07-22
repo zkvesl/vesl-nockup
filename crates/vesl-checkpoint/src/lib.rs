@@ -32,9 +32,11 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use anyhow::{anyhow, Context, Result};
-use nockapp::kernel::boot;
+use anyhow::{Context, Result, anyhow};
 use nockapp::NockApp;
+use nockapp::kernel::boot;
+use nockapp::nockapp::export::ExportedState;
+use nockapp::noun::slab::NockJammer;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -116,11 +118,7 @@ impl Snapshot {
 /// [`resume`] in a fresh process. The reuse of nockapp's existing
 /// import path makes the multi-process flow equivalent to a single-
 /// process snapshot for state correctness.
-pub async fn snapshot(
-    app: &NockApp,
-    dir: &Path,
-    source_app_hoon: &Path,
-) -> Result<Snapshot> {
+pub async fn snapshot(app: &NockApp, dir: &Path, source_app_hoon: &Path) -> Result<Snapshot> {
     tokio::fs::create_dir_all(dir)
         .await
         .with_context(|| format!("create snapshot dir {}", dir.display()))?;
@@ -132,9 +130,16 @@ pub async fn snapshot(
     let vesl_checkpoint_version = env!("CARGO_PKG_VERSION").to_string();
 
     let state_jam_path = dir.join(STATE_JAM);
-    app.export_state(&state_jam_path)
+    let state = app
+        .export()
         .await
-        .map_err(|e| anyhow!("export_state failed: {e}"))?;
+        .map_err(|e| anyhow!("export failed: {e}"))?;
+    let state_bytes = ExportedState::from_loadstate::<NockJammer>(state)
+        .encode()
+        .context("encode exported state")?;
+    tokio::fs::write(&state_jam_path, state_bytes)
+        .await
+        .with_context(|| format!("write {}", state_jam_path.display()))?;
 
     let meta = MetaToml {
         snapshot: MetaSection {
@@ -188,11 +193,7 @@ pub async fn snapshot(
 /// `resume` accepts that reset silently — for a loud failure instead,
 /// use [`resume_with_data_dir`] with `strict_state_change = true`
 /// (AUDIT 2026-05-20 M-26).
-pub async fn resume(
-    jam_path: &Path,
-    snapshot: &Snapshot,
-    name: &str,
-) -> Result<NockApp> {
+pub async fn resume(jam_path: &Path, snapshot: &Snapshot, name: &str) -> Result<NockApp> {
     resume_with_data_dir(jam_path, snapshot, name, None, None, false).await
 }
 

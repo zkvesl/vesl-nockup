@@ -1,7 +1,7 @@
 /=  v0  /common/tx-engine-0
 /=  v1  /common/tx-engine-1
 /=  *  /common/zeke
-/=  *  /common/zoon
+/=  *  /common/h-zoon
 /=  *  /common/zose
 =>  |%
     ++  blockchain-constants  blockchain-constants:v1
@@ -85,6 +85,14 @@
 ::  $fund-address: lock-script hash receiving the 20% protocol-fund
 ::  share of every post-asert-activation coinbase. See tx-engine-1.hoon.
 ++  fund-address  fund-address:v1
+::  $fund-note-firstname: on-chain first-name of every protocol-fund coinbase
+::  note; +check:check-context routes it to the multisig recovery. See
+::  tx-engine-1.hoon.
+++  fund-note-firstname  fund-note-firstname:v1
+::  $fund-multisig-lock: the 3-of-4 multisig spend-condition behind
+::  +fund-address; the wallet reveals it to spend fund notes. See
+::  tx-engine-1.hoon.
+++  fund-multisig-lock  fund-multisig-lock:v1
 ++  local-page
   =<  form
   |%
@@ -1082,7 +1090,7 @@
 ++  txs
   =<  form
   |%
-  +$  form  (z-map tx-id tx)
+  +$  form  (h-map tx-id tx)
   --
 ::
 ::  $tx-acc: accumulate transactions against a balance to create a new balance
@@ -1090,26 +1098,26 @@
   =<  form
   |%
   +$  form
-    $:  balance=(z-map nname nnote)                     ::  current balance
+    $:  balance=(h-map nname nnote)                     ::  current balance
         height=page-number                              ::  origin height
         fees=coins                                      ::  total fee
         =size                                           ::  total size
         =txs                                            ::  valid txs
     ==
   ++  new
-    |=  $:  initial-balance=(unit (z-map nname nnote))
+    |=  $:  initial-balance=(unit (h-map nname nnote))
             initial-height=page-number
         ==
     ^-  form
     %*  .  *form
-      balance  ?~  initial-balance  *(z-map nname nnote)
+      balance  ?~  initial-balance  *(h-map nname nnote)
                u.initial-balance
       height   initial-height
     ==
   ::
   ++  txs-size-by-set
     |=  form
-    %-  ~(rep z-by txs)
+    %-  ~(rep h-by txs)
     |=  [[=tx-id =tx] sum-sizes=^size]
     %+  add  sum-sizes
     ~(size get:raw-tx raw-tx.tx)
@@ -1181,7 +1189,7 @@
     :-  %.y
     %_  form
       size  (add size.form computed-size)
-      txs   (~(put z-by txs.form) id.tx0 agg-tx)
+      txs   (~(put h-by txs.form) id.tx0 agg-tx)
     ==
     ::
     ++  add-outputs
@@ -1191,9 +1199,9 @@
       |:  [op=*output:v0 acc=`(reason _form)`[%.y form]]
       ?.  ?=(%.y -.acc)  acc
       =/  f=_form  p.acc
-      ?:  (~(has z-by balance.f) name.note.op)
+      ?:  (~(has h-by balance.f) name.note.op)
         [%.n %v0-output-already-exists]
-      [%.y f(balance (~(put z-by balance.f) name.note.op note.op))]
+      [%.y f(balance (~(put h-by balance.f) name.note.op note.op))]
     ::
     ++  consume-inputs
       |=  [ips=(z-map nname input:v0) page-num=page-number]
@@ -1204,7 +1212,7 @@
           ==
       ?.  ?=(%.y -.acc)  acc
       =/  [tir=timelock-range f=^form]  p.acc
-      ?.  =(`note.ip (~(get z-by balance.f) name.note.ip))
+      ?.  =(`note.ip (~(get h-by balance.f) name.note.ip))
         [%.n %v0-input-missing]
       =/  new-tir=timelock-range
         %+  merge:timelock-range  tir
@@ -1214,7 +1222,7 @@
       :-  %.y
       :-  new-tir
       %_  f
-        balance  (~(del z-by balance.f) name.note.ip)
+        balance  (~(del h-by balance.f) name.note.ip)
         fees     (add fees.f fee.spend.ip)
       ==
     --
@@ -1248,7 +1256,7 @@
     :-  %.y
     %_  form
       size  (add size.form ~(size get:raw-tx raw1))
-      txs   (~(put z-by txs.form) (compute-id:raw-tx raw1) tx1)
+      txs   (~(put h-by txs.form) (compute-id:raw-tx raw1) tx1)
     ==
     ::
     ++  add-outputs
@@ -1261,9 +1269,9 @@
       =/  note=nnote  note.op
       ?.  ?=(@ -.note)  [%.n %v1-output-wrong-note-version]
       =/  nam=nname  name.note
-      ?:  (~(has z-by balance.f) nam)
+      ?:  (~(has h-by balance.f) nam)
         [%.n %v1-output-already-exists]
-      [%.y f(balance (~(put z-by balance.f) nam note))]
+      [%.y f(balance (~(put h-by balance.f) nam note))]
     ::
     ++  consume-inputs
       |=  sps=spends
@@ -1274,9 +1282,9 @@
         |:  [nam=*nname acc=`(reason ^form)`[%.y form]]
         ?.  ?=(%.y -.acc)  acc
         =/  f=^form  p.acc
-        ?.  (~(has z-by balance.f) nam)
+        ?.  (~(has h-by balance.f) nam)
           [%.n %v1-input-missing]
-        [%.y f(balance (~(del z-by balance.f) nam))]
+        [%.y f(balance (~(del h-by balance.f) nam))]
       ?.  ?=(%.y -.remove-result)  remove-result
       [%.y p.remove-result(fees (add fees.p.remove-result fees-add))]
     --

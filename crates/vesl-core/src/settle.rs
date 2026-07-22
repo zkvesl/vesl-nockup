@@ -12,7 +12,6 @@
 use std::collections::{HashSet, VecDeque};
 
 use anyhow::Result;
-
 use nock_noun_rs::NounSlab;
 use nockchain_client_rs::ChainClient;
 use nockchain_tip5_rs::Tip5Hash;
@@ -240,7 +239,7 @@ pub fn build_witness(
     };
 
     let pkh_sig_entry = PkhSignatureEntry {
-        hash: pkh,
+        pkh,
         pubkey,
         signature,
     };
@@ -360,7 +359,12 @@ mod tests {
 
         let result = settler.settle(&payload).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("root not registered"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("root not registered")
+        );
     }
 
     // --- Pre-flight validation tests ---
@@ -372,7 +376,12 @@ mod tests {
         settler.register_root(root).unwrap();
 
         let payload = GraftPayload {
-            note: Note { id: 1, hull: 7, root, state: NoteState::Pending },
+            note: Note {
+                id: 1,
+                hull: 7,
+                root,
+                state: NoteState::Pending,
+            },
             data: vec![],
             expected_root: root,
         };
@@ -395,7 +404,12 @@ mod tests {
         settler.register_root(root).unwrap();
 
         let payload = GraftPayload {
-            note: Note { id: 1, hull: 7, root, state: NoteState::Settled },
+            note: Note {
+                id: 1,
+                hull: 7,
+                root,
+                state: NoteState::Settled,
+            },
             data: vec![],
             expected_root: root,
         };
@@ -412,7 +426,12 @@ mod tests {
         let settler = Settle::with_verifier(MockVerifier { should_pass: true });
 
         let payload = GraftPayload {
-            note: Note { id: 1, hull: 7, root, state: NoteState::Pending },
+            note: Note {
+                id: 1,
+                hull: 7,
+                root,
+                state: NoteState::Pending,
+            },
             data: vec![],
             expected_root: root,
         };
@@ -425,12 +444,14 @@ mod tests {
 
     #[test]
     fn build_seeds_valid() {
+        use nockchain_math::owned_based_noun::OwnedBasedNoun;
         use nockchain_types::tx_engine::common::Hash;
         use nockchain_types::tx_engine::v1::note::{NoteData, NoteDataEntry};
 
-        let note_data = NoteData::new(vec![
-            NoteDataEntry::new("test".to_string(), bytes::Bytes::from(vec![1u8])),
-        ]);
+        let note_data = NoteData::new(vec![NoteDataEntry::new(
+            "test".to_string(),
+            OwnedBasedNoun::try_atom(1).unwrap(),
+        )]);
         let lock_root = Hash::from_limbs(&[1, 2, 3, 4, 5]);
         let parent = Hash::from_limbs(&[10, 20, 30, 40, 50]);
 
@@ -441,12 +462,14 @@ mod tests {
 
     #[test]
     fn build_seeds_excessive_fee_rejected() {
+        use nockchain_math::owned_based_noun::OwnedBasedNoun;
         use nockchain_types::tx_engine::common::Hash;
         use nockchain_types::tx_engine::v1::note::{NoteData, NoteDataEntry};
 
-        let note_data = NoteData::new(vec![
-            NoteDataEntry::new("test".to_string(), bytes::Bytes::from(vec![1u8])),
-        ]);
+        let note_data = NoteData::new(vec![NoteDataEntry::new(
+            "test".to_string(),
+            OwnedBasedNoun::try_atom(1).unwrap(),
+        )]);
         let lock_root = Hash::from_limbs(&[1, 2, 3, 4, 5]);
         let parent = Hash::from_limbs(&[10, 20, 30, 40, 50]);
 
