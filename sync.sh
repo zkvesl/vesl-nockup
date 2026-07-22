@@ -46,7 +46,7 @@ VESL_CORE_PIN="${VESL_CORE_PIN:-bbb1c3cc748d58ddff0fc169ef3f68d89b255b4c}"
 # vesl-wallet crates were last synced from. Symmetric to VESL_CORE_PIN
 # above — same tripwire shape, same bump discipline. Overridable via
 # env: VESL_WALLET_PIN=<sha> ./sync.sh
-VESL_WALLET_PIN="${VESL_WALLET_PIN:-75db6077bfa02c5b6d05a081b61c1ee3dc8dc1f4}"
+VESL_WALLET_PIN="${VESL_WALLET_PIN:-bdaaf9a747865b1270428ac6f8f65219e5c9eabe}"
 
 # AUDIT 2026-05-19 H-16: every pin must be a 40-char lowercase hex SHA
 # before it reaches the sed rewrite below. An override such as
