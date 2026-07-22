@@ -114,7 +114,9 @@ if [[ "$TYPE" == "nock" && -n "$URL_FRAG" ]]; then
     for tpl in templates/*/Cargo.toml; do
         [[ -f "$tpl" ]] || continue
         if grep -q "$URL_FRAG" "$tpl"; then
-            sed -i -E "/$URL_FRAG/ s/(rev[[:space:]]*=[[:space:]]*\")[0-9a-f]{40}/\\1$SHA/g" "$tpl"
+            # \%…% address form: URL_FRAG contains a slash, which would
+            # terminate a /…/ address early ("extra characters after command").
+            sed -i -E "\\%$URL_FRAG% s/(rev[[:space:]]*=[[:space:]]*\")[0-9a-f]{40}/\\1$SHA/g" "$tpl"
             sites_changed=$((sites_changed + 1))
             echo "updated $tpl"
         fi
