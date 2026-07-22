@@ -501,8 +501,11 @@ if [[ $SYNC_VERIFY -eq 1 ]]; then
         # Exclude target/ — cargo build artifacts pollute both sides
         # and aren't part of shipped templates. Exclude Cargo.lock for
         # the same reason; per-template lockfiles drift with every
-        # transitive dep release and aren't what sync produces.
-        if ! diff -ruN --exclude=target --exclude=Cargo.lock \
+        # transitive dep release and aren't what sync produces. Same for
+        # out.jam: a gitignored compile artifact that exists in whichever
+        # tree last ran the test suite (vesl-checkpoint's end_to_end
+        # fixture), never something sync produces.
+        if ! diff -ruN --exclude=target --exclude=Cargo.lock --exclude=out.jam \
                 "$real_here/$path" "$here/$path" > /tmp/sync-verify-diff.$$ 2>&1; then
             echo "DRIFT: $path"
             cat /tmp/sync-verify-diff.$$
