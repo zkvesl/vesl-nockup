@@ -27,7 +27,10 @@ use vesl_test::{TEST_PAYLOAD, init_capture_tracing};
 async fn watch_smoke_captures_three_events() -> Result<()> {
     let jam_path = fixtures::compose_and_compile("watch_smoke", &["settle-graft"])?;
 
-    let mut boot_cli = boot::default_boot_cli(false);
+    // Ephemeral boot: a durable data dir makes the test non-idempotent —
+    // the second run replays the first run's PMA state and the
+    // settle-register pokes come back rejected as duplicates.
+    let mut boot_cli = boot::ephemeral_test_boot_cli(false);
     init_capture_tracing(&boot_cli);
     boot_cli.gc_interval = None; // skip periodic saves during the smoke run
 
@@ -120,7 +123,10 @@ async fn watch_smoke_captures_three_events() -> Result<()> {
 async fn watch_smoke_filter_drops_non_matching_events() -> Result<()> {
     let jam_path = fixtures::compose_and_compile("watch_smoke_filter", &["settle-graft"])?;
 
-    let mut boot_cli = boot::default_boot_cli(false);
+    // Ephemeral boot: a durable data dir makes the test non-idempotent —
+    // the second run replays the first run's PMA state and the
+    // settle-register pokes come back rejected as duplicates.
+    let mut boot_cli = boot::ephemeral_test_boot_cli(false);
     init_capture_tracing(&boot_cli);
     boot_cli.gc_interval = None;
     let kernel_bytes = std::fs::read(&jam_path)?;
