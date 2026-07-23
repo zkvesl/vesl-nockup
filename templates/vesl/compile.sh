@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Verified Hoon compile.
 #
-# hoonc can exit 0 while producing no kernel: a structural error in the
-# Hoon surfaces as a "no panic!" line and an empty or missing `out.jam`,
+# The compiler can exit 0 while producing no kernel: a structural error in
+# the Hoon surfaces as a diagnostic line and an empty or missing `out.jam`,
 # not a non-zero exit. Its exit code alone is not trustworthy. This wrapper
-# runs hoonc, then checks the `out.jam` artifact and fails loud when hoonc
-# lied — so a following `cargo run` never boots a stale or empty kernel.
+# compiles, then checks the `out.jam` artifact and fails loud when the exit
+# code lied — so a following `cargo run` never boots a stale or empty kernel.
+#
+# honk, not hoonc: honk's output bytes are reproducible from any checkout
+# location, where hoonc bakes absolute build paths into the JAM.
 #
 # On success, refreshes .out-jam-source-fingerprint so the next
 # `vesl-test verify-jam` reflects this compile rather than the previous
@@ -17,13 +20,13 @@ set -euo pipefail
 
 kernel="${1:-hoon/app/app.hoon}"
 
-hoonc "$kernel" hoon/
+honk --new --output out.jam --prelude hoon/common/hoon.hoon "$kernel" hoon
 
 if [ ! -s out.jam ]; then
   echo "" >&2
-  echo "compile.sh: hoonc exited 0 but out.jam is missing or empty." >&2
-  echo "  hoonc silently failed on a structural error in ${kernel}." >&2
-  echo "  Re-read hoonc's output above for the [DIAG] / mote line." >&2
+  echo "compile.sh: honk exited 0 but out.jam is missing or empty." >&2
+  echo "  honk silently failed on a structural error in ${kernel}." >&2
+  echo "  Re-read honk's output above for the diagnostic line." >&2
   exit 1
 fi
 

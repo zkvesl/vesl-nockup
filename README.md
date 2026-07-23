@@ -6,7 +6,7 @@ The full walkthrough lives at [docs.zkvesl.org](https://docs.zkvesl.org); projec
 
 ## Installation
 
-Four pieces: the `nockup` scaffolder, a Rust nightly toolchain, the `nockup-graft` plugin shipped from here, and the nockchain monorepo as a source for `nockup`.
+Five pieces: the nockchain monorepo, the `nockup` scaffolder, `honk` (the Hoon compiler), the pinned Rust nightly, and the `nockup-graft` plugin shipped from here.
 
 1. Clone the nockchain monorepo:
 
@@ -14,7 +14,9 @@ Four pieces: the `nockup` scaffolder, a Rust nightly toolchain, the `nockup-graf
    git clone https://github.com/nockchain/nockchain.git
    ```
 
-2. Install `nockup` — downloads `hoon`, `hoonc`, and `nockup` into `~/.nockup/bin/` and prepends that to `PATH`:
+   Vesl builds against upstream `master`. The exact SHA is `NOCK_PIN` in [`.github/workflows/ci.yml`](.github/workflows/ci.yml); `scripts/check-pins.sh` keeps every pin site in agreement.
+
+2. Install `nockup` — drops `hoon`, `hoonc`, and `nockup` into `~/.nockup/bin/` and prepends that to `PATH`:
 
    ```bash
    # Script install
@@ -24,13 +26,25 @@ Four pieces: the `nockup` scaffolder, a Rust nightly toolchain, the `nockup-graf
    cd nockchain && cargo install --path crates/nockup --locked
    ```
 
-3. Rust nightly:
+3. `honk` — the Hoon compiler vesl compiles kernels with:
 
    ```bash
-   rustup toolchain install nightly
+   cargo install --locked --force --path nockchain/crates/honk --bin honk
    ```
 
-4. `nockup-graft` — vesl's graft composer, shipped as a `nockup` plugin:
+   honk is primary because its output bytes are reproducible from any checkout location. `hoonc` comes along with `nockup` and still works, but it bakes absolute build paths into the JAM, so two machines compiling the same source get different bytes.
+
+   CI pins `HONK_REV` to a `sobchek/nockchain` rev — `master` plus compiler fixes staged pending upstream review. If honk from upstream `master` misreports source paths in an error trace, build it from that rev instead.
+
+4. Rust nightly, pinned to the date nockchain pins:
+
+   ```bash
+   rustup toolchain install nightly-2026-04-03
+   ```
+
+   Not a floating `nightly` — `nockvm` uses the unstable `core::hint::cold_path()`, so an arbitrary nightly is a build waiting to break.
+
+5. `nockup-graft` — vesl's graft composer, shipped as a `nockup` plugin:
 
    ```bash
    cargo install --git https://github.com/zkvesl/vesl-nockup --bin nockup-graft
@@ -38,20 +52,21 @@ Four pieces: the `nockup` scaffolder, a Rust nightly toolchain, the `nockup-graf
 
    Once installed, `nockup graft <subcmd>` resolves the binary via nockup's plugin discovery and dispatches to it.
 
-Verify the toolchain:
+Verify the toolchain (`honk` takes no `--version`, so this just checks it resolves):
 
 ```bash
-hoonc --version && nockup --help >/dev/null && cargo +nightly --version && nockup-graft --version
+command -v honk && nockup --help >/dev/null && cargo +nightly-2026-04-03 --version && nockup-graft --version
 ```
 
 ## Quickstart
 
-Three commands from an empty directory to a kernel that emits `%settle-registered` + `%settle-noted`:
+Four commands from an empty directory to a kernel that emits `%settle-registered` + `%settle-noted`:
 
 ```bash
 nockup project init                                    # fetches vesl template + zkvesl/vesl-graft
 nockup graft inject --apply hoon/app/app.hoon          # composes grafts into the kernel
-cargo +nightly run --release                           # builds out.jam, runs the kernel
+./compile.sh                                           # honk-compiles the kernel to out.jam
+cargo +nightly-2026-04-03 run --release                # boots the kernel
 ```
 
 The full guide, including the `nockapp.toml` you write before `init`, is at [docs.zkvesl.org/setup/quickstart](https://docs.zkvesl.org/setup/quickstart).

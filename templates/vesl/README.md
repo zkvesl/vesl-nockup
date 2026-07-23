@@ -6,8 +6,8 @@ A grafted NockApp scaffolded from the `vesl` template.
 
 ```bash
 nockup graft inject --apply hoon/app/app.hoon   # composes graft bodies into the kernel
-./compile.sh                                    # verified Hoon compile (hoonc + the out.jam check)
-cargo +nightly run --release                    # boots the kernel and runs the Demo arm
+./compile.sh                                    # verified Hoon compile (honk + the out.jam check)
+cargo +nightly-2026-04-03 run --release         # boots the kernel and runs the Demo arm
 ```
 
 Expected stdout end:
@@ -24,8 +24,8 @@ boot the kernel from `out.jam` and pass the booted `NockApp` to the
 selected arm.
 
 ```bash
-cargo +nightly run --release                # Demo arm (default): register a root, settle a note
-cargo +nightly run --release -- serve       # Serve arm: HTTP API on http://127.0.0.1:3000
+cargo +nightly-2026-04-03 run --release                # Demo arm (default): register a root, settle a note
+cargo +nightly-2026-04-03 run --release -- serve       # Serve arm: HTTP API on http://127.0.0.1:3000
 ```
 
 ### `serve` flags
@@ -82,7 +82,7 @@ layer stack, leaving them unauthenticated and unrate-limited.
 
 - `Cargo.toml` — vesl-graft's `[[patches]]` rewrites the deps to git-deps pinned at the synced rev and adds both `[patch]` blocks during `nockup package install`. The pre-patch template ships path-deps as a fallback for sibling-clone workflows or eject mode (`nockup patches eject zkvesl/vesl-graft`).
 - `build.rs` — runs the `nockup-graft doctor` project-health pass each build; `out.jam` is built separately by `./compile.sh`.
-- `compile.sh` — verified Hoon compile: runs `hoonc` and fails loud if it exits 0 without producing `out.jam`.
+- `compile.sh` — verified Hoon compile: runs `honk` and fails loud if it exits 0 without producing `out.jam`.
 - `src/main.rs` — clap CLI: `Demo` arm (register a Merkle root + settle a note) and `Serve` arm (HTTP API via `vesl_hull::serve`).
 - `hoon/app/app.hoon` — markered kernel template; `nockup graft inject` composes graft bodies into the `::  nockup:*` anchors.
 - `hoon/lib/lib.hoon` — stub `/+ lib` import for your domain library.
