@@ -22,7 +22,20 @@ env:
   # The extra commits touch only compiler crates — the Rust path-dep
   # surface is identical to NOCK_PIN. Fold back into NOCK_PIN and
   # repoint at nockchain/nockchain when they land upstream.
-  HONK_REV: 82ab7bffdba28dfcbd04a7006a9d3244db3c2d7c
+  #
+  # ⛔ NOT MERGEABLE UNTIL 26b146fe IS PUSHED TO sobchek/nockchain.
+  # 2026-08-01: bumped to nockcloud's arena/seminoun-DAG branch (ea6a8f34)
+  # with the cwd-relative spot commit 82ab7bff cherry-picked on top. Two
+  # jobs consume this — `test` (compiles the counter template) and
+  # `spot-check-path-independence`, whose whole premise is the cwd-relative
+  # spot paths. Both keep working: 82ab7bff is IN this rev, and measured
+  # cross-path builds are byte-identical. Without the cherry-pick the branch
+  # is path-DEPENDENT and spot-check-path-independence would fail.
+  #
+  # Also a correctness fix: the old 82ab7bff predates nockcloud's axis and
+  # wide-`=/` work and fails both of honk's own regression assets.
+  # Full record: zkML docs/honk/ARENA-DAG-BENCHMARK.md.
+  HONK_REV: 26b146fe1322f3c832a544ae3dc75712c507cf00
 
 jobs:
   check-pins:
