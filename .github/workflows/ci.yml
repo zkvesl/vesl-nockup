@@ -17,25 +17,21 @@ env:
   VESL_CORE_PIN: fa4e16f8f7d6cd203a93914b6fbc2da62957e1a8
   VESL_WALLET_PIN: 4bdfe838c7b352d8233c0e7bde3a14906e15af57
   # honk (the fleet's primary Hoon compiler) is built from HONK_REV:
-  # NOCK_PIN plus fixes staged on the sobchek fork pending upstream
-  # review (nockchain/nockchain PR #146 + cwd-relative spot paths).
-  # The extra commits touch only compiler crates — the Rust path-dep
-  # surface is identical to NOCK_PIN. Fold back into NOCK_PIN and
-  # repoint at nockchain/nockchain when they land upstream.
+  # ⚑⚑ 2026-09-10: THE FORK IS RETIRED AND THIS BLOCK'S OWN EXIT CONDITION HAS FIRED.
+  # It used to say "Fold back into NOCK_PIN and repoint at nockchain/nockchain when
+  # they land upstream."  They landed: all eight nockcloud fixes — PR #146's axis and
+  # wide-`=/` work AND the cwd-relative spot commit that `spot-check-path-independence`
+  # rests on — rode in on nockchain/nockchain PR 153 (squash f4fe1a8f, 2026-08-30).
+  # · VERIFIED BY SOURCE CONTENT, not by history: a squash rewrites every SHA, so
+  # `git log fork..upstream` is useless here and the squash message merely LISTS what it
+  # squashed.  Record: zkML records/S24.
   #
-  # ⛔ NOT MERGEABLE UNTIL 26b146fe IS PUSHED TO sobchek/nockchain.
-  # 2026-08-01: bumped to nockcloud's arena/seminoun-DAG branch (ea6a8f34)
-  # with the cwd-relative spot commit 82ab7bff cherry-picked on top. Two
-  # jobs consume this — `test` (compiles the counter template) and
-  # `spot-check-path-independence`, whose whole premise is the cwd-relative
-  # spot paths. Both keep working: 82ab7bff is IN this rev, and measured
-  # cross-path builds are byte-identical. Without the cherry-pick the branch
-  # is path-DEPENDENT and spot-check-path-independence would fail.
-  #
-  # Also a correctness fix: the old 82ab7bff predates nockcloud's axis and
-  # wide-`=/` work and fails both of honk's own regression assets.
-  # Full record: zkML docs/honk/ARENA-DAG-BENCHMARK.md.
-  HONK_REV: 26b146fe1322f3c832a544ae3dc75712c507cf00
+  # ⚑ Two jobs consume this (`test` compiles the counter template;
+  # `spot-check-path-independence` needs the cwd-relative spot paths).  Both keep
+  # working: the spot commit is IN this rev, and · MEASURED 2026-09-10 the counter
+  # template compiles BYTE-IDENTICALLY under the fork binary and the upstream binary
+  # (583.752 B, same sha256) — the compiler swap is byte-neutral here.
+  HONK_REV: 2bcb0b9dfd190f17252205afd1c8a067048a1ad9
 
 jobs:
   check-pins:
@@ -115,7 +111,7 @@ jobs:
         # path-dep surface are identical to NOCK_PIN (see env comment).
         uses: actions/checkout@v4
         with:
-          repository: sobchek/nockchain
+          repository: nockchain/nockchain
           ref: ${{ env.HONK_REV }}
           path: nockchain
 
@@ -350,7 +346,7 @@ jobs:
         # spot-check.sh, so the checkout must carry the compiler crates.
         uses: actions/checkout@v4
         with:
-          repository: sobchek/nockchain
+          repository: nockchain/nockchain
           ref: ${{ env.HONK_REV }}
           path: nockchain
 
