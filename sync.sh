@@ -239,8 +239,13 @@ cp "$vesl/protocol/lib/batch-graft.toml"    "$here/hoon/lib/"
 # into the sibling nockchain checkout. `cp -rL` dereferences them —
 # assert each resolves into a nockchain/hoon tree before copying, so a
 # rewritten symlink cannot redirect the copy at arbitrary files.
-# `nockchain*` also admits pinned worktrees of the same repo (e.g.
-# nockchain-honk-pin, the honk compiler rev vesl-core compiles against).
+# `nockchain*` also admits pinned sibling clones of the same repo — today
+# `nockchain` (the pinned base) and `nockchain-honk` (the compiler rev,
+# upstream nockchain/nockchain @ 2bcb0b9d).
+# ⚑ 2026-09-10: the example here used to name `nockchain-honk-pin`, a
+# directory that no longer exists — vesl-core's hoon/* symlinks still
+# pointed into it and were DANGLING, so its jam check could not run at all.
+# The nockcloud fork it belonged to is retired; see zkML records/S25b §10.
 for _hd in common dat jams; do
     _tgt="$(realpath "$vesl/hoon/$_hd" 2>/dev/null || echo "")"
     case "$_tgt" in
