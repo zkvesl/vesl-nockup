@@ -34,7 +34,7 @@ Five pieces: the nockchain monorepo, the `nockup` scaffolder, `honk` (the Hoon c
 
    honk is primary because its output bytes are reproducible from any checkout location. `hoonc` comes along with `nockup` and still works, but it bakes absolute build paths into the JAM, so two machines compiling the same source get different bytes.
 
-   CI pins `HONK_REV` to a `sobchek/nockchain` rev — `master` plus compiler fixes staged pending upstream review. If honk from upstream `master` misreports source paths in an error trace, build it from that rev instead.
+   CI pins `HONK_REV` to a `nockchain/nockchain` rev. The fork that used to carry compiler fixes ahead of upstream is retired — they all landed — so the pin is plain `master`, held at a known-good commit rather than tracking the branch.
 
 4. Rust nightly, pinned to the date nockchain pins:
 
