@@ -2,14 +2,14 @@
 //!
 //! Imports only what's reachable from `vesl_wallet::*` and `vesl_signing::*`
 //! (no `crate::` paths). Guards the surface against regressions and
-//! exercises the BIP-39 + Cheetah-BIP32-over-Tip5 path end-to-end.
+//! exercises the BIP-39 + SLIP-10-over-Cheetah path end-to-end.
 
 use vesl_signing::domain::{domain_separators, hash_canonical};
 use vesl_signing::prelude::Belt;
 use vesl_signing::schnorr::{schnorr_sign, schnorr_verify};
 use vesl_wallet::{
     DerivationPath, VeslWallet, WalletError, ROLE_ENCRYPTION, ROLE_INTENT, ROLE_RECEIVING,
-    ROLE_SESSION, ROLE_X402, VESL_COIN_TYPE_PLACEHOLDER,
+    ROLE_SESSION, ROLE_VOID, ROLE_WITHDRAWAL, ROLE_X402, VESL_COIN_TYPE_PLACEHOLDER,
 };
 
 const CANONICAL_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon \
@@ -45,11 +45,23 @@ fn passphrase_changes_keys() {
     assert_ne!(s_no.to_belts(), s_pp.to_belts());
 }
 
+/// ⛔⛔ **THIS TEST PINS NO KEY VALUE — it asserts only that the roles are
+/// pairwise distinct, so it survives any relabelling of the whole key space.**
+/// It had covered five roles since before `ROLE_VOID` shipped (2026-09-03) and
+/// was never extended, which is exactly the failure shape it cannot see: the
+/// array literal and the hard-coded count are two hand-maintained facts, and
+/// omitting a role from both keeps it green. The file that actually freezes
+/// these keys is `src/slip10_conformance.rs`'s `ROLE_SCALARS`, whose length
+/// annotation makes the same omission a compile error. Extended to seven here
+/// **as well as** there, never instead of it.
 #[test]
 fn each_role_yields_a_distinct_key() {
     let w = wallet();
     let mut bytes = Vec::new();
-    for role in [ROLE_INTENT, ROLE_RECEIVING, ROLE_ENCRYPTION, ROLE_SESSION, ROLE_X402] {
+    for role in [
+        ROLE_INTENT, ROLE_RECEIVING, ROLE_ENCRYPTION, ROLE_SESSION, ROLE_X402, ROLE_VOID,
+        ROLE_WITHDRAWAL,
+    ] {
         let dk = w
             .derive(DerivationPath::new(VESL_COIN_TYPE_PLACEHOLDER, 0, role, 0))
             .unwrap();
@@ -64,8 +76,8 @@ fn each_role_yields_a_distinct_key() {
     sorted.dedup();
     assert_eq!(
         sorted.len(),
-        5,
-        "each of the five reserved roles must derive a distinct scalar"
+        7,
+        "each of the seven assigned roles must derive a distinct scalar"
     );
 }
 

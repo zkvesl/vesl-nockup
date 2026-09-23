@@ -11,9 +11,13 @@ pub enum WalletError {
     #[error("invalid BIP39 mnemonic: {0}")]
     InvalidMnemonic(String),
 
-    /// The derived scalar landed outside `[1, G_ORDER)`. With Tip5 this is
-    /// cryptographically negligible but we still surface a typed error
-    /// rather than panicking; callers can rotate the index and try again.
+    /// The derived scalar landed outside `[1, G_ORDER)`.
+    ///
+    /// No longer reachable from derivation: since the SLIP-10 swap,
+    /// `hd.rs` rehashes on an invalid key rather than failing, exactly as
+    /// `slip10.hoon:162-181` does. Retained rather than removed because it
+    /// is public API and `SchnorrPrivateKey::new` still refuses such a
+    /// scalar, so a caller constructing a key directly can still see it.
     #[error("derived scalar is invalid for Cheetah (zero or >= G_ORDER); rotate the path index")]
     InvalidScalar,
 

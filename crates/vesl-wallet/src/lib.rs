@@ -6,10 +6,11 @@
 //!    (PBKDF2-HMAC-SHA512 per the specification, the one piece that
 //!    has to follow BIP-39 verbatim so 12/24-word phrases round-trip
 //!    through any compliant implementation).
-//! 2. **Cheetah-BIP32-over-Tip5 HD derivation** — a custom BIP-32 analog
-//!    that swaps HMAC-SHA512 for [`Tip5`] under the
-//!    [`vesl-hd-v1`] domain separator. See [`hd`] for the rationale.
-//! 3. **BIP-44 layout** from [`vesl_wallet_spec`]: role constants 0-4,
+//! 2. **SLIP-10-over-Cheetah HD derivation**, conforming to nockchain's
+//!    own `hoon/common/slip10.hoon` — so the keys this crate derives are
+//!    the keys the reference CLI wallet derives from the same phrase.
+//!    See [`hd`] for the arm-by-arm correspondence.
+//! 3. **BIP-44 layout** from [`vesl_wallet_spec`]: role constants 0-6,
 //!    [`DerivationPath`] type, hardening boundary at purpose / coin_type
 //!    / account.
 //!
@@ -52,9 +53,15 @@ pub use error::WalletError;
 // `vesl_wallet::*` without a second `use vesl_wallet_spec::...` line.
 pub use vesl_wallet_spec::{
     DerivationPath, BIP44_PURPOSE, ROLE_ENCRYPTION, ROLE_INTENT, ROLE_RECEIVING, ROLE_SESSION,
-    ROLE_X402,
+    ROLE_VOID, ROLE_WITHDRAWAL, ROLE_X402,
 };
 pub use wallet::{DerivedKey, VeslWallet};
+
+/// The frozen SLIP-10 conformance vectors. A unit test rather than an
+/// integration one because it pins the master key and depth-1 children,
+/// which the public API does not expose.
+#[cfg(test)]
+mod slip10_conformance;
 
 /// Placeholder coin_type for the BIP-44 path's second hardened
 /// component. Pending upstream SLIP-44 registration of a Nockchain

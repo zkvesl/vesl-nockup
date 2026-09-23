@@ -21,7 +21,7 @@ m / 44' / <coin_type>' / <agent_account>' / <role> / <index>
 | `purpose'` | `44'` (constant) | hardened | BIP44 marker |
 | `coin_type'` | TBD upstream — see §4 | hardened | SLIP-44 coin type |
 | `agent_account'` | `0'`, `1'`, … | hardened | Per-agent account; one account = one logical agent identity |
-| `role` | `0`–`4` (reserved); `5+` (open) | non-hardened | See §2 |
+| `role` | `0`–`6` (reserved); `7+` (open) | non-hardened | See §2 |
 | `index` | `0`, `1`, … | non-hardened | Rotation / sequence index within a role |
 
 ### Hardening MUST hold at the account boundary
@@ -80,6 +80,32 @@ x402-nockchain's `NockchainWalletClient` should accept a `DerivationPath` (or eq
 
 **Rust constant:** `vesl_wallet_spec::ROLE_X402 = 4`
 
+### Role 5 — x402 hold-void (cancellation) keys
+
+> ⚑ *A throwaway key whose only job is to pre-authorise giving one parked payment back. It signs once, immediately after the payment lands, and is then useless.*
+
+The dedicated, discardable key that authorises cancelling one parked x402 payment, at `m/44'/<coin_type>'/<agent_account>'/5/<index>`.
+
+- **It MUST be derived at the same `index` as the payment key it cancels**, and that is a privacy requirement rather than a convenience: a spend publishes the signer's pubkey in its witness, so a void key that did not rotate would be a permanent, public, on-chain identifier joining every job that buyer ever paid for.
+- **It is a separate role rather than another index under role 4** so the two key spaces cannot collide: at one role, "the void key for payment `i`" would have to be some other index `j`, and `j` is a payment key for some other job.
+- **The void key MUST NEVER equal the payment key.** A spend's signed digest covers its outputs and fee and *not* the branch it reveals, so while the hold's void and capture branches named one buyer key, a capture co-signature also spent the void branch. A live node accepted exactly that, twice, before the fix.
+
+⚑ *Documented here 2026-09-08. The constant shipped 2026-09-03 and this section was omitted at the time — §1's table and §5 below both still described role 5 as open until today.*
+
+**Rust constant:** `vesl_wallet_spec::ROLE_VOID = 5`
+
+### Role 6 — x402 withdrawal keys
+
+> ⚑ *The address a cash-out is swept into. Money here is on its way OUT of the wallet — it is never handed to a job and never split back into spending coins.*
+
+Where a swept x402 spending pool lands when the user asks for their money back, at `m/44'/<coin_type>'/<agent_account>'/6/<index>`.
+
+- **It is a separate role because the alternative is a loop.** A sweep landing at a role-1 receiving address would be classified as an incoming deposit — unmarked at a receiving address *is* the funding predicate — and fanned straight back out into the spending pool the user just asked to empty. A distinct role makes that unreachable by construction rather than dependent on a note-data tag an observer can read and a stranger can write.
+- **It is likewise not another index under role 4**: any index there is a spending slot for some job, so a withdrawal parked at one would be handed out by the reservation ledger as working capital.
+- Unlike role 5 it carries **no rotation requirement** — a withdrawal is a deliberate, user-visible act with no per-job unlinkability obligation. Rotating the index per withdrawal is recommended for the same reason deposits rotate: it isolates each cash-out, so a second coin arriving at one reads as an anomaly.
+
+**Rust constant:** `vesl_wallet_spec::ROLE_WITHDRAWAL = 6`
+
 ---
 
 ## §3 Domain separator registry
@@ -137,11 +163,11 @@ OD#11 tracks the coordination work to:
 
 ---
 
-## §5 Roles 5+
+## §5 Roles 7+
 
-Roles `5` and above are explicitly **open** for future assignments. Future amendments to this spec mint new role assignments rather than redefining existing ones (see §6). Candidate future uses include threshold-Schnorr signing keys, additional encryption schemes, on-chain-delegation authority keys (when Nockchain adds account-abstraction primitives), and oracle-attestation keys.
+Roles `7` and above are explicitly **open** for future assignments. Future amendments to this spec mint new role assignments rather than redefining existing ones (see §6). Candidate future uses include threshold-Schnorr signing keys, additional encryption schemes, on-chain-delegation authority keys (when Nockchain adds account-abstraction primitives), and oracle-attestation keys.
 
-Implementations MUST NOT use roles 5+ until this spec assigns them, to avoid silent collisions across consumers.
+Implementations MUST NOT use roles 7+ until this spec assigns them, to avoid silent collisions across consumers.
 
 ---
 
@@ -149,7 +175,7 @@ Implementations MUST NOT use roles 5+ until this spec assigns them, to avoid sil
 
 This spec follows BIP-style amendment conventions:
 
-- **Breaking changes** mint new role assignments at currently-unreserved slots. Existing role assignments (roles 0-4) are **not** retroactively edited.
+- **Breaking changes** mint new role assignments at currently-unreserved slots. Existing role assignments (roles 0-6) are **not** retroactively edited.
 - **Non-breaking clarifications** (typo fixes, expanded prose, new examples) ship as in-place edits and are reflected in the crate's `CHANGELOG.md`.
 - **The Rust constant set is append-only.** New roles add new `pub const ROLE_*` constants; no constant value ever changes once shipped.
 

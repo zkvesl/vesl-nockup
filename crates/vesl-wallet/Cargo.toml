@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "High-level Hull-author wallet API bundling vesl-wallet-spec + vesl-signing + pure-Rust BIP39 + Cheetah-BIP32-over-Tip5 HD derivation."
+description = "High-level Hull-author wallet API bundling vesl-wallet-spec + vesl-signing + pure-Rust BIP39 + SLIP-10-over-Cheetah HD derivation matching nockchain's reference wallet."
 readme = "README.md"
 keywords = ["nockchain", "vesl", "wallet", "schnorr", "bip44"]
 categories = ["cryptography"]
@@ -21,6 +21,10 @@ vesl-wallet-spec = { path = "../vesl-wallet-spec", version = "0.1.0-beta.1" }
 bip39 = { workspace = true, features = ["std", "zeroize"] }
 # Big-integer arithmetic shared with vesl-signing (G_ORDER is UBig).
 ibig = { workspace = true }
+# SLIP-10 derivation: HMAC-SHA512 is the PRF nockchain's own
+# hoon/common/slip10.hoon uses, so conformance requires it exactly.
+hmac = { workspace = true }
+sha2 = { workspace = true }
 # Lazy statics used to memoize the bip39 -> seed PBKDF2 result in the
 # wallet's master-derivation path.
 once_cell = { workspace = true }
@@ -35,3 +39,6 @@ thiserror = { workspace = true }
 # tests).
 vesl-signing = { path = "../vesl-signing", version = "0.1.0-beta.1" }
 serde_json = { workspace = true }
+# Base58 lets the frozen vectors be pasted verbatim from
+# `nockchain-wallet` output, so their provenance stays legible.
+bs58 = { workspace = true }
