@@ -241,7 +241,7 @@ cp "$vesl/protocol/lib/batch-graft.toml"    "$here/hoon/lib/"
 # rewritten symlink cannot redirect the copy at arbitrary files.
 # `nockchain*` also admits pinned sibling clones of the same repo — today
 # `nockchain` (the pinned base) and `nockchain-honk` (the compiler rev,
-# upstream nockchain/nockchain @ 2bcb0b9d).
+# upstream nockchain/nockchain at HONK_REV, which equals NOCK_PIN).
 # ⚑ 2026-09-10: the example here used to name `nockchain-honk-pin`, a
 # directory that no longer exists — vesl-core's hoon/* symlinks still
 # pointed into it and were DANGLING, so its jam check could not run at all.

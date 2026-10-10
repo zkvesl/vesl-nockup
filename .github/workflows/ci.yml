@@ -31,7 +31,7 @@ env:
   # working: the spot commit is IN this rev, and · MEASURED 2026-09-10 the counter
   # template compiles BYTE-IDENTICALLY under the fork binary and the upstream binary
   # (583.752 B, same sha256) — the compiler swap is byte-neutral here.
-  HONK_REV: 2bcb0b9dfd190f17252205afd1c8a067048a1ad9
+  HONK_REV: 73877be29bd1fafeeade1be7b95aebb0f64d8382
 
 jobs:
   check-pins:
