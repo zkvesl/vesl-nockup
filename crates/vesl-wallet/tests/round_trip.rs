@@ -6,10 +6,10 @@
 
 use vesl_signing::domain::{domain_separators, hash_canonical};
 use vesl_signing::prelude::Belt;
-use vesl_signing::schnorr::{schnorr_sign, schnorr_verify};
+use vesl_signing::schnorr::{schnorr_sign, schnorr_verify, Scalar, SchnorrSig};
 use vesl_wallet::{
     DerivationPath, VeslWallet, WalletError, ROLE_ENCRYPTION, ROLE_INTENT, ROLE_RECEIVING,
-    ROLE_SESSION, ROLE_VOID, ROLE_WITHDRAWAL, ROLE_X402, VESL_COIN_TYPE_PLACEHOLDER,
+    ROLE_SESSION, ROLE_SLASH, ROLE_VOID, ROLE_WITHDRAWAL, ROLE_X402, VESL_COIN_TYPE_PLACEHOLDER,
 };
 
 const CANONICAL_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon \
@@ -52,7 +52,7 @@ fn passphrase_changes_keys() {
 /// array literal and the hard-coded count are two hand-maintained facts, and
 /// omitting a role from both keeps it green. The file that actually freezes
 /// these keys is `src/slip10_conformance.rs`'s `ROLE_SCALARS`, whose length
-/// annotation makes the same omission a compile error. Extended to seven here
+/// annotation makes the same omission a compile error. Extended to eight here
 /// **as well as** there, never instead of it.
 #[test]
 fn each_role_yields_a_distinct_key() {
@@ -60,7 +60,7 @@ fn each_role_yields_a_distinct_key() {
     let mut bytes = Vec::new();
     for role in [
         ROLE_INTENT, ROLE_RECEIVING, ROLE_ENCRYPTION, ROLE_SESSION, ROLE_X402, ROLE_VOID,
-        ROLE_WITHDRAWAL,
+        ROLE_WITHDRAWAL, ROLE_SLASH,
     ] {
         let dk = w
             .derive(DerivationPath::new(VESL_COIN_TYPE_PLACEHOLDER, 0, role, 0))
@@ -76,8 +76,8 @@ fn each_role_yields_a_distinct_key() {
     sorted.dedup();
     assert_eq!(
         sorted.len(),
-        7,
-        "each of the seven assigned roles must derive a distinct scalar"
+        8,
+        "each of the eight assigned roles must derive a distinct scalar"
     );
 }
 
@@ -105,14 +105,14 @@ fn sign_intent_round_trip_via_schnorr() {
     let w = wallet();
     let payload = serde_json::json!({ "intent_id": "abc", "value": "100" });
     let digest = hash_canonical(domain_separators::VESL_INTENT, &payload).unwrap();
-    let (chal, sig) = w.sign_intent(0, &digest).unwrap();
+    let sig = w.sign_intent(0, &digest).unwrap();
 
     // Reconstruct the same key via the public derive() path and use it
     // to verify — proves sign_intent uses the same key the public
     // derive() returns.
     let signer = w.intent_signer(0, 0).unwrap();
     let pk = signer.public_key().unwrap();
-    schnorr_verify(&pk, &digest, &chal, &sig).unwrap();
+    schnorr_verify(&pk, &digest, &sig).unwrap();
 }
 
 #[test]
@@ -162,32 +162,14 @@ fn sign_with_intent_then_payment_keys_under_their_separators() {
     let intent_msg = [Belt(11), Belt(22), Belt(33), Belt(44), Belt(55)];
     let payment_msg = [Belt(99), Belt(98), Belt(97), Belt(96), Belt(95)];
 
-    let (i_chal, i_sig) = schnorr_sign(&intent_key, &intent_msg).unwrap();
-    let (p_chal, p_sig) = schnorr_sign(&payment_key, &payment_msg).unwrap();
+    let i_sig = schnorr_sign(&intent_key, &intent_msg).unwrap();
+    let p_sig = schnorr_sign(&payment_key, &payment_msg).unwrap();
 
-    schnorr_verify(
-        &intent_key.public_key().unwrap(),
-        &intent_msg,
-        &i_chal,
-        &i_sig,
-    )
-    .unwrap();
-    schnorr_verify(
-        &payment_key.public_key().unwrap(),
-        &payment_msg,
-        &p_chal,
-        &p_sig,
-    )
-    .unwrap();
+    schnorr_verify(&intent_key.public_key().unwrap(), &intent_msg, &i_sig).unwrap();
+    schnorr_verify(&payment_key.public_key().unwrap(), &payment_msg, &p_sig).unwrap();
 
     // Cross-check: intent pubkey does not verify the payment signature.
-    assert!(schnorr_verify(
-        &intent_key.public_key().unwrap(),
-        &payment_msg,
-        &p_chal,
-        &p_sig
-    )
-    .is_err());
+    assert!(schnorr_verify(&intent_key.public_key().unwrap(), &payment_msg, &p_sig).is_err());
 }
 
 #[test]
@@ -242,4 +224,39 @@ fn distinct_mnemonics_distinct_master_keys() {
     let s_a = w_a.intent_signer(0, 0).unwrap();
     let s_b = w_b.intent_signer(0, 0).unwrap();
     assert_ne!(s_a.to_belts(), s_b.to_belts());
+}
+
+/// `sign_intent` reproduces, byte for byte, the signatures it produced
+/// before 0.2.0 changed its return type from a `UBig` pair to
+/// [`SchnorrSig`]. The fixture was captured from 0.1.0-beta.1 at commit
+/// `2ff444d`; never regenerate it.
+#[test]
+fn sign_intent_matches_the_golden_vectors() {
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/sign_intent_golden.json")).unwrap();
+    let w = VeslWallet::from_seed_phrase(
+        fixture["mnemonic"].as_str().unwrap(),
+        fixture["passphrase"].as_str().unwrap(),
+        u32::try_from(fixture["coin_type"].as_u64().unwrap()).unwrap(),
+    )
+    .unwrap();
+    let t8 = |v: &serde_json::Value| -> [u32; 8] {
+        std::array::from_fn(|i| u32::try_from(v[i].as_u64().unwrap()).unwrap())
+    };
+    let vectors = fixture["vectors"].as_array().unwrap();
+    assert_eq!(vectors.len(), 12);
+    for v in vectors {
+        let account = u32::try_from(v["account"].as_u64().unwrap()).unwrap();
+        let m: [Belt; 5] = std::array::from_fn(|i| Belt(v["msg_belts"][i].as_u64().unwrap()));
+        let want = SchnorrSig {
+            chal: Scalar::from_t8(t8(&v["chal_t8"])),
+            sig: Scalar::from_t8(t8(&v["sig_t8"])),
+        };
+        assert_eq!(
+            w.sign_intent(account, &m).unwrap(),
+            want,
+            "account {account}, {}",
+            v["msg"]
+        );
+    }
 }

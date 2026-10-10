@@ -3,8 +3,8 @@
 **Status:** v0.1 (held-pre-tag, alongside `vesl-signing` v0.1.0)
 **Crate:** `vesl-wallet-spec` (workspace member of [`vesl-wallet`](https://github.com/zkvesl/vesl-wallet))
 **Depends on:** [`vesl-signing`](../vesl-signing/) for domain separators
-**Closes:** OD#1 (BIP44 layout for x402 — `role=4` reservation)
-**Open:** OD#11 (SLIP-44 coin_type registration — see §4)
+**Settles:** the BIP44 layout for x402 keys (`role=4` reservation)
+**Open:** SLIP-44 coin_type registration (see §4)
 
 ---
 
@@ -21,7 +21,7 @@ m / 44' / <coin_type>' / <agent_account>' / <role> / <index>
 | `purpose'` | `44'` (constant) | hardened | BIP44 marker |
 | `coin_type'` | TBD upstream — see §4 | hardened | SLIP-44 coin type |
 | `agent_account'` | `0'`, `1'`, … | hardened | Per-agent account; one account = one logical agent identity |
-| `role` | `0`–`6` (reserved); `7+` (open) | non-hardened | See §2 |
+| `role` | `0`–`7` (reserved); `8+` (open) | non-hardened | See §2 |
 | `index` | `0`, `1`, … | non-hardened | Rotation / sequence index within a role |
 
 ### Hardening MUST hold at the account boundary
@@ -68,7 +68,7 @@ Compromise of a single session key limits damage to that session's outstanding i
 
 **Rust constant:** `vesl_wallet_spec::ROLE_SESSION = 3`
 
-### Role 4 — x402 spending keys *(new — closes OD#1)*
+### Role 4 — x402 spending keys *(new)*
 
 x402 payment-authorization spending keys derive at `m/44'/<coin_type>'/<agent_account>'/4/<index>`. This reservation:
 
@@ -76,7 +76,7 @@ x402 payment-authorization spending keys derive at `m/44'/<coin_type>'/<agent_ac
 - Preserves the role-separation discipline of roles 0-3 — payment authority is a distinct role, not overloaded onto the intent-signing key.
 - Domain-separated: x402 payments MUST sign under `vesl_signing::domain::domain_separators::X402` (= `"x402-nockchain-v2"`), not `VESL_INTENT`. See §3.
 
-x402-nockchain's `NockchainWalletClient` should accept a `DerivationPath` (or equivalent) rather than a raw `[Belt; 8]` scalar — see `x402-nockchain/docs/CURRENT_STATE.md §2 gap #5` ("HD-derivation seam"). This spec ships the constant that consumer wires against.
+x402-nockchain's `NockchainWalletClient` should accept a `DerivationPath` (or equivalent) rather than a raw `[Belt; 8]` scalar, so one seed can hold both x402 payment keys and intent keys without collision. This spec ships the constant that consumer wires against.
 
 **Rust constant:** `vesl_wallet_spec::ROLE_X402 = 4`
 
@@ -105,6 +105,16 @@ Where a swept x402 spending pool lands when the user asks for their money back, 
 - Unlike role 5 it carries **no rotation requirement** — a withdrawal is a deliberate, user-visible act with no per-job unlinkability obligation. Rotating the index per withdrawal is recommended for the same reason deposits rotate: it isolates each cash-out, so a second coin arriving at one reads as an anomaly.
 
 **Rust constant:** `vesl_wallet_spec::ROLE_WITHDRAWAL = 6`
+
+### Role 7 — a bond's slash-only key
+
+> ⚑ *The key a provider signs its possible slash with, in advance. It can take the stake only by the slash, never by any other way out.*
+
+At `m/44'/<coin_type>'/<agent_account>'/7/<index>`, the same index as the holder key it pairs with. A staked slice names it in its SLASH branch beside the platform's verdict key, and nowhere else.
+
+- **It is a separate role because a signature does not say which branch it spends.** A spend's signed digest covers outputs and fee, not the revealed branch. While SLASH and EXIT both named the holder's key, a stored slash signature plus the platform's funding key could complete the slash through EXIT without the verdict key. A distinct role makes that unreachable by construction — the same argument role 5 makes.
+
+**Rust constant:** `vesl_wallet_spec::ROLE_SLASH = 7`
 
 ---
 
@@ -138,7 +148,7 @@ The same Schnorr-over-Cheetah primitive is reused across roles 0, 3, and 4 — d
 
 ---
 
-## §4 SLIP-44 coin_type — TBD upstream *(OD#11)*
+## §4 SLIP-44 coin_type — TBD upstream
 
 Nockchain has no assigned [SLIP-44](https://github.com/satoshilabs/slips/blob/master/slip-0044.md) coin_type. This spec uses `<coin_type>'` as a symbolic placeholder; the value is **not** fixed by `vesl-wallet-spec`.
 
@@ -152,22 +162,22 @@ Until SLIP-44 assigns a value, implementations may either:
 ### Implementation guidance
 
 - `vesl-wallet` takes `coin_type` as a constructor parameter — it does not hardcode a value. Hull authors set it via `nockup.toml`.
-- Hardware-wallet integrations and external consumers SHOULD coordinate on a single interim value to avoid fragmentation. A coordination thread is open against Nockchain maintainers — see OD#11 ("SLIP-44 coin_type for Nockchain").
+- Hardware-wallet integrations and external consumers SHOULD coordinate on a single interim value to avoid fragmentation. Coordination with the Nockchain maintainers on a SLIP-44 coin_type is open.
 
 ### Follow-up
 
-OD#11 tracks the coordination work to:
+The open coordination work is to:
 - File a SLIP-44 PR upstream against `satoshilabs/slips` claiming a coin_type for Nockchain.
 - Once assigned, mint a `vesl-wallet-spec` amendment specifying the canonical value.
 - Communicate migration guidance to any consumers using interim values.
 
 ---
 
-## §5 Roles 7+
+## §5 Roles 8+
 
-Roles `7` and above are explicitly **open** for future assignments. Future amendments to this spec mint new role assignments rather than redefining existing ones (see §6). Candidate future uses include threshold-Schnorr signing keys, additional encryption schemes, on-chain-delegation authority keys (when Nockchain adds account-abstraction primitives), and oracle-attestation keys.
+Roles `8` and above are explicitly **open** for future assignments. Future amendments to this spec mint new role assignments rather than redefining existing ones (see §6). Candidate future uses include threshold-Schnorr signing keys, additional encryption schemes, on-chain-delegation authority keys (when Nockchain adds account-abstraction primitives), and oracle-attestation keys.
 
-Implementations MUST NOT use roles 7+ until this spec assigns them, to avoid silent collisions across consumers.
+Implementations MUST NOT use roles 8+ until this spec assigns them, to avoid silent collisions across consumers.
 
 ---
 
@@ -175,7 +185,7 @@ Implementations MUST NOT use roles 7+ until this spec assigns them, to avoid sil
 
 This spec follows BIP-style amendment conventions:
 
-- **Breaking changes** mint new role assignments at currently-unreserved slots. Existing role assignments (roles 0-6) are **not** retroactively edited.
+- **Breaking changes** mint new role assignments at currently-unreserved slots. Existing role assignments (roles 0-7) are **not** retroactively edited.
 - **Non-breaking clarifications** (typo fixes, expanded prose, new examples) ship as in-place edits and are reflected in the crate's `CHANGELOG.md`.
 - **The Rust constant set is append-only.** New roles add new `pub const ROLE_*` constants; no constant value ever changes once shipped.
 
@@ -186,5 +196,5 @@ The crate version (`vesl-wallet-spec` package version in `Cargo.toml`) tracks do
 ## Cross-references
 
 - [`vesl-signing::domain::domain_separators`](../vesl-signing/src/domain.rs) — reserved Tip5 domain separators (single source of truth).
-- `x402-nockchain/docs/CURRENT_STATE.md §2 gap #5` — HD-derivation seam consuming `ROLE_X402`.
-- OD#1 (closed by this spec) and OD#11 (open SLIP-44 coordination) are tracked in the maintainers' decisions log.
+- x402-nockchain's `NockchainWalletClient` — the consumer that should take a `DerivationPath` and derive at `ROLE_X402` (§2, Role 4).
+- SLIP-44 coin_type registration remains open (§4).

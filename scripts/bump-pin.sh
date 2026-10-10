@@ -20,6 +20,12 @@
 # crates). Pass --sync to auto-run ./sync.sh; default behavior is to
 # print a reminder. --no-sync explicitly silences the reminder.
 #
+# --sync pre-check: for vesl-core / vesl-wallet the sibling checkout's
+# HEAD must equal the new SHA (sync.sh copies that tree). For nock the
+# new SHA must be an ancestor of ../nockchain HEAD: the local checkout
+# may carry its own commits on top of the upstream pin, and those extra
+# commits are printed for information.
+#
 # Pre-flight: SHA must be 40-char lowercase hex AND exist upstream.
 # Refuses ghost SHAs — the C-09 root cause this gate exists to prevent.
 
@@ -33,7 +39,9 @@ usage() {
     echo "usage: $0 <type> <sha> [--sync | --no-sync]" >&2
     echo "  type: nock | vesl-core | vesl-wallet" >&2
     echo "  sha:  40-char lowercase hex" >&2
-    echo "  --sync:    auto-run ./sync.sh after pin bump" >&2
+    echo "  --sync:    auto-run ./sync.sh after pin bump (nock: sha must be an" >&2
+    echo "             ancestor of ../nockchain HEAD; vesl-core / vesl-wallet:" >&2
+    echo "             sibling HEAD must equal sha)" >&2
     echo "  --no-sync: silence the post-bump 'remember to sync' reminder" >&2
     exit 2
 }
@@ -131,6 +139,17 @@ case "$RUN_SYNC" in
     1)
         if [[ ! -d "$REPO_PATH/.git" ]]; then
             warn_sync_skip="sibling $REPO_PATH not present; cannot run ./sync.sh"
+        elif [[ "$TYPE" == "nock" ]]; then
+            # The local nockchain checkout may carry commits on top of the
+            # upstream pin (a fork branch based on it). Require the pin to
+            # be an ancestor of HEAD, and list any extra local commits.
+            if ! git -C "$REPO_PATH" merge-base --is-ancestor "$SHA" HEAD 2>/dev/null; then
+                warn_sync_skip="$SHA is not an ancestor of sibling $REPO_PATH HEAD; bring it to (or onto) $SHA before running ./sync.sh"
+            elif [[ "$(git -C "$REPO_PATH" rev-parse HEAD)" != "$SHA" ]]; then
+                echo ""
+                echo "note: sibling $REPO_PATH HEAD is ahead of $SHA by these local commits:"
+                git -C "$REPO_PATH" log --oneline "$SHA..HEAD"
+            fi
         elif [[ "$(git -C "$REPO_PATH" rev-parse HEAD 2>/dev/null)" != "$SHA" ]]; then
             warn_sync_skip="sibling $REPO_PATH HEAD does not match $SHA; bring it to $SHA before running ./sync.sh"
         fi

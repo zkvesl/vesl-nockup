@@ -239,9 +239,9 @@ impl SiwnSigner {
     pub fn sign(&self, params: &SiwnParams) -> Result<SiwnHeader> {
         let body = build_caip122_message(params)?;
         let digest = tip5_with_domain(SIWN_DOMAIN_SEPARATOR, body.as_bytes());
-        let (chal, sig) = schnorr_sign(&self.sk, &digest).map_err(|e| anyhow!("siwn sign: {e}"))?;
-        let signature = encode_signature(&self.pk, &chal, &sig)
-            .map_err(|e| anyhow!("encode signature: {e}"))?;
+        let sig = schnorr_sign(&self.sk, &digest).map_err(|e| anyhow!("siwn sign: {e}"))?;
+        let signature =
+            encode_signature(&self.pk, &sig).map_err(|e| anyhow!("encode signature: {e}"))?;
         Ok(SiwnHeader {
             message: body,
             signature,
@@ -343,7 +343,7 @@ pub fn verify<C: ReplayCache>(
         return Err(SiwnError::Expired);
     }
 
-    let (pk, chal, sig) = decode_signature(&bundle.signature)
+    let (pk, sig) = decode_signature(&bundle.signature)
         .map_err(|e| SiwnError::Other(format!("signature decode: {e}")))?;
 
     if pk
@@ -357,7 +357,7 @@ pub fn verify<C: ReplayCache>(
     }
 
     let digest = tip5_with_domain(SIWN_DOMAIN_SEPARATOR, bundle.message.as_bytes());
-    schnorr_verify(&pk, &digest, &chal, &sig).map_err(|_| SiwnError::BadSignature)?;
+    schnorr_verify(&pk, &digest, &sig).map_err(|_| SiwnError::BadSignature)?;
 
     // AUDIT 2026-05-19 H-13: cap the replay-cache TTL. The window is
     // otherwise expiration_time - issued_at — both attacker-set, so an
@@ -389,13 +389,14 @@ pub fn verify<C: ReplayCache>(
 
 #[cfg(test)]
 mod tests {
-    use ibig::UBig;
-
     use super::*;
     use crate::replay_cache::InMemoryReplayCache;
 
     fn signer() -> SiwnSigner {
-        SiwnSigner::new(SchnorrPrivateKey::new(UBig::from(999_888_777u64)).unwrap()).unwrap()
+        SiwnSigner::new(
+            SchnorrPrivateKey::new(crate::schnorr::Scalar::from_u64(999_888_777)).unwrap(),
+        )
+        .unwrap()
     }
 
     fn params(signer: &SiwnSigner, now: DateTime<Utc>, nonce: &str) -> SiwnParams {

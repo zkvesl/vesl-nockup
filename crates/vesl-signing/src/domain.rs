@@ -42,9 +42,8 @@ pub mod domain_separators {
     /// (per x402-nockchain `11-extensions.md §11.2`).
     pub const SIWN: &str = "siwn-v1";
 
-    /// vesl-agent intent-signing separator
-    /// (per `WALLET_LAYER.md §2 Role 0` and `X402_INTERSECTION.md §5`
-    /// Open Decision #2). Reserved so x402-nockchain cannot
+    /// vesl-agent intent-signing separator, for keys at wallet role 0
+    /// (`vesl-wallet-spec` `ROLE_INTENT`). Reserved so x402-nockchain cannot
     /// inadvertently re-use the string for an unrelated purpose;
     /// vesl-agent imports this constant directly when it builds its
     /// intent-signing surface.

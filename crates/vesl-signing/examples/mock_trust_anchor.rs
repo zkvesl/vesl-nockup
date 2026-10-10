@@ -11,14 +11,13 @@
 //! Future Vesl Labs trust-anchor service work follows this exact pattern.
 
 use chrono::{Duration, Utc};
-use ibig::UBig;
 use vesl_signing::caip122::{verify, SiwnParams, SiwnSigner, SiwnVerifyContext};
 use vesl_signing::replay_cache::InMemoryReplayCache;
-use vesl_signing::schnorr::SchnorrPrivateKey;
+use vesl_signing::schnorr::{Scalar, SchnorrPrivateKey};
 
 fn main() -> anyhow::Result<()> {
     // === Issuer side: Hull Authority operator with a long-lived key. ===
-    let sk = SchnorrPrivateKey::new(UBig::from(7_777_777_777_u64))?;
+    let sk = SchnorrPrivateKey::new(Scalar::from_u64(7_777_777_777))?;
 
     // The pubkey-as-base58 doubles as the address in SIWN. Compute it
     // before handing the key to the signer (which consumes the key).

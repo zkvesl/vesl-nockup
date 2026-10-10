@@ -24,6 +24,7 @@
 //! - [`ROLE_X402`]      (`4`) — x402 spending keys
 //! - [`ROLE_VOID`]      (`5`) — x402 hold-void (cancellation) keys
 //! - [`ROLE_WITHDRAWAL`](`6`) — x402 withdrawal: where a swept pool lands
+//! - [`ROLE_SLASH`]     (`7`) — a bond's slash-only key
 //!
 //! Roles `7+` are reserved for future assignments — see `SPEC.md §5`.
 
@@ -91,7 +92,7 @@ pub const ROLE_X402: u32 = 4;
 /// reveals** — so while the two branches named one buyer key, the buyer's
 /// capture co-signature also spent the *void* branch, letting the platform be
 /// paid while publishing no delivery key. A live node accepted exactly that,
-/// twice, before the fix (x402 `records/S118`). Separate roles make the
+/// twice, before the fix. Separate roles make the
 /// collision unreachable by construction rather than refused by a check.
 pub const ROLE_VOID: u32 = 5;
 
@@ -122,6 +123,22 @@ pub const ROLE_VOID: u32 = 5;
 /// nonetheless recommended for the same reason deposits rotate: it isolates
 /// each cash-out so a second coin arriving at one reads as an anomaly.
 pub const ROLE_WITHDRAWAL: u32 = 6;
+
+/// Role 7 — a bond's **slash-only** key: the one key a staked slice names in its
+/// SLASH branch, and nowhere else.
+///
+/// ⚑ *In plain terms: a provider signs, in advance, the transaction that would
+/// take its stake if it is caught serving wrongly. That signature must not be
+/// able to move the stake any other way.*
+///
+/// ⛔⛔ **IT MUST NEVER BE THE KEY THAT SIGNS THE STAKE'S OTHER EXITS.** A
+/// spend's signed digest covers its outputs and fee and **not the branch it
+/// reveals** — the same defect [`ROLE_VOID`] answers. While the SLASH branch
+/// and the EXIT branch both named the holder's key, a stored slash signature
+/// plus the platform's funding key completed the slash through EXIT, without
+/// the verdict key. A separate role makes the collision unreachable by
+/// construction. Derived at the same index as the holder's key it pairs with.
+pub const ROLE_SLASH: u32 = 7;
 
 /// Typed BIP44 5-level derivation path.
 ///
@@ -166,6 +183,7 @@ mod tests {
         assert_eq!(ROLE_X402, 4);
         assert_eq!(ROLE_VOID, 5);
         assert_eq!(ROLE_WITHDRAWAL, 6);
+        assert_eq!(ROLE_SLASH, 7);
     }
 
     /// ⛔⛔ **THE ONE PROPERTY THE VOID KEY EXISTS FOR: AT EVERY INDEX IT IS
@@ -220,6 +238,27 @@ mod tests {
                     DerivationPath::new(0, 0, other, index),
                     withdrawal,
                     "the withdrawal key must not be {name} at index {index}"
+                );
+            }
+        }
+    }
+
+    /// ⛔⛔ **THE ONE PROPERTY THE SLASH ROLE EXISTS FOR: AT EVERY INDEX IT IS A
+    /// DIFFERENT PATH FROM THE HOLDER KEY IT PAIRS WITH** (an operator's
+    /// [`ROLE_INTENT`] key), and from every other role's. Over a range of indices,
+    /// for the reason the void test gives.
+    #[test]
+    fn the_slash_path_is_never_another_roles_path_at_any_index() {
+        for index in [0u32, 1, 2, 7, 4096, u32::MAX] {
+            let slash = DerivationPath::new(0, 0, ROLE_SLASH, index);
+            for other in [
+                ROLE_INTENT, ROLE_RECEIVING, ROLE_ENCRYPTION, ROLE_SESSION, ROLE_X402, ROLE_VOID,
+                ROLE_WITHDRAWAL,
+            ] {
+                assert_ne!(
+                    DerivationPath::new(0, 0, other, index),
+                    slash,
+                    "the slash key must not be role {other}'s at index {index}"
                 );
             }
         }

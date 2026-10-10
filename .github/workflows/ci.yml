@@ -13,9 +13,9 @@ on:
     branches: [main]
 
 env:
-  NOCK_PIN: dfc97ecc877687fc7ca972ebc71877df6e80d92b
-  VESL_CORE_PIN: 9f10c0a614bc8511f3af8734e981ebe779a4c18b
-  VESL_WALLET_PIN: 71e1eef93076b2ad0f2ad6320905bc8a306267c2
+  NOCK_PIN: 73877be29bd1fafeeade1be7b95aebb0f64d8382
+  VESL_CORE_PIN: 3839d18e7b62698479a5a8819a078d4d5f3f47cb
+  VESL_WALLET_PIN: 136fd2531cc59e1523c3cd4c5de5161a8016be53
   # honk (the fleet's primary Hoon compiler) is built from HONK_REV:
   # ⚑⚑ 2026-09-10: THE FORK IS RETIRED AND THIS BLOCK'S OWN EXIT CONDITION HAS FIRED.
   # It used to say "Fold back into NOCK_PIN and repoint at nockchain/nockchain when

@@ -47,9 +47,8 @@
 //! only argument for diverging from consensus code.
 
 use hmac::{Hmac, Mac};
-use ibig::UBig;
 use sha2::Sha512;
-use vesl_signing::schnorr::{CheetahPoint, SchnorrPrivateKey, G_ORDER};
+use vesl_signing::schnorr::{CheetahPoint, Scalar, SchnorrPrivateKey, G_ORDER};
 
 use crate::error::WalletError;
 
@@ -73,13 +72,13 @@ const TAG_RETRY: u8 = 0x01;
 /// Derived material: a Cheetah scalar and the chain code that lets the
 /// wallet derive its children.
 ///
-/// AUDIT 2026-05-20 M-13: not zeroized on drop — `scalar` is an
-/// `ibig::UBig` with no `Zeroize` impl, so this UBig-containing struct
-/// cannot be cleanly `ZeroizeOnDrop` (see `SchnorrPrivateKey`). The root
-/// seed and mnemonic, the secrets these descend from, ARE zeroized.
+/// AUDIT 2026-05-20 M-13: not zeroized on drop — `scalar` is a `Copy`
+/// [`Scalar`], and the `SchnorrPrivateKey` built from it holds an
+/// unzeroized bignum (see `SchnorrPrivateKey`). The root seed and
+/// mnemonic, the secrets these descend from, ARE zeroized.
 #[derive(Clone)]
 pub(crate) struct ExtKey {
-    pub(crate) scalar: UBig,
+    pub(crate) scalar: Scalar,
     pub(crate) chain_code: ChainCode,
 }
 
@@ -94,7 +93,7 @@ impl std::fmt::Debug for ExtKey {
 
 impl ExtKey {
     pub(crate) fn private_key(&self) -> Result<SchnorrPrivateKey, WalletError> {
-        SchnorrPrivateKey::new(self.scalar.clone()).map_err(WalletError::Signing)
+        SchnorrPrivateKey::new(self.scalar).map_err(WalletError::Signing)
     }
 }
 
@@ -109,7 +108,7 @@ pub(crate) fn master_from_seed(seed: &[u8; 64]) -> Result<ExtKey, WalletError> {
         let (left, chain_code) = split(&digest);
         // The `!= 0` half is the specification's, not upstream's — see the
         // module docs. Unreachable either way at 2^-256.
-        if left < *G_ORDER && left != UBig::from(0u8) {
+        if left < G_ORDER && !left.is_zero() {
             return Ok(ExtKey {
                 scalar: left,
                 chain_code,
@@ -135,7 +134,7 @@ pub(crate) fn ckd_hardened(parent: &ExtKey, index: u32) -> Result<ExtKey, Wallet
     // `:153` — [37 (can 3 ~[4^i 32^prv 1^0])] == 0x00 || ser256(prv) || ser32(i)
     let mut data = Vec::with_capacity(1 + 32 + 4);
     data.push(TAG_HARDENED);
-    data.extend_from_slice(&ser256(&parent.scalar)?);
+    data.extend_from_slice(&parent.scalar.to_be_bytes());
     data.extend_from_slice(&wire_index.to_be_bytes());
     Ok(ckd(parent, wire_index, &data))
 }
@@ -146,7 +145,7 @@ pub(crate) fn ckd_non_hardened(parent: &ExtKey, index: u32) -> Result<ExtKey, Wa
     if index >= 1u32 << 31 {
         return Err(WalletError::IndexOverflow(index));
     }
-    let parent_pk = SchnorrPrivateKey::new(parent.scalar.clone())?.public_key()?;
+    let parent_pk = SchnorrPrivateKey::new(parent.scalar)?.public_key()?;
     // `:155` — [101 (can 3 ~[4^i 97^(ser-p ...)])] == ser-a-pt(pub) || ser32(i)
     let mut data = Vec::with_capacity(97 + 4);
     data.extend_from_slice(&ser_a_pt(&parent_pk));
@@ -174,9 +173,9 @@ fn ckd(parent: &ExtKey, wire_index: u32, data: &[u8]) -> ExtKey {
     loop {
         let (left, chain_code) = split(&digest);
         // `:163` — ?: &(!=(0 key) (lth left n))
-        if left < *G_ORDER {
-            let scalar = (left + &parent.scalar) % &*G_ORDER;
-            if scalar != UBig::from(0u8) {
+        if left < G_ORDER {
+            let scalar = left.add_mod_order(&parent.scalar);
+            if !scalar.is_zero() {
                 return ExtKey { scalar, chain_code };
             }
         }
@@ -199,30 +198,12 @@ fn hmac_sha512(key: &[u8], data: &[u8]) -> [u8; 64] {
 /// Split an HMAC-SHA512 output into SLIP-10's `I_L` (a big-endian scalar)
 /// and `I_R` (the chain code). `slip10.hoon:63-64` does the same with
 /// `cut`, where the high 32 bytes of the atom are the digest's first 32.
-fn split(digest: &[u8; 64]) -> (UBig, ChainCode) {
+fn split(digest: &[u8; 64]) -> (Scalar, ChainCode) {
+    let mut left = [0u8; 32];
+    left.copy_from_slice(&digest[..32]);
     let mut chain_code = [0u8; 32];
     chain_code.copy_from_slice(&digest[32..]);
-    (UBig::from_be_bytes(&digest[..32]), chain_code)
-}
-
-/// SLIP-10's `ser256`: big-endian 32-byte encoding of a scalar in
-/// `[0, G_ORDER)`. `G_ORDER` is 255 bits so a 32-byte buffer always fits
-/// with the most-significant bit clear.
-///
-/// AUDIT 2026-05-21 L-23: a `UBig` wider than 32 bytes would panic the
-/// `copy_from_slice` below — the `saturating_sub` offset clamps to 0, so
-/// the destination slice is shorter than `bytes`. Every `ExtKey` scalar is
-/// reduced mod `G_ORDER`, so this is unreachable in practice; return
-/// [`WalletError::ScalarTooWide`] rather than panic, for defence in depth.
-fn ser256(n: &UBig) -> Result<[u8; 32], WalletError> {
-    let bytes = n.to_be_bytes();
-    if bytes.len() > 32 {
-        return Err(WalletError::ScalarTooWide);
-    }
-    let mut out = [0u8; 32];
-    let offset = 32usize.saturating_sub(bytes.len());
-    out[offset..offset + bytes.len()].copy_from_slice(&bytes);
-    Ok(out)
+    (Scalar::from_be_bytes(&left), chain_code)
 }
 
 /// Upstream's `+ser-a-pt` (`ztd/three.hoon:1723-1735`) — the point
@@ -313,8 +294,8 @@ mod tests {
     #[test]
     fn master_scalar_is_in_field() {
         let m = master_from_seed(&fixed_seed()).unwrap();
-        assert!(m.scalar > UBig::from(0u64));
-        assert!(m.scalar < *G_ORDER);
+        assert!(!m.scalar.is_zero());
+        assert!(m.scalar < G_ORDER);
     }
 
     #[test]
@@ -370,8 +351,8 @@ mod tests {
         let m = master_from_seed(&fixed_seed()).unwrap();
         for i in 0..64u32 {
             for k in [ckd_hardened(&m, i).unwrap(), ckd_non_hardened(&m, i).unwrap()] {
-                assert!(k.scalar > UBig::from(0u64), "scalar 0 at index {i}");
-                assert!(k.scalar < *G_ORDER, "scalar >= G_ORDER at index {i}");
+                assert!(!k.scalar.is_zero(), "scalar 0 at index {i}");
+                assert!(k.scalar < G_ORDER, "scalar >= G_ORDER at index {i}");
             }
         }
     }
@@ -382,7 +363,7 @@ mod tests {
     #[test]
     fn ser_a_pt_is_not_the_local_point_encoding() {
         let m = master_from_seed(&fixed_seed()).unwrap();
-        let pk = SchnorrPrivateKey::new(m.scalar.clone())
+        let pk = SchnorrPrivateKey::new(m.scalar)
             .unwrap()
             .public_key()
             .unwrap();

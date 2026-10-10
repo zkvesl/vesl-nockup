@@ -100,6 +100,69 @@ pub async fn kernel_tx_id_with_timeout(
     extract_hash_from_effect(&effects, "tx-id")
 }
 
+/// Compute `hash:nnote` of a note by poking the Hoon kernel's `%note-hash`
+/// handler — the chain's own answer, which [`crate::note_hash::note_hash`] (the
+/// Rust mirror every spend's parent hash now comes from) is pinned against in
+/// `vesl-parity-corpus`.
+///
+/// Sends `[%note-hash note-jam]` where `note-jam` is the JAM'd `nnote` noun.
+pub async fn kernel_note_hash_with_timeout(
+    app: &mut NockApp,
+    note: &nockchain_types::tx_engine::v1::note::NoteV1,
+    timeout: std::time::Duration,
+) -> anyhow::Result<Hash> {
+    let note_jammed = {
+        let mut slab: NounSlab<NockJammer> = NounSlab::new();
+        let noun = note.to_noun(&mut slab);
+        slab.set_root(noun);
+        slab.jam()
+    };
+
+    let mut poke_slab: NounSlab = NounSlab::new();
+    let tag = make_tas(&mut poke_slab, "note-hash").as_noun();
+    let note_atom = bytes_to_atom(&mut poke_slab, &note_jammed);
+    let cmd = T(&mut poke_slab, &[tag, note_atom]);
+    poke_slab.set_root(cmd);
+
+    let effects = tokio::time::timeout(timeout, app.poke(SystemWire.to_wire(), poke_slab))
+        .await
+        .map_err(|_| anyhow::anyhow!("note-hash poke timed out after {}s", timeout.as_secs()))?
+        .map_err(|e| anyhow::anyhow!("note-hash poke failed: {e:?}"))?;
+
+    extract_hash_from_effect(&effects, "note-hash")
+}
+
+/// Compute `hash:lock` of a lock by poking the Hoon kernel's `%lock-root` handler —
+/// the chain's own answer, which the escrow flow's notes (`crate::job_locks`, built
+/// through `nockchain-types`' Rust hashing) are pinned against in `vesl-parity-corpus`.
+///
+/// Sends `[%lock-root lock-jam]` where `lock-jam` is the JAM'd `lock` noun.
+pub async fn kernel_lock_root_with_timeout(
+    app: &mut NockApp,
+    lock: &nockchain_types::tx_engine::v1::tx::Lock,
+    timeout: std::time::Duration,
+) -> anyhow::Result<Hash> {
+    let lock_jammed = {
+        let mut slab: NounSlab<NockJammer> = NounSlab::new();
+        let noun = lock.to_noun(&mut slab);
+        slab.set_root(noun);
+        slab.jam()
+    };
+
+    let mut poke_slab: NounSlab = NounSlab::new();
+    let tag = make_tas(&mut poke_slab, "lock-root").as_noun();
+    let lock_atom = bytes_to_atom(&mut poke_slab, &lock_jammed);
+    let cmd = T(&mut poke_slab, &[tag, lock_atom]);
+    poke_slab.set_root(cmd);
+
+    let effects = tokio::time::timeout(timeout, app.poke(SystemWire.to_wire(), poke_slab))
+        .await
+        .map_err(|_| anyhow::anyhow!("lock-root poke timed out after {}s", timeout.as_secs()))?
+        .map_err(|e| anyhow::anyhow!("lock-root poke failed: {e:?}"))?;
+
+    extract_hash_from_effect(&effects, "lock-root")
+}
+
 // ---------------------------------------------------------------------------
 // Manual noun builders — work around NockStack issue in ZSet/z-map
 // ---------------------------------------------------------------------------
@@ -118,7 +181,7 @@ pub async fn kernel_tx_id_with_timeout(
 /// ⛔⛔ THAT LAST CASE USED TO `bail!`, AND THE REASON GIVEN FOR IT WAS FALSE.
 /// The refusal read *"the canonical encoder's treap ordering runs each seed
 /// through a scratch `NockStack` that cannot absorb `NoteData::to_noun`"*.
-/// · MEASURED 2026-08-30 (x402 row 1, falsifier `F2`), three ways:
+/// · MEASURED 2026-08-30 (the `f2_*` tests below), three ways:
 ///
 /// 1. that scratch stack is `NOCK_STACK_SIZE_TINY` = **2 GB**
 ///    (`nockchain/crates/nockvm/rust/nockvm/src/mem.rs:33`) — size cannot be it;
@@ -255,11 +318,11 @@ pub fn jam_seeds_manual(seeds: &Seeds) -> anyhow::Result<bytes::Bytes> {
 
 /// JAM Spends by the canonical `ZMap` encoder — **any spend count.**
 ///
-/// ⭐ x402 board row **23**. `kernel_tx_id` used to reach
+/// ⭐ `kernel_tx_id` used to reach
 /// [`jam_spends_manual`], which hand-writes a one-element treap and refuses
 /// more than one spend — so the `%tx-id` kernel poke was single-input **by
-/// construction**, and the multi-input transactions `records/S133` put to a
-/// node had to compute their id through `RawTx::compute_id` instead.
+/// construction**, and the multi-input transactions we put to a live node in
+/// testing had to compute their id through `RawTx::compute_id` instead.
 ///
 /// ⚑ There is no dispatch here, unlike [`jam_seeds`], and the reason is
 /// MEASURED rather than assumed. `jam_seeds` keeps a manual arm because the
@@ -335,7 +398,7 @@ fn refuse_duplicate_input_names(spends: &Spends) -> anyhow::Result<()> {
 /// For a single-spend z-map, the noun structure is `[[key value] 0 0]`
 /// (treap node with null children).
 ///
-/// ⛔ **NO LONGER ON ANY LIVE PATH IN THIS CRATE** (x402 board row 23):
+/// ⛔ **NO LONGER ON ANY LIVE PATH IN THIS CRATE**:
 /// `kernel_tx_id` now goes through [`jam_spends`]. It is kept and exported
 /// because `vesl-agent/hull/src/tx_builder.rs:24` imports it and pins it
 /// byte-identical to the canonical encoder at `:276` — which is the very
@@ -427,7 +490,7 @@ mod tests {
     use super::*;
 
     // -----------------------------------------------------------------------
-    // ROW 23 — the canonical SPENDS encoder.
+    // The canonical SPENDS encoder (any spend count).
     // -----------------------------------------------------------------------
 
     /// Build a spend carrying one seed, under the input note `Name(a, b)`.
@@ -472,7 +535,7 @@ mod tests {
 
     /// ⭐⭐ THE PIN THAT MAKES THE `kernel_tx_id` SWITCH SAFE.
     ///
-    /// `kernel_tx_id` reached `jam_spends_manual` until board row 23 and now
+    /// `kernel_tx_id` used to reach `jam_spends_manual` and now
     /// reaches [`jam_spends`]. That is only a no-op for the single-spend shapes
     /// this fleet has been posting if the two encoders agree BYTE FOR BYTE.
     ///
@@ -584,7 +647,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // ROW 1 — the multi-seed-with-note-data encoder.
+    // The multi-seed-with-note-data encoder.
     //
     // ⛔ THE STATED CAUSE OF THE REFUSAL IS FALSIFIED. Both doc-comments blamed
     // "a scratch NockStack that cannot absorb NoteData::to_noun". The scratch
@@ -660,8 +723,8 @@ mod tests {
         }
     }
 
-    /// Two seeds, one carrying the real escrow note-data — `XD-5`'s shape in
-    /// miniature.
+    /// Two seeds, one carrying the real escrow note-data — a capture's
+    /// escrow-plus-change output set in miniature.
     fn multi_seed_with_note_data() -> Seeds {
         Seeds(vec![
             seed_with(1, 100, 500, escrow_note_data(IC_HEX)),
@@ -669,7 +732,7 @@ mod tests {
         ])
     }
 
-    /// ⭐⭐ `F2` — THE REFUSAL IS GONE, AND THE HISTORY IS THE POINT.
+    /// ⭐⭐ THE REFUSAL IS GONE, AND THE HISTORY IS THE POINT.
     ///
     /// Written first as `f2_..._refusal_reproduces`, asserting
     /// `jam_seeds(...).is_err()` with the message *"multi-seed with note-data is
@@ -689,7 +752,7 @@ mod tests {
         );
     }
 
-    /// ⭐⭐ `F2` — WHAT THE CANONICAL ENCODER ACTUALLY DOES when handed the
+    /// ⭐⭐ WHAT THE CANONICAL ENCODER ACTUALLY DOES when handed the
     /// combination both guards forbid.
     ///
     /// Both guards are bypassed on purpose: `jam_seeds`'s dispatch AND
@@ -781,11 +844,11 @@ mod tests {
     /// against `nockchain-types`, never against this module's own output: a
     /// wrong-but-stable encoder is the failure that stays silent until real
     /// money moves. It also forbids the tempting fix of hand-writing a treap —
-    /// `XE-94` measured that a naive hand-write disagrees with the chain on the
-    /// first random pair.
+    /// a randomised comparison measured a naive hand-write disagreeing with the
+    /// chain on the first random pair.
     ///
     /// ⚑ That encoder is itself pinned against HOON by frozen base58 vectors
-    /// (`nockchain-types/src/tx_engine/v1/tx.rs:1882-1984`, `XE-67`), which is
+    /// (`nockchain-types/src/tx_engine/v1/tx.rs:1882-1984`), which is
     /// what makes this a cross-implementation oracle rather than a tautology.
     #[test]
     fn f_bytes_multi_seed_with_note_data_matches_the_chains_canonical_encoding() {
@@ -817,8 +880,8 @@ mod tests {
     /// shape disagreement is a signature over a different message.
     ///
     /// ⛔ Randomised, and over THREE seeds so there is a real tree rather than a
-    /// single swap: `XE-94` is the measurement that says one fixed case is not
-    /// enough.
+    /// single swap: a naive hand-write that passed a fixed case failed on the
+    /// first random pair, so one fixed case is not enough.
     #[test]
     fn f_order_the_seed_sets_bytes_do_not_depend_on_insertion_order() {
         let mut state = 0x5EED_0000_0000_00B2u64;

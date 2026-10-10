@@ -10,9 +10,9 @@ name = "{{project_name}}"
 path = "src/main.rs"
 
 [dependencies]
-nockapp       = { git = "https://github.com/nockchain/nockchain.git", rev = "dfc97ecc877687fc7ca972ebc71877df6e80d92b", default-features = false }
-nockvm        = { git = "https://github.com/nockchain/nockchain.git", rev = "dfc97ecc877687fc7ca972ebc71877df6e80d92b" }
-nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "dfc97ecc877687fc7ca972ebc71877df6e80d92b" }
+nockapp       = { git = "https://github.com/nockchain/nockchain.git", rev = "73877be29bd1fafeeade1be7b95aebb0f64d8382", default-features = false }
+nockvm        = { git = "https://github.com/nockchain/nockchain.git", rev = "73877be29bd1fafeeade1be7b95aebb0f64d8382" }
+nockvm_macros = { git = "https://github.com/nockchain/nockchain.git", rev = "73877be29bd1fafeeade1be7b95aebb0f64d8382" }
 
 vesl-core    = { path = "../../crates/vesl-core", features = ["clap"] }
 nock-noun-rs = { path = "../../crates/nock-noun-rs" }
@@ -48,6 +48,3 @@ ibig            = { path = "../nockchain/crates/nockvm/rust/ibig" }
 nockchain-math  = { path = "../nockchain/crates/nockchain-math" }
 nockchain-types = { path = "../nockchain/crates/nockchain-types" }
 noun-serde      = { path = "../nockchain/crates/noun-serde" }
-
-[patch.crates-io]
-ibig = { path = "../nockchain/crates/nockvm/rust/ibig" }

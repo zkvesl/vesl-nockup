@@ -8,7 +8,9 @@
 //! ## API tiers
 //!
 //! - **Low-level**: [`schnorr`] — `SchnorrPrivateKey`, `schnorr_sign`,
-//!   `schnorr_verify`. The raw signing primitive.
+//!   `schnorr_verify`, and the fixed-width [`Scalar`] / [`SchnorrSig`]
+//!   types they speak (eight little-endian 32-bit limbs, Hoon `t8`). No
+//!   big-integer type crosses the public API; the arithmetic is internal.
 //! - **Mid-level**: [`domain`] — reserved Tip5 domain-separator constants
 //!   and helpers (`tip5_with_domain`, `hash_canonical`).
 //!   [`replay_cache`] — nonce-deduplication trait + in-memory impl.
@@ -35,7 +37,10 @@ pub mod schnorr;
 pub mod caip122;
 
 pub(crate) mod math;
+mod scalar;
 
 // Convenience re-exports — the most-used surface for consumers.
 pub use domain::domain_separators;
-pub use schnorr::{schnorr_sign, schnorr_verify, SchnorrError, SchnorrPrivateKey};
+pub use schnorr::{
+    schnorr_sign, schnorr_verify, Scalar, SchnorrError, SchnorrPrivateKey, SchnorrSig,
+};

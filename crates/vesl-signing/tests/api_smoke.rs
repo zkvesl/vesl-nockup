@@ -7,7 +7,6 @@
 //!
 //! Run with: `cargo test --test api_smoke --all-features`.
 
-use ibig::UBig;
 use vesl_signing::domain::{
     domain_separators, hash_canonical, tip5_with_domain, X402_DOMAIN_SEPARATOR,
 };
@@ -16,7 +15,8 @@ use vesl_signing::replay_cache::{
     domains as replay_domains, prefixed, InMemoryReplayCache, ReplayCache,
 };
 use vesl_signing::schnorr::{
-    decode_signature, encode_signature, schnorr_sign, schnorr_verify, SchnorrPrivateKey,
+    decode_signature, encode_signature, schnorr_sign, schnorr_verify, Scalar, SchnorrPrivateKey,
+    SchnorrSig,
 };
 
 #[test]
@@ -55,19 +55,18 @@ fn vesl_hd_separator_is_isolated_from_signing_separators() {
 fn end_to_end_signature_via_public_api() {
     // Build a key, hash a payload under a domain, sign, encode, decode,
     // verify. No crate-internals reached.
-    let sk = SchnorrPrivateKey::new(UBig::from(42_424_242_u64)).unwrap();
+    let sk = SchnorrPrivateKey::new(Scalar::from_u64(42_424_242)).unwrap();
     let pk = sk.public_key().unwrap();
 
     let payload = serde_json::json!({ "intent_id": "abc", "value": "100" });
     let digest = hash_canonical(domain_separators::VESL_INTENT, &payload).unwrap();
 
-    let (chal, sig) = schnorr_sign(&sk, &digest).unwrap();
-    schnorr_verify(&pk, &digest, &chal, &sig).unwrap();
+    let sig: SchnorrSig = schnorr_sign(&sk, &digest).unwrap();
+    schnorr_verify(&pk, &digest, &sig).unwrap();
 
-    let wire = encode_signature(&pk, &chal, &sig).unwrap();
-    let (pk2, chal2, sig2) = decode_signature(&wire).unwrap();
+    let wire = encode_signature(&pk, &sig).unwrap();
+    let (pk2, sig2) = decode_signature(&wire).unwrap();
     assert_eq!(pk2.into_base58().unwrap(), pk.into_base58().unwrap());
-    assert_eq!(chal2, chal);
     assert_eq!(sig2, sig);
 }
 
@@ -96,10 +95,10 @@ fn from_belts_shim_path() {
     let belts2 = sk.to_belts();
     let sk2 = SchnorrPrivateKey::from_belts(&belts2).unwrap();
     let m = [Belt(1), Belt(2), Belt(3), Belt(4), Belt(5)];
-    let (c, s) = schnorr_sign(&sk, &m).unwrap();
-    let (c2, s2) = schnorr_sign(&sk2, &m).unwrap();
-    assert_eq!(c, c2);
-    assert_eq!(s, s2);
+    assert_eq!(
+        schnorr_sign(&sk, &m).unwrap(),
+        schnorr_sign(&sk2, &m).unwrap()
+    );
 }
 
 #[test]

@@ -13,6 +13,9 @@ categories = ["cryptography"]
 [dependencies]
 # Always-on: core signing primitives + math substrate
 bs58 = { workspace = true }
+# Big-integer arithmetic behind signing. Private: no ibig type appears in
+# the public API (it speaks `Scalar` / `SchnorrSig`), so a consumer that
+# links a different ibig never meets this one's types.
 ibig = { workspace = true }
 once_cell = { workspace = true }
 thiserror = { workspace = true }
@@ -40,6 +43,10 @@ siwn = ["json", "dep:chrono", "dep:base64", "dep:anyhow"]
 
 [[test]]
 name = "api_smoke"
+required-features = ["json"]
+
+[[test]]
+name = "golden_vectors"
 required-features = ["json"]
 
 [[test]]

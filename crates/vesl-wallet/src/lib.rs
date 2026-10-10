@@ -10,7 +10,7 @@
 //!    own `hoon/common/slip10.hoon` — so the keys this crate derives are
 //!    the keys the reference CLI wallet derives from the same phrase.
 //!    See [`hd`] for the arm-by-arm correspondence.
-//! 3. **BIP-44 layout** from [`vesl_wallet_spec`]: role constants 0-6,
+//! 3. **BIP-44 layout** from [`vesl_wallet_spec`]: role constants 0-7,
 //!    [`DerivationPath`] type, hardening boundary at purpose / coin_type
 //!    / account.
 //!
@@ -28,7 +28,7 @@
 //! )?;
 //!
 //! let msg = [Belt(1), Belt(2), Belt(3), Belt(4), Belt(5)];
-//! let (chal, sig) = wallet.sign_intent(0, &msg)?;
+//! let sig = wallet.sign_intent(0, &msg)?; // SchnorrSig { chal, sig }
 //! # Ok::<(), vesl_wallet::WalletError>(())
 //! ```
 //!
@@ -53,7 +53,7 @@ pub use error::WalletError;
 // `vesl_wallet::*` without a second `use vesl_wallet_spec::...` line.
 pub use vesl_wallet_spec::{
     DerivationPath, BIP44_PURPOSE, ROLE_ENCRYPTION, ROLE_INTENT, ROLE_RECEIVING, ROLE_SESSION,
-    ROLE_VOID, ROLE_WITHDRAWAL, ROLE_X402,
+    ROLE_SLASH, ROLE_VOID, ROLE_WITHDRAWAL, ROLE_X402,
 };
 pub use wallet::{DerivedKey, VeslWallet};
 

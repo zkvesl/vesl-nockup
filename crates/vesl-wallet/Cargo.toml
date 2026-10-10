@@ -12,15 +12,13 @@ categories = ["cryptography"]
 
 [dependencies]
 # Core: signing primitive + curve scalar arithmetic.
-vesl-signing = { path = "../vesl-signing", version = "0.1.0-beta.1", default-features = false }
+vesl-signing = { path = "../vesl-signing", version = "0.2.0", default-features = false }
 # Reserved BIP44 layout: role constants + DerivationPath type.
-vesl-wallet-spec = { path = "../vesl-wallet-spec", version = "0.1.0-beta.1" }
+vesl-wallet-spec = { path = "../vesl-wallet-spec", version = "0.2.0" }
 # BIP39 mnemonic <-> seed via PBKDF2-HMAC-SHA512 (the one piece that has
 # to follow the BIP-39 specification verbatim so 12/24-word mnemonics
 # stay portable across implementations).
 bip39 = { workspace = true, features = ["std", "zeroize"] }
-# Big-integer arithmetic shared with vesl-signing (G_ORDER is UBig).
-ibig = { workspace = true }
 # SLIP-10 derivation: HMAC-SHA512 is the PRF nockchain's own
 # hoon/common/slip10.hoon uses, so conformance requires it exactly.
 hmac = { workspace = true }
@@ -37,7 +35,7 @@ thiserror = { workspace = true }
 # Integration tests need the full schnorr signing surface (default
 # features include `json`, used by `hash_canonical` in the round-trip
 # tests).
-vesl-signing = { path = "../vesl-signing", version = "0.1.0-beta.1" }
+vesl-signing = { path = "../vesl-signing", version = "0.2.0" }
 serde_json = { workspace = true }
 # Base58 lets the frozen vectors be pasted verbatim from
 # `nockchain-wallet` output, so their provenance stays legible.

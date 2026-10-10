@@ -34,19 +34,19 @@ fi
 # synced vesl-core crate stack moves to a new nockchain rev — typically
 # whatever sibling ../nockchain/ HEAD was when the crates were last built.
 # Overridable via env: NOCK_PIN=<sha> ./sync.sh
-NOCK_PIN="${NOCK_PIN:-dfc97ecc877687fc7ca972ebc71877df6e80d92b}"
+NOCK_PIN="${NOCK_PIN:-73877be29bd1fafeeade1be7b95aebb0f64d8382}"
 
 # vesl-core rev that the bundled crate stack + templates were last
 # synced from. sync.sh aborts when the sibling vesl-core's HEAD does
 # not match this — bump the pin deliberately (edit this line) before
 # re-running. Overridable via env: VESL_CORE_PIN=<sha> ./sync.sh
-VESL_CORE_PIN="${VESL_CORE_PIN:-9f10c0a614bc8511f3af8734e981ebe779a4c18b}"
+VESL_CORE_PIN="${VESL_CORE_PIN:-3839d18e7b62698479a5a8819a078d4d5f3f47cb}"
 
 # vesl-wallet rev that the bundled vesl-signing / vesl-wallet-spec /
 # vesl-wallet crates were last synced from. Symmetric to VESL_CORE_PIN
 # above — same tripwire shape, same bump discipline. Overridable via
 # env: VESL_WALLET_PIN=<sha> ./sync.sh
-VESL_WALLET_PIN="${VESL_WALLET_PIN:-71e1eef93076b2ad0f2ad6320905bc8a306267c2}"
+VESL_WALLET_PIN="${VESL_WALLET_PIN:-136fd2531cc59e1523c3cd4c5de5161a8016be53}"
 
 # AUDIT 2026-05-19 H-16: every pin must be a 40-char lowercase hex SHA
 # before it reaches the sed rewrite below. An override such as
@@ -400,21 +400,6 @@ nockchain-math  = { path = "../../../nockchain/crates/nockchain-math" }
 nockchain-types = { path = "../../../nockchain/crates/nockchain-types" }
 noun-serde      = { path = "../../../nockchain/crates/noun-serde" }
 PATCH_BLOCK
-                # Restore [patch.crates-io] ibig to path-dep. The main
-                # sed above rewrote it to a git-dep alongside the
-                # [dependencies] table; bundled vesl-signing /
-                # vesl-wallet reference ibig from crates.io and that
-                # [patch.crates-io] redirect would make their ibig
-                # resolve to git source — distinct from the path source
-                # vesl-core's transitive deps resolve to, reintroducing
-                # the diamond. The match string anchors `^ibig = {`
-                # (no leading whitespace), which only the
-                # [patch.crates-io] form matches — the column-aligned
-                # entries inside the [patch."<nockchain.git>"] block
-                # above use leading spaces.
-                sed -i -E \
-                    's|^ibig = \{ git = "https://github.com/nockchain/nockchain.git", rev = "[^"]*" \}$|ibig = { path = "../../../nockchain/crates/nockvm/rust/ibig" }|' \
-                    "$toml"
             fi
         fi
         # vesl-nockup ships the codegen binary as `nockup-graft` (the

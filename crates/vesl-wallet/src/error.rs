@@ -34,10 +34,11 @@ pub enum WalletError {
     IndexOverflow(u32),
 
     /// An HD scalar did not fit the 32-byte big-endian transcript buffer.
-    /// Unreachable for any `ExtKey` this crate produces — every scalar is
-    /// reduced mod `G_ORDER` (~255 bits) — but surfaced as a typed error,
-    /// not a slice-out-of-bounds panic, so a future construction path that
-    /// skips the reduction fails loudly. AUDIT 2026-05-21 L-23.
+    /// AUDIT 2026-05-21 L-23.
+    ///
+    /// No longer reachable: since 0.2.0 an HD scalar is a fixed-width
+    /// `vesl_signing::schnorr::Scalar`, which always serializes to exactly
+    /// 32 bytes. Retained because it is public API.
     #[error("HD scalar exceeds the 32-byte transcript width")]
     ScalarTooWide,
 

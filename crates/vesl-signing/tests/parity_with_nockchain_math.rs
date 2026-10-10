@@ -3,8 +3,8 @@
 //!
 //! ## Status (v0.1.0): test framework only, no live regen.
 //!
-//! Per the architectural decision 2026-04-29 (math-substrate vendoring):
-//! vesl-signing carries its own copy of `Belt`, `F6lt`, `CheetahPoint`, and
+//! By design, vesl-signing vendors its math substrate: it
+//! carries its own copy of `Belt`, `F6lt`, `CheetahPoint`, and
 //! Tip5. Drift detection is the cost. The intended workflow:
 //!
 //! 1. A dev-only example `regen_parity_vectors.rs` consumes
