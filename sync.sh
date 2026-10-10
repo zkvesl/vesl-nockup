@@ -40,7 +40,7 @@ NOCK_PIN="${NOCK_PIN:-73877be29bd1fafeeade1be7b95aebb0f64d8382}"
 # synced from. sync.sh aborts when the sibling vesl-core's HEAD does
 # not match this — bump the pin deliberately (edit this line) before
 # re-running. Overridable via env: VESL_CORE_PIN=<sha> ./sync.sh
-VESL_CORE_PIN="${VESL_CORE_PIN:-3839d18e7b62698479a5a8819a078d4d5f3f47cb}"
+VESL_CORE_PIN="${VESL_CORE_PIN:-2ecc4b8ae5cc80a4367c6f2a0dcb253f13646cec}"
 
 # vesl-wallet rev that the bundled vesl-signing / vesl-wallet-spec /
 # vesl-wallet crates were last synced from. Symmetric to VESL_CORE_PIN
